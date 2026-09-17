@@ -50,6 +50,13 @@ subsequent runs you can just use the last command.
 
 Stop the server with `Ctrl+C`.
 
+Before accepting requests, every startup downloads the
+[etfdb ETF catalogue](https://raw.githubusercontent.com/albertored/etfdb/refs/heads/main/json/etfs.json)
+into MongoDB's `etfs` collection, keyed by unique ISIN. Existing records are
+refreshed without duplicates; missing ISINs are retained. Internet access and a
+writable MongoDB database are required, and import failures abort startup.
+See the [root README](../README.md#etf-catalogue) for the full import contract.
+
 - Hello world: http://127.0.0.1:8000/
 - Interactive API docs: http://127.0.0.1:8000/docs
 

@@ -19,6 +19,7 @@ from auth import (
     set_session,
 )
 from config import Settings
+from etfs import import_etfs
 
 
 def create_app(settings: Settings | None = None, client_factory=MongoClient) -> FastAPI:
@@ -30,6 +31,7 @@ def create_app(settings: Settings | None = None, client_factory=MongoClient) -> 
         app.state.database = client[config.mongodb_database]
         try:
             await run_in_threadpool(client.admin.command, "ping")
+            await run_in_threadpool(import_etfs, app.state.database)
             await run_in_threadpool(seed_admin, app.state.database, config)
             yield
         finally:

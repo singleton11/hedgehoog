@@ -1,6 +1,6 @@
 # Hedgehoog
 
-React/Vite frontend and FastAPI backend, with MongoDB users and JWT authentication.
+React/Vite frontend and FastAPI backend, with MongoDB users, JWT authentication, and startup ETF catalogue ingestion.
 
 ## Run locally
 
@@ -29,6 +29,21 @@ make db-down       # Stop MongoDB without deleting data
 Ctrl+C stops the application servers, not MongoDB. `make db-down` stops the database. MongoDB listens only on `127.0.0.1:27017`, with authentication enabled. Changing MongoDB initialization credentials in `.env` does not change credentials in an existing volume; update the actual database user too. Keep `MONGODB_URI` in sync with those credentials (URL-encode special characters).
 
 MongoDB 7.0 is used because MongoDB 8's allocator is [incompatible with Linux kernels 6.19–7.0.13](https://www.mongodb.com/docs/v8.0/release-notes/8.0/), including the current local Docker Desktop kernel.
+
+## ETF catalogue
+
+On **every backend startup** (including development reloads), the server downloads
+[the etfdb ETF feed](https://raw.githubusercontent.com/albertored/etfdb/refs/heads/main/json/etfs.json)
+and imports it into the configured MongoDB database's **`etfs`** collection before
+accepting requests. Startup requires internet access to GitHub and a writable database.
+
+- One document per **ISIN**, enforced by a unique index. Repeated imports update existing documents without changing their MongoDB `_id` or creating duplicates.
+- All source fields are preserved, including holdings, country/sector allocations, nulls and source update dates. Imported documents are replaced on refresh, so fields removed upstream are removed locally too.
+- ISINs absent from a later feed are **not deleted**. No UCITS filtering or completeness checks are applied beyond importing the supplied source.
+- The entire feed must be a non-empty JSON array of objects with valid, distinct ISINs before any database writes occur. HTTP, validation or database failures abort startup rather than serving an uninitialized catalogue.
+- HTTP timeouts are 10 seconds for connection establishment and 60 seconds for other network operations. Database bulk writes are not transactional: a write failure may leave some records refreshed; restarting safely reapplies the feed.
+
+This imports the source only; no ETF query endpoint or scheduled refresh is added yet.
 
 ## Authentication and authorization
 
@@ -67,7 +82,7 @@ See `.env.example` for all settings. The backend loads the root `.env` regardles
 make test           # Backend tests, frontend component tests, production build
 ```
 
-The default backend suite uses an in-memory MongoDB double. To also run the real-MongoDB integration check:
+The default backend suite uses MongoDB doubles and mocked ETF HTTP responses (no GitHub access). To also run the real-MongoDB integration checks:
 
 ```sh
 make db-up
@@ -75,4 +90,4 @@ cd backend
 TEST_MONGODB_URI='mongodb://hedgehoog:hedgehoog-local@127.0.0.1:27017/?authSource=admin' uv run pytest
 ```
 
-Use your configured URI if credentials differ. The integration test uses and removes its own uniquely named database, checking hashed credentials, unique logins, seed idempotence, and sessions surviving a backend restart.
+Use your configured URI if credentials differ. The integration tests use and remove their own uniquely named databases, checking hashed credentials, unique logins, seed idempotence, sessions surviving a backend restart, and ETF persistence, refreshes, unique ISINs and restart idempotence. They use synthetic ETF HTTP responses, not the live feed.

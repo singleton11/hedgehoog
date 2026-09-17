@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock
 
 import jwt
 import mongomock
@@ -10,6 +11,13 @@ from pymongo.errors import ConnectionFailure, DuplicateKeyError
 from auth import COOKIE_NAME, JWT_AUDIENCE, JWT_ISSUER, password_hasher, seed_admin
 from config import Settings
 from main import create_app
+
+
+@pytest.fixture(autouse=True)
+def skip_etf_import(monkeypatch):
+    # Auth tests isolate the catalogue import; its startup and persistence
+    # contracts are covered in test_etfs.py and test_mongodb.py.
+    monkeypatch.setattr("main.import_etfs", Mock(return_value=0))
 
 
 @pytest.fixture
