@@ -1,4 +1,4 @@
-"""Import the ETF catalogue from etfdb before accepting API requests."""
+"""Import daily ETF catalogue snapshots from etfdb into MongoDB."""
 
 import logging
 import re
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class ETFImportError(RuntimeError):
-    """The startup catalogue download, validation or persistence failed."""
+    """The catalogue download, validation or persistence failed."""
 
 
 def download_etfs() -> list[dict[str, Any]]:
@@ -77,7 +77,7 @@ def import_etfs(database) -> int:
                 try:
                     collection.drop_index(index["name"])
                 except OperationFailure as exc:
-                    if exc.code != 27:  # Another startup may have dropped it already.
+                    if exc.code != 27:  # Another importer may have dropped it already.
                         raise
 
         # A retry replaces today's records (including removed source fields),
@@ -94,7 +94,7 @@ def import_etfs(database) -> int:
             ordered=True,
         )
         # Never mark completion until every ETF write has been acknowledged.
-        # Failures leave the marker false so the next startup retries the day.
+        # Failures leave the marker false so a later task can retry the day.
         imports.update_one({"date": import_date}, {"$set": {"etfs": True}})
     except PyMongoError as exc:
         raise ETFImportError("Could not persist ETF catalogue or import status in MongoDB") from exc

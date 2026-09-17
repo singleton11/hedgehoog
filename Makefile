@@ -1,4 +1,4 @@
-.PHONY: setup db-up db-down run run-backend run-frontend test
+.PHONY: setup db-up db-down services-up services-down import-etfs run run-backend run-frontend test
 
 setup:
 	cd backend && uv run python ../scripts/init_env.py
@@ -9,12 +9,21 @@ db-up: setup
 db-down:
 	docker compose stop mongodb
 
-run: db-up
+services-up: setup
+	docker compose up -d --build --wait mongodb rabbitmq celery-worker
+
+services-down:
+	docker compose stop celery-worker rabbitmq mongodb
+
+import-etfs: services-up
+	docker compose exec celery-worker celery -A celery_app:app call etfs.import_daily
+
+run: services-up
 	cd frontend && npm ci && npm exec -- concurrently --kill-others --names backend,frontend \
 		"cd ../backend && uv run uvicorn main:app --reload" \
 		"npm run dev"
 
-run-backend: db-up
+run-backend: services-up
 	cd backend && uv run uvicorn main:app --reload
 
 run-frontend:

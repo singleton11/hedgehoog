@@ -7,16 +7,23 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ROOT = Path(__file__).resolve().parent.parent
 
 
-class Settings(BaseSettings):
+class TaskSettings(BaseSettings):
+    """Database and broker settings shared by the API and background worker."""
     model_config = SettingsConfigDict(
         env_file=ROOT / ".env", extra="ignore", hide_input_in_errors=True
     )
 
-    environment: Literal["development", "production"] = "development"
     mongodb_uri: SecretStr = SecretStr(
         "mongodb://hedgehoog:hedgehoog-local@127.0.0.1:27017/?authSource=admin"
     )
     mongodb_database: str = "hedgehoog"
+    celery_broker_url: SecretStr = SecretStr(
+        "amqp://hedgehoog:hedgehoog-local@127.0.0.1:5672//"
+    )
+
+
+class Settings(TaskSettings):
+    environment: Literal["development", "production"] = "development"
     jwt_secret: SecretStr
     jwt_expire_minutes: int = Field(default=60, ge=1, le=1440)
     cookie_secure: bool = False

@@ -6,13 +6,10 @@ from unittest.mock import Mock
 import httpx
 import mongomock
 import pytest
-from fastapi.testclient import TestClient
 from pymongo import ReplaceOne
 from pymongo.errors import ConnectionFailure, OperationFailure
 
-from config import Settings
 from etfs import ETF_SOURCE_URL, ETFImportError, download_etfs, import_etfs
-from main import create_app
 
 
 IMPORT_DATE = "2026-09-17"
@@ -222,44 +219,3 @@ def test_migration_tolerates_already_dropped_legacy_index(database, etf_http_get
     database.etfs.list_indexes.return_value = [{"name": "isin_1", "key": {"isin": 1}, "unique": True}]
     database.etfs.drop_index.side_effect = OperationFailure("index not found", code=27)
     assert import_etfs(database) == 2
-
-
-def test_startup_imports_before_serving_requests(database, monkeypatch, etf_http_get):
-    config = Settings(_env_file=None, jwt_secret="test-secret-" * 5)
-    mongo = Mock()
-    mongo.__getitem__ = Mock(return_value=database)
-    seed_admin = Mock()
-    monkeypatch.setattr("main.seed_admin", seed_admin)
-    events = Mock()
-    events.attach_mock(mongo.admin.command, "ping")
-    events.attach_mock(database.etfs.bulk_write, "import_records")
-    events.attach_mock(seed_admin, "seed_admin")
-
-    with TestClient(create_app(config, client_factory=Mock(return_value=mongo))) as client:
-        assert [call[0] for call in events.mock_calls] == ["ping", "import_records", "seed_admin"]
-        assert database.imports.find_one()["etfs"] is True
-        assert client.get("/health").status_code == 200
-        etf_http_get.assert_called_once()
-        mongo.close.assert_not_called()
-    mongo.close.assert_called_once()
-
-
-@pytest.mark.parametrize("failure", ["download", "database", "completion"])
-def test_import_failure_prevents_startup_and_closes_mongo(database, monkeypatch, etf_http_get, failure):
-    config = Settings(_env_file=None, jwt_secret="test-secret-" * 5)
-    mongo = Mock()
-    mongo.__getitem__ = Mock(return_value=database)
-    if failure == "download":
-        etf_http_get.side_effect = httpx.ConnectError("offline")
-    elif failure == "database":
-        database.etfs.bulk_write.side_effect = ConnectionFailure("unavailable")
-    else:
-        monkeypatch.setattr(database.imports, "update_one", Mock(side_effect=ConnectionFailure("unavailable")))
-    seed_admin = Mock()
-    monkeypatch.setattr("main.seed_admin", seed_admin)
-    with pytest.raises(ETFImportError):
-        with TestClient(create_app(config, client_factory=Mock(return_value=mongo))):
-            pytest.fail("The app must not accept requests after an import failure")
-    assert_incomplete(database)
-    seed_admin.assert_not_called()
-    mongo.close.assert_called_once()

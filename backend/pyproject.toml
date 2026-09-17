@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "FastAPI backend with MongoDB users and JWT authentication."
 requires-python = ">=3.13"
 dependencies = [
+    "celery>=5.5,<6",
     "fastapi>=0.115.0,<1.0.0",
     "httpx>=0.28,<1",
     "pwdlib[argon2]>=0.2,<1",

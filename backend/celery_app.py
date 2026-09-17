@@ -1,0 +1,60 @@
+"""Celery configuration shared by the API producer and ETF worker."""
+
+import logging
+
+from celery import Celery
+
+from config import TaskSettings
+
+ETF_IMPORT_TASK = "etfs.import_daily"
+logger = logging.getLogger(__name__)
+
+
+def create_celery_app(settings: TaskSettings | None = None) -> Celery:
+    config = settings or TaskSettings()
+    celery = Celery(
+        "hedgehoog",
+        broker=config.celery_broker_url.get_secret_value(),
+        include=["tasks"],
+        set_as_current=False,
+    )
+    celery.conf.update(
+        task_default_queue="etfs",
+        task_default_delivery_mode="persistent",
+        task_serializer="json",
+        accept_content=["json"],
+        task_ignore_result=True,
+        # A killed worker must not acknowledge an unfinished snapshot.
+        task_acks_late=True,
+        task_reject_on_worker_lost=True,
+        worker_prefetch_multiplier=1,
+        broker_connection_retry_on_startup=True,
+        broker_connection_timeout=5,
+        broker_transport_options={
+            "confirm_publish": True,
+            "read_timeout": 5,
+            "write_timeout": 5,
+        },
+        # Keep API startup bounded if RabbitMQ cannot accept the task.
+        task_publish_retry_policy={
+            "max_retries": 2,
+            "interval_start": 0,
+            "interval_step": 1,
+            "interval_max": 1,
+        },
+        timezone="UTC",
+        enable_utc=True,
+    )
+    return celery
+
+
+app = create_celery_app()
+
+
+def enqueue_etf_import(settings: TaskSettings) -> str:
+    # Use this API instance's settings, not process-global defaults. No database
+    # client or credentials are sent in the message; the worker owns its client.
+    with create_celery_app(settings) as producer:
+        result = producer.send_task(ETF_IMPORT_TASK)
+    logger.info("Queued ETF import task %s", result.id)
+    return result.id

@@ -11,6 +11,7 @@ from pymongo import MongoClient
 from pymongo.collection import Collection
 from pymongo.errors import ConnectionFailure, DuplicateKeyError
 
+import tasks
 from auth import COOKIE_NAME, password_hasher
 from config import Settings
 from etfs import ETF_SOURCE_URL, ETFImportError
@@ -25,6 +26,13 @@ PREVIOUS_DATE = "2026-09-16"
 NEXT_DATE = "2026-09-18"
 
 
+@pytest.fixture(autouse=True)
+def mock_etf_enqueue(monkeypatch):
+    enqueue = Mock()
+    monkeypatch.setattr("main.enqueue_etf_import", enqueue)
+    return enqueue
+
+
 @pytest.fixture
 def etf_clock(monkeypatch):
     clock = Mock(now=Mock(return_value=datetime(2026, 9, 17, 12, tzinfo=timezone.utc)))
@@ -33,13 +41,14 @@ def etf_clock(monkeypatch):
 
 
 @pytest.fixture
-def mongodb(etf_clock):
+def mongodb(etf_clock, monkeypatch):
     settings = Settings(
         _env_file=None,
         mongodb_uri=os.environ["TEST_MONGODB_URI"],
         mongodb_database=f"hedgehoog_test_{uuid4().hex}",
         jwt_secret="integration-test-secret-" * 3,
     )
+    monkeypatch.setattr(tasks, "TaskSettings", lambda: settings)
     mongo = MongoClient(settings.mongodb_uri.get_secret_value(), serverSelectionTimeoutMS=5000)
     try:
         yield settings, mongo[settings.mongodb_database]
@@ -76,10 +85,10 @@ def test_mongodb_users_and_sessions_survive_backend_restart(mongodb, etf_http_ge
         assert client.post("/auth/logout").status_code == 204
 
 
-def test_initial_startup_stores_daily_snapshot_status_and_unique_indexes(
+def test_initial_import_task_stores_daily_snapshot_status_and_unique_indexes(
     mongodb, etf_http_get, etf_records, etf_clock,
 ):
-    settings, database = mongodb
+    _, database = mongodb
 
     def download(*args, **kwargs):
         # The false marker must already exist when the HTTP request starts.
@@ -90,8 +99,7 @@ def test_initial_startup_stores_daily_snapshot_status_and_unique_indexes(
         return feed_response(etf_records)
 
     etf_http_get.side_effect = download
-    with TestClient(create_app(settings)) as client:
-        assert client.get("/health").status_code == 200
+    tasks.import_etfs_task()
 
     etf_clock.now.assert_called_once_with(timezone.utc)
     etf_http_get.assert_called_once()
@@ -118,18 +126,16 @@ def test_initial_startup_stores_daily_snapshot_status_and_unique_indexes(
         database.etfs.insert_one({**etf_records[0], "import_date": IMPORT_DATE})
 
 
-def test_completed_same_day_startup_skips_offline_http(mongodb, etf_http_get):
-    settings, database = mongodb
-    with TestClient(create_app(settings)):
-        pass
+def test_completed_same_day_import_task_skips_offline_http(mongodb, etf_http_get):
+    _, database = mongodb
+    tasks.import_etfs_task()
     database.imports.update_one({"date": IMPORT_DATE}, {"$set": {"prices": False}})
     previous_etfs = list(database.etfs.find().sort("isin"))
     previous_status = database.imports.find_one()
     etf_http_get.reset_mock()
     etf_http_get.side_effect = httpx.ConnectError("offline")
 
-    with TestClient(create_app(settings)) as client:
-        assert client.get("/health").status_code == 200
+    tasks.import_etfs_task()
 
     etf_http_get.assert_not_called()
     assert list(database.etfs.find().sort("isin")) == previous_etfs
@@ -139,7 +145,7 @@ def test_completed_same_day_startup_skips_offline_http(mongodb, etf_http_get):
 def test_interrupted_day_replaces_partial_records_and_preserves_status_fields(
     mongodb, etf_http_get, etf_records,
 ):
-    settings, database = mongodb
+    _, database = mongodb
     database.imports.insert_one({
         "date": IMPORT_DATE, "etfs": False, "prices": True, "source_status": {"profiles": False},
     })
@@ -159,8 +165,7 @@ def test_interrupted_day_replaces_partial_records_and_preserves_status_fields(
         return feed_response([updated, added])
 
     etf_http_get.side_effect = download
-    with TestClient(create_app(settings)) as client:
-        assert client.get("/health").status_code == 200
+    tasks.import_etfs_task()
 
     etf_http_get.assert_called_once()
     assert database.etfs.count_documents({}) == 3
@@ -175,9 +180,8 @@ def test_interrupted_day_replaces_partial_records_and_preserves_status_fields(
 
 
 def test_new_utc_day_retains_previous_snapshots(mongodb, etf_http_get, etf_records, etf_clock):
-    settings, database = mongodb
-    with TestClient(create_app(settings)):
-        pass
+    _, database = mongodb
+    tasks.import_etfs_task()
     previous_etfs = list(database.etfs.find().sort("isin"))
     previous_status = database.imports.find_one()
     updated = dict(etf_records[0], name="Next day's fund name")
@@ -186,8 +190,7 @@ def test_new_utc_day_retains_previous_snapshots(mongodb, etf_http_get, etf_recor
     etf_http_get.return_value = feed_response([updated, added])
     etf_clock.now.return_value = datetime(2026, 9, 18, 0, 0, tzinfo=timezone.utc)
 
-    with TestClient(create_app(settings)) as client:
-        assert client.get("/health").status_code == 200
+    tasks.import_etfs_task()
 
     assert etf_http_get.call_count == 2
     assert database.etfs.count_documents({}) == 4
@@ -213,7 +216,7 @@ def test_new_utc_day_retains_previous_snapshots(mongodb, etf_http_get, etf_recor
 def test_failed_download_or_validation_leaves_false_marker_and_etfs_untouched(
     mongodb, etf_http_get, etf_records, failure, message,
 ):
-    settings, database = mongodb
+    _, database = mongodb
     database.etfs.insert_many([
         {**etf_records[0], "import_date": PREVIOUS_DATE},
         {**etf_records[0], "import_date": IMPORT_DATE},
@@ -233,9 +236,9 @@ def test_failed_download_or_validation_leaves_false_marker_and_etfs_untouched(
             dict(etf_records[0], name="Must not be stored"), invalid,
         ])
 
+    # Call directly so Celery propagates the original error rather than eagerly retrying.
     with pytest.raises(ETFImportError, match=message):
-        with TestClient(create_app(settings)):
-            pytest.fail("An incomplete import must prevent startup")
+        tasks.import_etfs_task()
 
     etf_http_get.assert_called_once()
     assert list(database.etfs.find().sort("import_date")) == previous_etfs
@@ -245,10 +248,10 @@ def test_failed_download_or_validation_leaves_false_marker_and_etfs_untouched(
     assert database.users.count_documents({}) == 0
 
 
-def test_partial_real_bulk_failure_is_recovered_on_next_startup(
+def test_partial_real_bulk_failure_is_recovered_on_next_import_task(
     mongodb, etf_http_get, etf_records, monkeypatch,
 ):
-    settings, database = mongodb
+    _, database = mongodb
     real_bulk_write = Collection.bulk_write
     failure = ConnectionFailure("connection lost after first ETF write")
 
@@ -264,8 +267,7 @@ def test_partial_real_bulk_failure_is_recovered_on_next_startup(
     with monkeypatch.context() as patch:
         patch.setattr(Collection, "bulk_write", partially_write)
         with pytest.raises(ETFImportError, match="Could not persist ETF catalogue") as raised:
-            with TestClient(create_app(settings)):
-                pytest.fail("A partial bulk write must prevent startup")
+            tasks.import_etfs_task()
     assert raised.value.__cause__ is failure
     assert database.etfs.count_documents({}) == 1
     partial = database.etfs.find_one()
@@ -277,8 +279,7 @@ def test_partial_real_bulk_failure_is_recovered_on_next_startup(
     updated = dict(etf_records[0], name="Recovered fund")
     del updated["future_source_field"]
     etf_http_get.return_value = feed_response([updated, etf_records[1]])
-    with TestClient(create_app(settings)) as client:
-        assert client.get("/health").status_code == 200
+    tasks.import_etfs_task()
 
     assert etf_http_get.call_count == 2
     assert database.etfs.count_documents({}) == 2
@@ -295,7 +296,7 @@ def test_partial_real_bulk_failure_is_recovered_on_next_startup(
 def test_migrates_unique_isin_index_without_changing_undated_rows(
     mongodb, etf_http_get, etf_records, monkeypatch, legacy_index_name,
 ):
-    settings, database = mongodb
+    _, database = mongodb
     database.etfs.create_index("isin", unique=True, name=legacy_index_name)
     database.etfs.create_index("ticker", name="ticker_lookup")
     database.etfs.insert_many([dict(record) for record in etf_records])
@@ -317,8 +318,7 @@ def test_migrates_unique_isin_index_without_changing_undated_rows(
         return real_drop_index(collection, index_name, *args, **kwargs)
 
     monkeypatch.setattr(Collection, "drop_index", drop_index)
-    with TestClient(create_app(settings)) as client:
-        assert client.get("/health").status_code == 200
+    tasks.import_etfs_task()
 
     etf_http_get.assert_called_once()
     assert dropped_indexes == [legacy_index_name]

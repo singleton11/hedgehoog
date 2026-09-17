@@ -15,9 +15,9 @@ from main import create_app
 
 @pytest.fixture(autouse=True)
 def skip_etf_import(monkeypatch):
-    # Auth tests isolate the catalogue import; its startup and persistence
-    # contracts are covered in test_etfs.py and test_mongodb.py.
-    monkeypatch.setattr("main.import_etfs", Mock(return_value=0))
+    # Auth tests do not need a broker. Task dispatch and persistence are covered
+    # in test_tasks.py and test_mongodb.py.
+    monkeypatch.setattr("main.enqueue_etf_import", Mock(return_value="test-task"))
 
 
 @pytest.fixture

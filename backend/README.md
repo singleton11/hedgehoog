@@ -24,7 +24,8 @@ This starts both the backend and frontend development servers with automatic
 reload. It requires uv, Node.js (see `frontend/package.json` for supported
 versions), and npm. Frontend dependencies are installed automatically with
 `npm ci`; uv installs backend dependencies as needed. Press `Ctrl+C` to stop
-both servers; if either server exits, the other is stopped too.
+both servers; if either server exits, the other is stopped too. MongoDB, RabbitMQ
+and the Dockerized Celery worker remain running; `make services-down` stops them.
 
 - Frontend: http://localhost:5173
 
@@ -37,6 +38,7 @@ make run-backend
 Or run the commands directly:
 
 ```sh
+make services-up  # From the repository root: MongoDB, RabbitMQ and worker
 cd backend
 uv sync --locked
 uv run uvicorn main:app --reload
@@ -50,16 +52,32 @@ subsequent runs you can just use the last command.
 
 Stop the server with `Ctrl+C`.
 
-Before accepting requests, startup checks MongoDB's `imports` collection for
-`{date: "YYYY-MM-DD", etfs: true}` using today's UTC date. Completed days are
-skipped without downloading. Otherwise, it records `etfs: false`, downloads the
+After database checks and admin seeding, startup queues `etfs.import_daily` via
+RabbitMQ and starts serving requests without waiting for ingestion. A failed broker
+publish fails startup; an import failure does not. The Celery worker checks MongoDB's
+`imports` collection for today's UTC `{date: "YYYY-MM-DD", etfs: true}` and skips
+completed days. Otherwise, it records `etfs: false`, downloads the
 [etfdb ETF catalogue](https://raw.githubusercontent.com/albertored/etfdb/refs/heads/main/json/etfs.json),
 and writes `etfs` documents keyed by unique `(isin, import_date)`. Only after all
-writes succeed is the day's flag set to `true`. Interrupted days retry on startup,
-replacing that day's records without duplicates while preserving earlier snapshots.
-Legacy undated records and missing ISINs are retained. A writable database is
-required; internet access is only needed for incomplete days. Import failures
-abort startup. This is not a scheduled midnight refresh.
+writes succeed is the day's flag set to `true`. Failures retry up to five times
+with exponential backoff and jitter; each attempt uses its execution day's UTC
+date. Previous snapshots, legacy undated records and missing ISINs are retained.
+This is not a scheduled midnight refresh; Celery Beat is not configured.
+
+From the repository root:
+
+```sh
+make import-etfs                       # Manually queue an import/retry
+make services-up                       # Rebuild worker after backend code changes
+docker compose logs -f celery-worker  # Task IDs, skips, retries and failures
+```
+
+The worker runs with concurrency 1 to serialize imports. Do not run extra workers
+on the `etfs` queue without adding distributed locking. RabbitMQ persists queued
+messages; MongoDB's `imports` collection tracks completion (no result backend).
+`CELERY_BROKER_URL` configures the host producer. Compose overrides worker URLs to
+use service hostnames; use `WORKER_MONGODB_URI` / `WORKER_CELERY_BROKER_URL` for
+custom services and keep the API/worker database and broker/vhost aligned.
 See the [root README](../README.md#etf-catalogue) for the full import contract.
 
 - Hello world: http://127.0.0.1:8000/
