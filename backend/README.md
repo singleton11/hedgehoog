@@ -50,11 +50,16 @@ subsequent runs you can just use the last command.
 
 Stop the server with `Ctrl+C`.
 
-Before accepting requests, every startup downloads the
-[etfdb ETF catalogue](https://raw.githubusercontent.com/albertored/etfdb/refs/heads/main/json/etfs.json)
-into MongoDB's `etfs` collection, keyed by unique ISIN. Existing records are
-refreshed without duplicates; missing ISINs are retained. Internet access and a
-writable MongoDB database are required, and import failures abort startup.
+Before accepting requests, startup checks MongoDB's `imports` collection for
+`{date: "YYYY-MM-DD", etfs: true}` using today's UTC date. Completed days are
+skipped without downloading. Otherwise, it records `etfs: false`, downloads the
+[etfdb ETF catalogue](https://raw.githubusercontent.com/albertored/etfdb/refs/heads/main/json/etfs.json),
+and writes `etfs` documents keyed by unique `(isin, import_date)`. Only after all
+writes succeed is the day's flag set to `true`. Interrupted days retry on startup,
+replacing that day's records without duplicates while preserving earlier snapshots.
+Legacy undated records and missing ISINs are retained. A writable database is
+required; internet access is only needed for incomplete days. Import failures
+abort startup. This is not a scheduled midnight refresh.
 See the [root README](../README.md#etf-catalogue) for the full import contract.
 
 - Hello world: http://127.0.0.1:8000/

@@ -32,18 +32,23 @@ MongoDB 7.0 is used because MongoDB 8's allocator is [incompatible with Linux ke
 
 ## ETF catalogue
 
-On **every backend startup** (including development reloads), the server downloads
-[the etfdb ETF feed](https://raw.githubusercontent.com/albertored/etfdb/refs/heads/main/json/etfs.json)
-and imports it into the configured MongoDB database's **`etfs`** collection before
-accepting requests. Startup requires internet access to GitHub and a writable database.
+On **backend startup** (including development reloads), the server checks today's
+import status before accepting requests. If ETFs have not been fully imported today,
+it downloads [the etfdb ETF feed](https://raw.githubusercontent.com/albertored/etfdb/refs/heads/main/json/etfs.json)
+and stores a daily snapshot in the configured MongoDB database's **`etfs`** collection.
 
-- One document per **ISIN**, enforced by a unique index. Repeated imports update existing documents without changing their MongoDB `_id` or creating duplicates.
-- All source fields are preserved, including holdings, country/sector allocations, nulls and source update dates. Imported documents are replaced on refresh, so fields removed upstream are removed locally too.
-- ISINs absent from a later feed are **not deleted**. No UCITS filtering or completeness checks are applied beyond importing the supplied source.
-- The entire feed must be a non-empty JSON array of objects with valid, distinct ISINs before any database writes occur. HTTP, validation or database failures abort startup rather than serving an uninitialized catalogue.
-- HTTP timeouts are 10 seconds for connection establishment and 60 seconds for other network operations. Database bulk writes are not transactional: a write failure may leave some records refreshed; restarting safely reapplies the feed.
+- Each imported ETF has an **`import_date`** string (`YYYY-MM-DD`, UTC). One document per **ISIN + import date** is enforced by a unique compound index. The date is captured once at import start, even if the run crosses midnight.
+- **`imports`** tracks one document per UTC date, enforced by a unique `date` index: `{ "date": "2026-09-17", "etfs": false }`. The marker is created **before downloading**, and `etfs` becomes `true` only after all ETF writes succeed. Unrelated import-status fields are preserved.
+- If today's `etfs` is **`true`**, startup skips the download and ETF writes; GitHub need not be reachable. If the marker is missing or incomplete, startup retries the import. A failed/interrupted run remains incomplete, including when ETF writes succeeded but saving completion failed.
+- Retries replace **today's** matching documents without changing their MongoDB `_id` or creating duplicates. Earlier days' snapshots remain untouched; the next day's startup creates a new snapshot and status record. An unfinished prior day is not automatically backfilled.
+- All source fields are preserved, including holdings, country/sector allocations, nulls and source update dates. Replacements remove fields dropped upstream. `_id` and `import_date` are reserved local fields and rejected if supplied by the feed.
+- ISINs absent from a later feed are **not deleted**, including records written by an earlier partial attempt that day. No UCITS filtering or completeness checks are applied beyond importing the supplied source.
+- The entire feed must be a non-empty JSON array of objects with valid, distinct ISINs before any **ETF document** writes occur. HTTP, validation or database failures abort startup; the incomplete status permits a retry.
+- Existing installations automatically replace the old ISIN-only unique index with the compound index. Legacy **undated documents are retained unchanged** because their original import date is unknown; they are not treated as today's snapshot.
+- HTTP timeouts are 10 seconds for connection establishment and 60 seconds for other network operations. A writable database is always required; GitHub access is needed only for an incomplete day. Bulk writes are not transactional, and the completion flag is **not an exclusive lock** between simultaneous importers.
 
-This imports the source only; no ETF query endpoint or scheduled refresh is added yet.
+This runs at startup only; no ETF query endpoint or scheduled refresh is added yet.
+A continuously running server will not automatically import at midnight.
 
 ## Authentication and authorization
 
@@ -90,4 +95,4 @@ cd backend
 TEST_MONGODB_URI='mongodb://hedgehoog:hedgehoog-local@127.0.0.1:27017/?authSource=admin' uv run pytest
 ```
 
-Use your configured URI if credentials differ. The integration tests use and remove their own uniquely named databases, checking hashed credentials, unique logins, seed idempotence, sessions surviving a backend restart, and ETF persistence, refreshes, unique ISINs and restart idempotence. They use synthetic ETF HTTP responses, not the live feed.
+Use your configured URI if credentials differ. The integration tests use and remove their own uniquely named databases, checking hashed credentials, unique logins, seed idempotence, sessions surviving a backend restart, and ETF daily snapshots, interrupted-run recovery, completion skips, compound uniqueness and legacy index migration. They use synthetic ETF HTTP responses, not the live feed.
