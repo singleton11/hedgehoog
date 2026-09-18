@@ -126,10 +126,24 @@ button.secondary:hover { background: #f3f5f8; }
 }
 
 main.workspace { width: min(100%, 80rem); align-self: start; }
+.workspace header { margin-bottom: 1.5rem; }
+.brand { margin: 0; color: #375bac; font-size: 1.35rem; }
+.account-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.75rem; }
+.account-controls .muted { overflow-wrap: anywhere; min-width: 0; }
 .instrument-name { font-size: clamp(1.5rem, 3vw, 2.1rem); line-height: 1.25; overflow-wrap: anywhere; }
 .instrument-heading h2 { margin-top: 0.5rem; }
 .instrument-workspace nav { margin-top: 1.25rem; }
-.instrument-search { position: relative; }
+.acquired-table-scroll { overflow-x: auto; }
+.acquired-table { width: 100%; min-width: 48rem; border-collapse: collapse; text-align: left; }
+.acquired-table th, .acquired-table td { padding: 0.85rem 0.65rem; border-bottom: 1px solid #dce2eb; vertical-align: top; }
+.acquired-table thead { background: #f6f8fc; font-size: 0.85rem; }
+.acquired-table th[scope='row'] { width: 40%; font-weight: 600; }
+.acquired-table th, .acquired-table td { overflow-wrap: anywhere; }
+.acquired-table .muted { display: block; margin-top: 0.2rem; font-size: 0.85rem; font-weight: 400; }
+.acquired-table tbody tr:hover { background: #f6f8fc; }
+.acquired-pagination { margin-top: 0.75rem; }
+.instrument-search { position: relative; margin-top: 0; padding-top: 0; border-top: 0; }
+.instrument-search > label { display: block; margin-bottom: 0.5rem; }
 .instrument-search p { margin: 0.5rem 0; }
 .instrument-search input { margin: 0; }
 .search-results { position: absolute; z-index: 5; width: 100%; border: 1px solid #9caac0; border-radius: 0.4rem; background: white; box-shadow: 0 8px 20px #17203320; }
@@ -149,14 +163,17 @@ main.workspace { width: min(100%, 80rem); align-self: start; }
 input:disabled { background: #e9eef3; color: #394761; }
 .checkbox-label { display: flex; align-items: flex-start; gap: 0.65rem; margin: 0.75rem 0; }
 .checkbox-label input { width: 1.15rem; height: 1.15rem; flex: 0 0 auto; margin: 0.2rem 0 0; }
-.notice { background: #fff7e4; color: #694713; border-left: 3px solid #a57824; padding: 0.8rem; }
 .budget { font-size: 0.9rem; }
 .budget p { margin: 0.35rem 0; }
 .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1rem; }
 .facts dt { font-size: 0.85rem; color: #536077; }
 .facts dd { margin: 0.2rem 0 0; }
 .empty-state { padding: 1.25rem; background: #f6f8fc; border-radius: 0.6rem; }
-.metadata, .service-status { margin-top: 1rem; border: 1px solid #dce2eb; border-radius: 0.4rem; }
+.metadata, .service-status, .disclosure { margin-top: 1rem; border: 1px solid #dce2eb; border-radius: 0.4rem; }
+.disclosure-content { padding: 0 0.75rem 0.75rem; }
+.disclosure-content > :first-child { margin-top: 0; }
+.acquisition-form .disclosure { margin-top: 0.25rem; }
+.disclosure-content p + p { margin-top: 0.5rem; }
 summary { padding: 0.75rem; cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
 .metadata pre { margin: 0; padding: 1rem; overflow: auto; max-height: 32rem; font-size: 0.85rem; background: #f6f8fc; white-space: pre; }
 .service-status { margin-top: 2rem; }

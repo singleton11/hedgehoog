@@ -117,6 +117,59 @@ def test_search_latest_snapshot_and_escaped_literals(db):
     assert len(md.search_catalogue(db, "iShares", 1)) == 1
 
 
+def test_acquired_list_excludes_catalogue_only_cached_and_unsaved_jobs(db, config):
+    empty = {"items": [], "total": 0, "limit": 20, "offset": 0}
+    assert md.acquired_instruments(db) == empty
+    job = enqueue(db, config)
+    assert db.instrument_state.find_one()["listing"] == LISTING
+    assert md.acquired_instruments(db) == empty
+    db.acquisition_jobs.update_one({"_id": job["id"]}, {"$set": {"status": "failed", "active": False}})
+    assert md.acquired_instruments(db) == empty
+    assert md.budget_status(db, config)["used"] == 0
+
+
+def test_acquired_list_includes_profile_only_after_failed_download(db, config):
+    result, _ = collect(db, config, Provider([MarketstackError("quota", "Quota exhausted")]))
+    assert result["status"] == "failed"
+    page = md.acquired_instruments(db)
+    assert page["total"] == 1
+    assert page["items"] == [{
+        "instrument_id": ISIN, "isin": ISIN, "name": "iShares Core S&P 500 UCITS ETF",
+        "ticker": "SXR8", "listing": LISTING, "collected_at": "2026-09-17T12:00:00Z",
+        "quote_count": 0, "first_date": None, "last_date": None,
+    }]
+
+
+def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config, clock):
+    collect(db, config)
+    clock[0] += timedelta(hours=1)
+    collect(db, config, Provider([page([bar("2026-09-16")])]))
+    original = db.quotes.find_one({"date": "2026-09-15"})
+    db.quotes.insert_one({**original, "_id": "revision", "job_id": "revision", "collected_at": clock[0]})
+    db.quotes.insert_one({**original, "_id": "different-listing", "job_id": "different-listing", "symbol": "OTHER.L", "date": "2000-01-01"})
+    db.etfs.insert_one({"isin": ISIN, "name": "Updated catalogue name", "ticker": "NEW", "import_date": "2026-09-18"})
+    # Same collection time: ISIN is the deterministic tie-breaker. This ETF has
+    # only a profile, not quotes. Multiple observations still count as one ETF.
+    second = "IE00B4L5Y983"
+    db.instruments.insert_one({"instrument_id": second, "symbol": "EUNL.F", "exchange": "XFRA", "collected_at": clock[0], "job_id": "second-profile", "data": {"private_payload": "not in list"}})
+    first_page = md.acquired_instruments(db, limit=1)
+    assert first_page["total"] == 2
+    assert first_page["items"][0]["instrument_id"] == second
+    assert first_page["items"][0]["quote_count"] == 0
+    next_page = md.acquired_instruments(db, limit=1, offset=1)
+    assert next_page == {"total": 2, "limit": 1, "offset": 1, "items": [{
+        "instrument_id": ISIN, "isin": ISIN, "name": "Updated catalogue name", "ticker": "NEW",
+        "listing": LISTING, "collected_at": "2026-09-17T13:00:00Z", "quote_count": 2,
+        "first_date": "2026-09-15", "last_date": "2026-09-16",
+    }]}
+    assert md.acquired_instruments(db, limit=1, offset=2) == {"items": [], "total": 2, "limit": 1, "offset": 2}
+    # Later failed updates do not remove already acquired observations.
+    db.acquisition_jobs.update_many({}, {"$set": {"status": "failed", "active": False}})
+    assert md.acquired_instruments(db)["total"] == 2
+    db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "collected_at": clock[0] + timedelta(hours=1), "job_id": "newest"})
+    assert md.acquired_instruments(db)["items"][0]["instrument_id"] == ISIN
+
+
 def test_request_queues_only_once_and_does_not_collect(db, config):
     publish = Mock()
     first = enqueue(db, config, publish=publish)
@@ -325,13 +378,18 @@ def api(db, config, monkeypatch):
 def test_routes_auth_validation_and_db_only_reads(api, db, config):
     client, publish = api
     base = f"/instruments/{ISIN}"
-    for url in ("/instruments/search?q=SXR8", base, base + "/quotes"):
+    for url in ("/instruments/search?q=SXR8", "/instruments/acquired", base, base + "/quotes"):
         assert client.get(url).status_code == 401
     assert client.post(base + "/acquisitions", json={**LISTING, "confirmed": True}).status_code == 401
     assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
     assert client.get("/instruments/search?q=SXR8").json()["items"][0]["instrument_id"] == ISIN
     assert client.get(base).json()["summary"]["history_status"] == "not_requested"
     assert client.get(base + "/quotes").json()["items"] == []
+    acquired = client.get("/instruments/acquired")
+    assert acquired.status_code == 200  # Static route must precede /{isin}.
+    assert acquired.json() == {"items": [], "total": 0, "limit": 20, "offset": 0}
+    for query in ("limit=0", "limit=101", "offset=-1", "offset=abc"):
+        assert client.get("/instruments/acquired?" + query).status_code == 422
     assert client.get(base + "?as_of=2026-09-17T00:00:00").status_code == 422
     assert client.get("/instruments/search?q=.*").json()["items"] == []
     assert client.get("/instruments/search?q=%20%20").status_code == 422
@@ -345,6 +403,24 @@ def test_routes_auth_validation_and_db_only_reads(api, db, config):
     assert response.json()["job"]["status"] == "queued"
     publish.assert_called_once()
     assert config.marketstack_api_key.get_secret_value() not in response.text
+
+
+def test_acquired_api_returns_saved_data_without_provider_calls(api, db, config, monkeypatch):
+    collect(db, config)
+    provider = Mock(side_effect=AssertionError("Browsing must not call Marketstack"))
+    monkeypatch.setattr(md, "MarketstackClient", provider)
+    used = md.budget_status(db, config)["used"]
+    client, publish = api
+    client.post("/auth/login", json={"login": "admin", "password": "admin"})
+    response = client.get("/instruments/acquired?limit=1&offset=0")
+    assert response.status_code == 200
+    assert response.json()["items"][0]["quote_count"] == 1
+    assert response.json()["total"] == 1
+    assert "data" not in response.json()["items"][0]
+    assert config.marketstack_api_key.get_secret_value() not in response.text
+    assert md.budget_status(db, config)["used"] == used
+    provider.assert_not_called()
+    publish.assert_not_called()
 
 
 def test_quote_api_has_exact_string_contract(api, db, config):

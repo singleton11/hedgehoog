@@ -1,7 +1,7 @@
 import { useId, useMemo, useState } from 'react';
 
-export function Metadata({ title, value }) {
-  return <details className="metadata"><summary>{title}</summary>
+export function Metadata({ title, label = title, value }) {
+  return <details className="metadata"><summary>{label}</summary>
     <pre tabIndex={0} aria-label={title}>{JSON.stringify(value, null, 2)}</pre>
   </details>;
 }
@@ -45,7 +45,7 @@ export default function CandlestickChart({ quotes }) {
   const visible = useMemo(() => quotesInRange(quotes, range), [quotes, range]);
   const candles = useMemo(() => visible.map(candle).filter(Boolean), [visible]);
   const currencies = [...new Set(visible.map((quote) => quote.price_currency || null))];
-  const currency = currencies.length === 1 && currencies[0] ? currencies[0] : 'Unknown / not consistently supplied';
+  const currency = currencies.length === 1 && currencies[0] ? currencies[0] : 'Unknown';
   const width = 960, height = 380, left = 86, right = 22, top = 20, bottom = 48;
   const plotWidth = width - left - right, plotHeight = height - top - bottom;
   // Plot the values as supplied, including inconsistent/zero/negative prices.
@@ -69,9 +69,8 @@ export default function CandlestickChart({ quotes }) {
             onClick={() => { setRange(value); setHover(null); }}>{value}</button>)}
       </div>
     </div>
-    <p className="muted">Unadjusted OHLC · Listing price currency: {currency}. Fund currency is not a substitute. Dates are trading observations, not evenly spaced calendar days.</p>
-    <p>{quotes.length} quotes loaded · {visible.length} in this window · {candles.length} candles plotted</p>
-    {visible.length > candles.length && <p className="notice">{visible.length - candles.length} quotes with missing or non-numeric OHLC cannot be drawn. They are saved unchanged; no zero values are substituted.</p>}
+    <p className="muted">Unadjusted OHLC · Listing price currency: {currency}</p>
+    <p>{candles.length} {candles.length === 1 ? 'candle' : 'candles'} · {visible.length} of {quotes.length} quotes</p>
     {!candles.length ? <p role="status">No plottable OHLC candles available.</p> : <>
       <div className="chart-scroll">
         <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby={`${id}-title ${id}-description`} onMouseLeave={() => setHover(null)}>
@@ -93,8 +92,8 @@ export default function CandlestickChart({ quotes }) {
             textAnchor={index === 0 ? 'start' : index === candles.length - 1 ? 'end' : 'middle'}>{candles[index].quote.date}</text>)}
         </svg>
       </div>
-      <p className="chart-readout">{hover && visible.includes(hover) ? description(hover) : 'Hover a candle for exact OHLC. Expand quote observations for keyboard-accessible raw and adjusted values.'}</p>
+      <p className="chart-readout">{hover && visible.includes(hover) ? description(hover) : 'Hover for prices, or expand Raw quotes.'}</p>
     </>}
-    <Metadata title="Quote observations (current window, all provider fields)" value={visible} />
+    <Metadata title="Quote observations (current window, all provider fields)" label="Raw quotes" value={visible} />
   </section>;
 }

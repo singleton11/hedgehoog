@@ -27,7 +27,6 @@ function Login() {
     <main>
       <p className="eyebrow">Hedgehoog</p>
       <h1>Sign in</h1>
-      <p className="muted">Sign in to access your workspace.</p>
       <form onSubmit={submit}>
         <label htmlFor="login">Login</label>
         <input id="login" name="username" autoComplete="username" value={login}
@@ -95,11 +94,11 @@ function Dashboard() {
   return (
     <main className="workspace">
       <header>
-        <span className="eyebrow">Hedgehoog</span>
-        <button className="secondary" onClick={logout} disabled={busy}>{busy ? 'Signing out…' : 'Sign out'}</button>
+        <h1 className="brand">Hedgehoog</h1>
+        <div className="account-controls"><span className="muted">{user.login}</span>
+          <button className="secondary" onClick={logout} disabled={busy}>{busy ? 'Signing out…' : 'Sign out'}</button>
+        </div>
       </header>
-      <h1>Hello, {user.login}!</h1>
-      <p>Welcome to your workspace. <span className="badge">{user.role}</span></p>
       {error && <p role="alert">{error}</p>}
       <InstrumentWorkspace />
       <details className="service-status"><summary>Service status</summary>

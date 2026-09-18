@@ -24,7 +24,7 @@ describe('price-history calendar ranges', () => {
     select(range);
     expect(observations().map((item) => item.date)).toEqual(dates.slice(start));
     expect(container.querySelectorAll('.candle')).toHaveLength(dates.length - start);
-    expect(screen.getByText(`9 quotes loaded · ${dates.length - start} in this window · ${dates.length - start} candles plotted`)).toBeInTheDocument();
+    expect(screen.getByText(`${dates.length - start} candles · ${dates.length - start} of 9 quotes`)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: range, exact: true })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getAllByRole('button').filter((button) => button.getAttribute('aria-pressed') === 'true')).toHaveLength(1);
   });
@@ -47,10 +47,19 @@ describe('price-history calendar ranges', () => {
     fireEvent.mouseEnter(container.querySelector('.candle'));
     expect(container.querySelector('.chart-readout')).toHaveTextContent('2024-08-17');
     select('1m');
-    expect(container.querySelector('.chart-readout')).toHaveTextContent('Hover a candle');
+    expect(container.querySelector('.chart-readout')).toHaveTextContent('Hover for prices');
     rerender(<CandlestickChart quotes={['2024-08-17', '2024-09-17', '2024-10-17'].map(quote)} />);
     expect(observations().map((item) => item.date)).toEqual(['2024-09-17', '2024-10-17']);
     expect(screen.getByRole('button', { name: '1m' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('keeps raw quotes collapsed and available on demand', () => {
+    render(<CandlestickChart quotes={[quote('2024-09-17')]} />);
+    const raw = screen.getByLabelText('Quote observations (current window, all provider fields)');
+    expect(raw).not.toBeVisible();
+    fireEvent.click(screen.getByText('Raw quotes'));
+    expect(raw).toBeVisible();
+    expect(observations()).toEqual([quote('2024-09-17')]);
   });
 
   it('handles empty and shorter-than-requested histories', () => {

@@ -102,19 +102,19 @@ export default function InstrumentSearch({ onSelect }) {
       if (!event.currentTarget.contains(event.relatedTarget)) { setOpen(false); setActive(-1); }
     }}>
       <label htmlFor={`${id}-input`}>Find an ETF</label>
-      <p id={`${id}-help`} className="muted">Search by name, ticker or ISIN (at least 2 characters). Searching does not request market data.</p>
       <input id={`${id}-input`} role="combobox" aria-autocomplete="list" aria-expanded={expanded}
         aria-controls={`${id}-results`} aria-describedby={`${id}-help`}
         aria-activedescendant={expanded && active >= 0 ? `${id}-option-${active}` : undefined}
         autoComplete="off" maxLength={100} placeholder="Name, ticker or ISIN" value={query}
         onChange={change} onKeyDown={keyDown} onFocus={reopen} />
+      <p id={`${id}-help`} className={open && query.trim().length === 1 ? 'muted' : 'sr-only'}>Enter at least 2 characters.</p>
       {expanded && <div className="search-results">
         <ul id={`${id}-results`} role="listbox" aria-label="Matching ETFs" aria-busy={['waiting', 'loading'].includes(status)}>
           {items.map((item, index) => <li role="option" id={`${id}-option-${index}`} key={item.instrument_id}
             aria-selected={active === index} onMouseDown={(event) => event.preventDefault()}
             onMouseEnter={() => setActive(index)} onClick={() => select(item)}>
             <strong>{displayText(item.name) || item.isin}</strong>
-            <span>{item.ticker || 'No catalogue ticker'} · {item.isin} · {displayText(item.asset_class) || 'ETF'}{item.currency ? ` · Fund currency: ${item.currency}` : ''}</span>
+            <span>{[item.ticker, item.isin].filter(Boolean).join(' · ')}</span>
           </li>)}
         </ul>
         {['waiting', 'loading'].includes(status) && <p role="status">Searching…</p>}

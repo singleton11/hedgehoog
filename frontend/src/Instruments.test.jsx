@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.jsx';
 import { POLL_INTERVAL } from './useInstrument.js';
 import { SEARCH_DELAY } from './InstrumentSearch.jsx';
+import { ACQUIRED_PAGE_SIZE } from './AcquiredEtfs.jsx';
 import { acquisitionEstimate, displayText } from './instruments.js';
 
 const A = 'IE00B4L5Y983';
@@ -30,6 +31,12 @@ function deferred() {
 }
 function mockServer() {
   const server = { details: { [A]: detail(), [B]: detail(B) }, quotes: { [A]: [], [B]: [] } };
+  server.acquiredItems = [];
+  server.acquired = async (params) => {
+    const offset = Number(params.get('offset'));
+    const limit = Number(params.get('limit'));
+    return { items: server.acquiredItems.slice(offset, offset + limit), total: server.acquiredItems.length, offset, limit };
+  };
   server.search = async () => [item(), item(B, 'Second ETF')];
   server.read = async (isin) => server.details[isin];
   server.page = async (isin, params) => {
@@ -47,6 +54,7 @@ function mockServer() {
     if (url === '/api/') return response(200, { message: 'Hello, World!' });
     if (url === '/api/auth/logout') return response(204);
     const parsed = new URL(url, 'http://localhost');
+    if (parsed.pathname === '/api/instruments/acquired') return response(200, await server.acquired(parsed.searchParams, options));
     if (parsed.pathname === '/api/instruments/search') return response(200, { items: await server.search(parsed.searchParams.get('q'), options) });
     const match = parsed.pathname.match(/^\/api\/instruments\/([^/]+)(?:\/(quotes|acquisitions))?$/);
     if (!match) throw new Error(`Unexpected URL: ${url}`);
@@ -78,7 +86,7 @@ async function review(name = 'Request Data') {
   fireEvent.click(screen.getByRole('button', { name }));
   await flush();
 }
-const authorization = () => screen.getByRole('checkbox', { name: 'I authorize this quota-consuming acquisition.' });
+const authorization = () => screen.getByRole('checkbox', { name: 'Allow this request to use provider quota.' });
 const manualOverride = () => screen.getByRole('checkbox', { name: /Manual listing override/ });
 const estimateText = () => screen.getByText('Estimated provider calls:').closest('p');
 async function confirmInitial() {
@@ -91,15 +99,145 @@ async function confirmInitial() {
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-17T12:00:00Z')); window.history.replaceState(null, '', '#/'); });
 afterEach(() => { cleanup(); vi.useRealTimers(); window.history.replaceState(null, '', '#/'); });
 
+const acquiredItem = (isin = A, extra = {}) => ({ ...item(isin), listing: { symbol: 'ETF.DE', exchange: 'XETR' },
+  collected_at: '2026-09-17T12:00:00Z', quote_count: 42, first_date: '2020-01-01', last_date: '2026-09-16', ...extra });
+
+describe('acquired ETF inventory', () => {
+  it.each([
+    ['2026-09-17T12:00:00Z', '0 days ago'],
+    ['2026-09-16T12:00:01Z', '0 days ago'],
+    ['2026-09-16T12:00:00Z', '1 day ago'],
+    ['2026-09-14T12:00:00Z', '3 days ago'],
+    ['2026-09-15T14:00:00+02:00', '2 days ago'],
+    ['2026-09-17T12:01:00Z', '0 days ago'],
+  ])('shows collection age for %s with the exact UTC timestamp as a tooltip', async (collectedAt, label) => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(A, { collected_at: collectedAt })];
+    await open();
+    expect(screen.getByRole('columnheader', { name: 'Profile collected' })).toBeInTheDocument();
+    const time = screen.getByText(label);
+    const exact = `${new Date(collectedAt).toLocaleString(undefined, { timeZone: 'UTC' })} UTC`;
+    expect(time.tagName).toBe('TIME');
+    expect(time).toHaveAttribute('datetime', collectedAt);
+    expect(time).toHaveAttribute('title', exact);
+    expect(time).toHaveAttribute('aria-label', `${label}, ${exact}`);
+  });
+
+  it.each([null, 'invalid'])('handles missing or invalid collection times (%s)', async (collectedAt) => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(A, { collected_at: collectedAt })];
+    await open();
+    expect(screen.getByText('Unknown')).toBeInTheDocument();
+    expect(screen.queryByText(/NaN days ago/)).not.toBeInTheDocument();
+  });
+
+  it('loads saved data, opens native detail links and refreshes on return without acquisitions', async () => {
+    const server = mockServer();
+    const pending = deferred();
+    server.acquired = () => pending.promise;
+    await open();
+    expect(screen.getByText('Loading acquired ETFs…')).toHaveAttribute('role', 'status');
+    expect(screen.getByRole('button', { name: 'Refresh list' })).toBeDisabled();
+    await act(async () => pending.resolve({ items: [acquiredItem(), acquiredItem(B, { name: 'Profile-only ETF', quote_count: 0, first_date: null, last_date: null })], total: 2, limit: ACQUIRED_PAGE_SIZE, offset: 0 }));
+    expect(screen.getByRole('heading', { name: 'Acquired ETFs (2)' })).toBeInTheDocument();
+    expect(screen.getByText('42 quotes')).toBeInTheDocument();
+    expect(screen.getByText('2020-01-01 – 2026-09-16')).toBeInTheDocument();
+    expect(screen.getByText('Profile only')).toBeInTheDocument();
+    expect(screen.queryByText('No saved quotes')).not.toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'iShares S&P ETF' });
+    expect(link).toHaveAttribute('href', `#/instruments/${A}`);
+    fireEvent.click(link);
+    await advance(5);
+    expect(screen.getByRole('heading', { name: 'iShares S&P ETF' })).toBeInTheDocument();
+    server.acquired = async () => ({ items: [acquiredItem(B, { name: 'Recently acquired ETF' })], total: 1, limit: ACQUIRED_PAGE_SIZE, offset: 0 });
+    fireEvent.click(screen.getByRole('link', { name: '← ETFs' }));
+    await advance(5);
+    expect(screen.getByRole('link', { name: 'Recently acquired ETF' })).toBeInTheDocument();
+    expect(server.posts()).toHaveLength(0);
+  });
+
+  it('shows an empty state with guidance instead of including catalogue entries', async () => {
+    const server = mockServer();
+    await open();
+    expect(screen.getByRole('heading', { name: 'No acquired ETFs yet' })).toBeInTheDocument();
+    expect(screen.getByText(/choose Request Data/)).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(server.posts()).toHaveLength(0);
+  });
+
+  it('paginates saved ETFs and refreshes from the first page', async () => {
+    const server = mockServer();
+    server.acquiredItems = Array.from({ length: ACQUIRED_PAGE_SIZE + 1 }, (_, index) => acquiredItem(`IE${String(index).padStart(10, '0')}`, { name: `Fund ${index + 1}` }));
+    await open();
+    expect(screen.getByText('1–20 of 21 ETFs')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Previous ETFs' })).toBeDisabled();
+    expect(screen.queryByRole('link', { name: 'Fund 21' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next ETFs' }));
+    await flush();
+    expect(screen.getByRole('link', { name: 'Fund 21' })).toBeInTheDocument();
+    expect(screen.getByText('21–21 of 21 ETFs')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next ETFs' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Previous ETFs' }));
+    await flush();
+    expect(screen.getByRole('link', { name: 'Fund 1' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next ETFs' }));
+    await flush();
+    server.acquiredItems = [acquiredItem(A, { name: 'Freshly saved fund' })];
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh list' }));
+    await flush();
+    expect(screen.getByRole('link', { name: 'Freshly saved fund' })).toBeInTheDocument();
+    expect(screen.getByText('1–1 of 1 ETFs')).toBeInTheDocument();
+    expect(server.fetch).toHaveBeenCalledWith('/api/instruments/acquired?limit=20&offset=20', expect.objectContaining({ signal: expect.any(AbortSignal), credentials: 'same-origin' }));
+    expect(server.posts()).toHaveLength(0);
+  });
+
+  it.each(['network', 'malformed'])('allows retry after a %s error', async (failure) => {
+    const server = mockServer();
+    const goodRead = server.acquired;
+    server.acquired = async () => {
+      if (failure === 'network') throw new Error('offline');
+      return { items: null, total: 3 };
+    };
+    await open();
+    expect(screen.getByRole('alert')).toHaveTextContent(failure === 'network' ? 'Could not reach the backend' : 'unexpected acquired ETF list');
+    expect(screen.queryByText('No acquired ETFs yet')).not.toBeInTheDocument();
+    server.acquiredItems = [acquiredItem()];
+    server.acquired = goodRead;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry list' }));
+    await flush();
+    expect(screen.getByRole('link', { name: 'iShares S&P ETF' })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('aborts reads on navigation and ignores late responses after remount', async () => {
+    const server = mockServer();
+    const stale = deferred();
+    let signal;
+    server.acquired = (_, options) => { signal = options.signal; return stale.promise; };
+    await open();
+    await navigate(A);
+    expect(signal.aborted).toBe(true);
+    server.acquired = async () => ({ items: [acquiredItem(B, { name: 'Current fund' })], total: 1, limit: ACQUIRED_PAGE_SIZE, offset: 0 });
+    await navigate(null);
+    await act(async () => stale.resolve({ items: [acquiredItem(A, { name: 'Stale fund' })], total: 1, limit: ACQUIRED_PAGE_SIZE, offset: 0 }));
+    expect(screen.getByRole('link', { name: 'Current fund' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Stale fund' })).not.toBeInTheDocument();
+    expect(server.posts()).toHaveLength(0);
+  });
+});
+
 describe('ETF autocomplete and routing', () => {
   it('debounces name/ticker/ISIN queries, supports Arrow/Enter selection and back navigation without acquisition', async () => {
     const server = mockServer();
     await open();
     const input = screen.getByRole('combobox', { name: 'Find an ETF' });
+    expect(screen.getByText('Enter at least 2 characters.')).toHaveClass('sr-only');
     fireEvent.change(input, { target: { value: 'i' } });
+    expect(screen.getByText('Enter at least 2 characters.')).not.toHaveClass('sr-only');
     await advance(SEARCH_DELAY + 20);
     expect(server.fetch.mock.calls.filter(([url]) => url.includes('/search?'))).toHaveLength(0);
     fireEvent.change(input, { target: { value: 'ishares' } });
+    expect(screen.getByText('Enter at least 2 characters.')).toHaveClass('sr-only');
     await advance(SEARCH_DELAY - 1);
     expect(server.fetch.mock.calls.filter(([url]) => url.includes('/search?'))).toHaveLength(0);
     await advance(1);
@@ -116,9 +254,9 @@ describe('ETF autocomplete and routing', () => {
     expect(window.location.hash).toBe(`#/instruments/${A}`);
     expect(screen.getByRole('heading', { name: 'iShares S&P ETF' })).toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
-    fireEvent.click(screen.getByRole('link', { name: /Back to ETF search/ }));
+    fireEvent.click(screen.getByRole('link', { name: '← ETFs' }));
     await advance(5);
-    expect(screen.getByRole('heading', { name: 'Your market-data workspace' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Acquired ETFs (0)' })).toBeInTheDocument();
     await navigate(A);
     expect(screen.getByRole('heading', { name: 'iShares S&P ETF' })).toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
@@ -218,10 +356,17 @@ describe('explicit acquisition and complete charts', () => {
     expect(screen.queryByLabelText('Provider symbol')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Exchange MIC')).not.toBeInTheDocument();
     expect(manualOverride()).not.toBeChecked();
-    expect(screen.getByText(/first named, EOD-enabled exact ticker.exchange match/)).toHaveTextContent('caches that listing for this instrument');
-    expect(screen.getByText(/Listing selection is not ISIN verification/)).toBeInTheDocument();
-    expect(estimateText()).toHaveTextContent('About 8 = at least 1 tickerslist lookup + 1 tickerinfo + 6 EOD page(s)');
-    expect(estimateText()).toHaveTextContent('multiple pages');
+    const requestDetails = screen.getByText('Request details').closest('details');
+    expect(requestDetails).not.toHaveAttribute('open');
+    expect(screen.getByText(/first named, EOD-enabled exact ticker.exchange match/)).not.toBeVisible();
+    expect(screen.queryByText(/Listing selection is not ISIN verification/)).not.toBeInTheDocument();
+    expect(estimateText()).toHaveTextContent('About 8. Actual usage may vary.');
+    expect(screen.getAllByText('Local budget:')).toHaveLength(1);
+    fireEvent.click(screen.getByText('Request details'));
+    expect(requestDetails).toHaveAttribute('open');
+    expect(screen.getByText(/Ticker lookup may need extra pages/)).toBeVisible();
+    expect(authorization()).not.toBeChecked();
+    expect(server.posts()).toHaveLength(0);
     expect(screen.getByRole('button', { name: 'Confirm request' })).toBeDisabled();
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
     expect(server.posts()).toHaveLength(0);
@@ -240,15 +385,15 @@ describe('explicit acquisition and complete charts', () => {
     await advance(POLL_INTERVAL);
     expect(screen.getByText('Acquisition: succeeded')).toBeInTheDocument();
     expect(screen.getByRole('img', { name: /Unadjusted OHLC candlestick chart/ })).toBeInTheDocument();
-    expect(screen.getByText('1001 quotes loaded · 366 in this window · 366 candles plotted')).toBeInTheDocument();
-    expect(screen.getByText('Plan or listing history truncated.')).toBeInTheDocument();
+    expect(screen.getByText('366 candles · 366 of 1001 quotes')).toBeInTheDocument();
+    expect(screen.queryByText('Plan or listing history truncated.')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Update Data' })).toBeEnabled();
     const pages = server.pages().slice(-2).map(([url]) => new URL(url, 'http://localhost').searchParams);
     expect(pages.map((params) => params.get('offset'))).toEqual(['0', '1000']);
     expect(pages[0].get('as_of')).toBeNull();
     expect(pages[1].get('as_of')).toBe('2026-09-17T12:00:00Z');
     fireEvent.click(screen.getByRole('button', { name: 'all' }));
-    expect(screen.getByText('1001 quotes loaded · 1001 in this window · 1001 candles plotted')).toBeInTheDocument();
+    expect(screen.getByText('1001 candles · 1001 of 1001 quotes')).toBeInTheDocument();
     const reads = server.reads().length;
     await advance(POLL_INTERVAL * 2);
     expect(server.reads()).toHaveLength(reads);
@@ -266,9 +411,8 @@ describe('explicit acquisition and complete charts', () => {
     expect(screen.queryByLabelText('Provider symbol')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Exchange MIC')).not.toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: /Manual listing override/ })).not.toBeInTheDocument();
-    expect(screen.getByText(/will be reused/)).toHaveTextContent('SXR8.DE / XETR');
-    expect(screen.getByText(/This saved listing is locked/)).toBeInTheDocument();
-    expect(estimateText()).toHaveTextContent('About 4 = 1 tickerinfo + 3 EOD page(s)');
+    expect(screen.getByText('Listing:').closest('p')).toHaveTextContent('SXR8.DE / XETR · Locked');
+    expect(estimateText()).toHaveTextContent('About 4. Actual usage may vary.');
     fireEvent.click(authorization());
     fireEvent.click(screen.getByRole('button', { name: 'Confirm update' }));
     await flush();
@@ -280,7 +424,7 @@ describe('explicit acquisition and complete charts', () => {
     expect(screen.getByText(/Acquisition failed: Provider quota exhausted/)).toBeInTheDocument();
     expect(screen.getByText(/Could not load the complete chart/)).toBeInTheDocument();
     expect(chart()).toBeInTheDocument();
-    expect(screen.getByText('1 quotes loaded · 1 in this window · 1 candles plotted')).toBeInTheDocument();
+    expect(screen.getByText('1 candle · 1 of 1 quotes')).toBeInTheDocument();
     expect(server.posts()).toHaveLength(1);
     expect(screen.getByRole('button', { name: 'Update Data' })).toBeEnabled();
   });
@@ -293,7 +437,7 @@ describe('explicit acquisition and complete charts', () => {
     await review('Retry Older History');
     expect(screen.getByText(/From 2010-05-19 to before 2020-01-01/)).toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
-    expect(estimateText()).toHaveTextContent('About 5 = 1 tickerinfo + 4 EOD page(s)');
+    expect(estimateText()).toHaveTextContent('About 5. Actual usage may vary.');
     expect(screen.queryByRole('checkbox', { name: /Manual listing override/ })).not.toBeInTheDocument();
     fireEvent.click(authorization());
     fireEvent.click(screen.getByRole('button', { name: 'Confirm older history' }));
@@ -307,14 +451,14 @@ describe('explicit acquisition and complete charts', () => {
     await open(A);
     await review();
     expect(screen.queryByLabelText('Provider symbol')).not.toBeInTheDocument();
-    expect(screen.getByText(/will be reused/)).toHaveTextContent('WRONG / XXXX');
+    expect(screen.getByText('Listing:').closest('p')).toHaveTextContent('WRONG / XXXX · Saved');
     fireEvent.click(authorization());
     fireEvent.click(manualOverride());
     expect(authorization()).not.toBeChecked();
     expect(screen.getByLabelText('Provider symbol')).toHaveValue('WRONG');
     expect(screen.getByLabelText('Provider symbol')).toBeEnabled();
     expect(screen.getByLabelText('Exchange MIC')).toBeEnabled();
-    expect(screen.getByRole('link', { name: /public Marketstack ticker workbook/ })).toHaveAttribute('href', 'https://marketstack.com/download/v2_eod_tickers_finnworlds_tiingo.xlsx');
+    expect(screen.getByRole('link', { name: /Marketstack ticker workbook/ })).toHaveAttribute('href', 'https://marketstack.com/download/v2_eod_tickers_finnworlds_tiingo.xlsx');
     fireEvent.change(screen.getByLabelText('Provider symbol'), { target: { value: 'SXR8.DE' } });
     fireEvent.change(screen.getByLabelText('Exchange MIC'), { target: { value: 'xetr' } });
     fireEvent.click(authorization());
@@ -332,12 +476,12 @@ describe('explicit acquisition and complete charts', () => {
     server.details[A] = detail(A, { listing: { symbol: 'ETF.DE', exchange: 'XETR' } });
     await open(A);
     await review();
-    expect(screen.getByText(/will be reused/)).toHaveTextContent('ETF.DE / XETR');
+    expect(screen.getByText('Listing:').closest('p')).toHaveTextContent('ETF.DE / XETR · Saved');
     expect(screen.queryByLabelText('Provider symbol')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Exchange MIC')).not.toBeInTheDocument();
     expect(manualOverride()).not.toBeChecked();
-    expect(estimateText()).toHaveTextContent('About 7 = 1 tickerinfo + 6 EOD page(s)');
-    expect(estimateText()).not.toHaveTextContent('tickerslist');
+    expect(estimateText()).toHaveTextContent('About 7. Actual usage may vary.');
+    expect(screen.getByText(/1 profile call/)).not.toHaveTextContent('ticker-list lookup');
     expect(server.posts()).toHaveLength(0);
     fireEvent.click(authorization());
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
@@ -352,14 +496,14 @@ describe('explicit acquisition and complete charts', () => {
     fireEvent.click(authorization());
     fireEvent.click(manualOverride());
     expect(authorization()).not.toBeChecked();
-    expect(estimateText()).toHaveTextContent('About 7 = 1 tickerinfo + 6 EOD page(s)');
+    expect(estimateText()).toHaveTextContent('About 7. Actual usage may vary.');
     fireEvent.change(screen.getByLabelText('Provider symbol'), { target: { value: 'OVERRIDE.US' } });
     fireEvent.change(screen.getByLabelText('Exchange MIC'), { target: { value: 'XNYS' } });
     fireEvent.click(authorization());
     fireEvent.click(manualOverride());
     expect(authorization()).not.toBeChecked();
     expect(screen.queryByLabelText('Provider symbol')).not.toBeInTheDocument();
-    expect(estimateText()).toHaveTextContent('About 8 = at least 1 tickerslist lookup');
+    expect(estimateText()).toHaveTextContent('About 8. Actual usage may vary.');
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
     expect(server.posts()).toHaveLength(0);
     fireEvent.click(authorization());
@@ -376,9 +520,9 @@ describe('explicit acquisition and complete charts', () => {
     server.details[B] = detail(B, { listing: { symbol: 'ETF.DE', exchange: 'XETR' }, budget });
     server.details[B].catalogue.inception_date = null;
     await open(A);
-    expect(screen.getByText(/Insufficient local budget for the minimum 3/)).toBeInTheDocument();
+    expect(screen.getByText(/Insufficient local budget/)).toHaveTextContent('Requires 3 calls with automatic lookup.');
     await review();
-    expect(estimateText()).toHaveTextContent('At least 3 = at least 1 tickerslist lookup + 1 tickerinfo + at least 1 EOD page');
+    expect(estimateText()).toHaveTextContent('At least 3. Actual usage may vary.');
     fireEvent.click(authorization());
     expect(screen.getByRole('button', { name: 'Confirm request' })).toBeDisabled();
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
@@ -387,7 +531,7 @@ describe('explicit acquisition and complete charts', () => {
     await navigate(B);
     expect(screen.queryByText(/Insufficient local budget/)).not.toBeInTheDocument();
     await review();
-    expect(estimateText()).toHaveTextContent('At least 2 = 1 tickerinfo + at least 1 EOD page');
+    expect(estimateText()).toHaveTextContent('At least 2. Actual usage may vary.');
     fireEvent.click(authorization());
     expect(screen.getByRole('button', { name: 'Confirm request' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Confirm request' }));
@@ -404,7 +548,7 @@ describe('explicit acquisition and complete charts', () => {
     await open(A);
     await review();
     fireEvent.click(manualOverride());
-    expect(estimateText()).toHaveTextContent('At least 2 = 1 tickerinfo + at least 1 EOD page');
+    expect(estimateText()).toHaveTextContent('At least 2. Actual usage may vary.');
     expect(screen.queryByText(/This request needs at least/)).not.toBeInTheDocument();
     fireEvent.click(authorization());
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
@@ -423,15 +567,28 @@ describe('explicit acquisition and complete charts', () => {
     expect(JSON.parse(server.posts()[0][1].body)).toEqual({ symbol: 'SXR8.DE', exchange: 'XETR', confirmed: true, mode: 'update' });
   });
 
-  it('warns about plan and listing coverage rather than assuming a Free plan', async () => {
+  it.each([
+    ['partial', null],
+    ['partial', 'Provider coverage is limited.'],
+    ['available', null],
+  ])('shows %s coverage without warning notices (%s)', async (status, warning) => {
     const server = mockServer();
-    server.details[A] = withData();
-    server.details[A].summary.warning = null;
+    server.details[A] = withData(A, { acquisition: job('succeeded', { warning: 'Provider job warning.' }) });
+    server.details[A].summary = { ...server.details[A].summary, history_status: status, warning };
     await open(A);
-    expect(screen.getByText(/Only partial history is available/)).toHaveTextContent('Plan access and listing coverage');
-    await review('Retry Older History');
-    expect(screen.getByText(/Your plan and the selected listing determine available history/)).toBeInTheDocument();
-    expect(screen.queryByText(/Free plan/)).not.toBeInTheDocument();
+    expect(screen.getByText(status, { exact: true })).toBeVisible();
+    expect(screen.queryByText('Provider job warning.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Provider coverage is limited.')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Partial history\.|gaps may remain/)).not.toBeInTheDocument();
+    const raw = JSON.parse(screen.getByLabelText('Listing, acquisition and coverage metadata').textContent);
+    expect(raw.summary.warning).toBe(warning);
+    expect(raw.acquisition.warning).toBe('Provider job warning.');
+    await review(status === 'partial' ? 'Retry Older History' : 'Update Data');
+    expect(document.querySelector('.notice')).toBeNull();
+    expect(screen.queryByText(/Uses provider quota\.|History depends on your plan/)).not.toBeInTheDocument();
+    expect(authorization()).toBeVisible();
+    expect(authorization()).not.toBeChecked();
+    expect(screen.getByRole('button', { name: status === 'partial' ? 'Confirm older history' : 'Confirm update' })).toBeDisabled();
     expect(server.posts()).toHaveLength(0);
   });
 
@@ -441,10 +598,10 @@ describe('explicit acquisition and complete charts', () => {
     server.quotes[A] = [quote(0, { date: '2018-01-01', open: '44.213', high: '44.213', low: '44.213', close: '44.21', quality_flags: ['ohlc_bounds'] }),
       ...Array.from({ length: 250 }, (_, index) => quote(index + 1))];
     await open(A);
-    expect(screen.getByText('251 quotes loaded · 250 in this window · 250 candles plotted')).toBeInTheDocument();
+    expect(screen.getByText('250 candles · 250 of 251 quotes')).toBeInTheDocument();
     expect(screen.queryByText(/inconsistent OHLC bounds are excluded/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'all' }));
-    expect(screen.getByText('251 quotes loaded · 251 in this window · 251 candles plotted')).toBeInTheDocument();
+    expect(screen.getByText('251 candles · 251 of 251 quotes')).toBeInTheDocument();
     const raw = JSON.parse(screen.getByLabelText('Quote observations (current window, all provider fields)').textContent);
     expect(raw[0]).toMatchObject({ low: '44.213', close: '44.21', quality_flags: ['ohlc_bounds'] });
     expect([...document.querySelectorAll('.candle title')].some((title) => title.textContent.includes('Close 44.21'))).toBe(true);
@@ -456,7 +613,7 @@ describe('explicit acquisition and complete charts', () => {
     server.details[A] = withData();
     server.quotes[A] = [quote(0, { open: '1', high: '1', low: '1', close: '0.99999999999999999999999999999', quality_flags: ['ohlc_bounds'] })];
     await open(A);
-    expect(screen.getByText('1 quotes loaded · 1 in this window · 1 candles plotted')).toBeInTheDocument();
+    expect(screen.getByText('1 candle · 1 of 1 quotes')).toBeInTheDocument();
     expect(screen.getByRole('img', { name: /Unadjusted OHLC/ })).toBeInTheDocument();
   });
 
@@ -466,8 +623,8 @@ describe('explicit acquisition and complete charts', () => {
     server.quotes[A] = [quote(0, { open: '12.338', high: '12.34', low: '12.236', close: null }),
       quote(1), quote(2, { open: '0', high: '1', low: '-1', close: '-0.5' }), quote(3, { close: { unexpected: true } })];
     await open(A);
-    expect(screen.getByText('4 quotes loaded · 4 in this window · 2 candles plotted')).toBeInTheDocument();
-    expect(screen.getByText(/2 quotes with missing or non-numeric OHLC cannot be drawn/)).toBeInTheDocument();
+    expect(screen.getByText('2 candles · 4 of 4 quotes')).toBeInTheDocument();
+    expect(screen.queryByText(/quotes with missing or non-numeric OHLC/)).not.toBeInTheDocument();
     const raw = JSON.parse(screen.getByLabelText('Quote observations (current window, all provider fields)').textContent);
     expect(raw[0].close).toBeNull();
     expect(raw[3].close).toEqual({ unexpected: true });
@@ -486,13 +643,20 @@ describe('explicit acquisition and complete charts', () => {
     expect(document.querySelector('script')).toBeNull();
     expect(screen.getByText(/Listing price currency: Unknown/)).toBeInTheDocument();
     expect(screen.queryByText(/Listing price currency: EUR/)).not.toBeInTheDocument();
-    expect(screen.getByText('3 quotes loaded · 3 in this window · 1 candles plotted')).toBeInTheDocument();
-    expect(screen.getByText(/2 quotes with missing or non-numeric OHLC/)).toBeInTheDocument();
+    expect(screen.getByText('1 candle · 3 of 3 quotes')).toBeInTheDocument();
+    expect(document.querySelector('.notice')).toBeNull();
     const profile = screen.getByLabelText('Tickerinfo profile and collection metadata');
     expect(JSON.parse(profile.textContent)).toEqual(server.details[A].profile);
     expect(JSON.parse(screen.getByLabelText('Catalogue metadata').textContent)).toEqual(server.details[A].catalogue);
-    expect(screen.getByText(/Automatically selected from Marketstack's ticker list:/)).toHaveTextContent('Selected & <img src=x onerror=bad()>');
-    expect(screen.getByText(/Automatically selected from Marketstack's ticker list:/)).toHaveTextContent('not ISIN verification');
+    expect(screen.getByText(/Auto-selected listing:/)).toHaveTextContent('Selected & <img src=x onerror=bad()>');
+    expect(screen.getByText(/Auto-selected listing:/)).not.toHaveTextContent('not ISIN verification');
+    expect(screen.getByText(/Auto-selected listing:/)).not.toBeVisible();
+    expect(screen.getByText('Data details').closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(screen.getByText('Data details'));
+    expect(screen.getByText(/Auto-selected listing:/)).toBeVisible();
+    expect(profile.closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(screen.getByText('Provider profile'));
+    expect(profile).toBeVisible();
     expect(JSON.parse(screen.getByLabelText('Listing, acquisition and coverage metadata').textContent).listing_resolution).toEqual(server.details[A].listing_resolution);
     expect(screen.getByLabelText('Quote observations (current window, all provider fields)')).toHaveTextContent('9007199254740993');
     const candleTitle = document.querySelector('.candle title');
@@ -610,9 +774,9 @@ describe('polling, navigation races and cleanup', () => {
     await navigate(B);
     expect(oldSignal.aborted).toBe(true);
     await act(async () => pending.resolve({ items: [quote(1000)], total: 1001, offset: 1000, limit: 1000 }));
-    expect(screen.getByText('1 quotes loaded · 1 in this window · 1 candles plotted')).toBeInTheDocument();
+    expect(screen.getByText('1 candle · 1 of 1 quotes')).toBeInTheDocument();
     expect(document.querySelector('.candle title').textContent).toContain('Open 5');
-    expect(screen.queryByText(/1001 quotes loaded/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/of 1001 quotes/)).not.toBeInTheDocument();
   });
 
   it('suppresses double submissions and ignores an acknowledged POST after navigating away', async () => {

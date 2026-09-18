@@ -82,6 +82,7 @@ def test_real_mongo_atomic_job_gate_budget_and_observations(environment, listing
     assert len({job["id"] for job in jobs}) == 1
     publish.assert_called_once()
     assert db.acquisition_jobs.count_documents({"active": True}) == 1
+    assert md.acquired_instruments(db)["total"] == 0
     with pytest.raises(DuplicateKeyError):
         db.acquisition_jobs.insert_one({"instrument_id": ISIN, "active": True})
     factory, calls = provider_fixture()
@@ -94,6 +95,13 @@ def test_real_mongo_atomic_job_gate_budget_and_observations(environment, listing
     assert second["mode"] == "update"
     assert md.run_acquisition(db, settings, second["id"], factory)["status"] == "succeeded"
     assert db.instruments.count_documents({}) == 2
+    acquired = md.acquired_instruments(db, limit=1)
+    assert acquired == {"total": 1, "limit": 1, "offset": 0, "items": [{
+        "instrument_id": ISIN, "isin": ISIN, "name": "Synthetic ETF", "ticker": "SXR8",
+        "listing": LISTING, "collected_at": "2026-09-17T12:00:00Z", "quote_count": 2,
+        "first_date": "2026-09-15", "last_date": "2026-09-16",
+    }]}
+    assert md.acquired_instruments(db, limit=1, offset=1)["items"] == []
     assert db.quotes.count_documents({}) == 2
     assert md.read_quotes(db, ISIN)["total"] == 2
     # Recreating the partial unique index is genuinely idempotent on Mongo.

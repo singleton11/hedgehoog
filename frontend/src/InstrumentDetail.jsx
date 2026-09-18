@@ -29,14 +29,13 @@ function AcquisitionForm({ detail, mode, busy, onCancel, onConfirm }) {
   return <form className="acquisition-form" aria-label={title} onSubmit={submit}>
     <h3 ref={formHeading} tabIndex={-1}>{title}</h3>
     {!manual && (detail.listing
-      ? <p>The saved listing <strong>{detail.listing.symbol} / {detail.listing.exchange}</strong> will be reused. No ticker-list lookup is needed.</p>
-      : <p>After you authorize this request, the server looks up the catalogue ticker <strong>{displayText(detail.catalogue.ticker) || '(not supplied)'}</strong> in Marketstack's ticker list. It automatically selects the first named, EOD-enabled exact ticker.exchange match (the ticker followed by a dot and an uppercase alphanumeric exchange suffix) with a valid four-character exchange MIC, then caches that listing for this instrument and reuses it for future requests.</p>)}
-    <p className="muted">Listing selection is not ISIN verification. You do not need to enter or confirm a provider symbol or MIC for automatic acquisition.</p>
+      ? <p><strong>Listing:</strong> {detail.listing.symbol} / {detail.listing.exchange}{fixed ? ' · Locked' : ' · Saved'}</p>
+      : <p><strong>Listing:</strong> Auto-select for {displayText(detail.catalogue.ticker) || 'catalogue ticker'}.</p>)}
     {!fixed && <label className="checkbox-label"><input type="checkbox" checked={manualOverride} disabled={busy}
       onChange={(event) => { setManualOverride(event.target.checked); setConfirmed(false); }} />
-      Manual listing override (advanced / lookup failures)</label>}
+      Manual listing override</label>}
     {manual && <>
-      <p>Override automatic selection or the saved listing before quotes exist. Choose a provider symbol and four-character MIC using the <a href="https://marketstack.com/download/v2_eod_tickers_finnworlds_tiingo.xlsx" target="_blank" rel="noopener noreferrer">public Marketstack ticker workbook (XLSX)</a>. This skips ticker-list lookup.</p>
+      <p>Find a symbol and MIC in the <a href="https://marketstack.com/download/v2_eod_tickers_finnworlds_tiingo.xlsx" target="_blank" rel="noopener noreferrer">Marketstack ticker workbook (XLSX)</a>.</p>
       <div className="listing-fields">
         <div><label htmlFor="provider-symbol">Provider symbol</label><input id="provider-symbol" value={symbol}
           onChange={(event) => { setSymbol(event.target.value); setConfirmed(false); }} required maxLength={64} disabled={busy} autoComplete="off" /></div>
@@ -44,17 +43,24 @@ function AcquisitionForm({ detail, mode, busy, onCancel, onConfirm }) {
           onChange={(event) => { setExchange(event.target.value); setConfirmed(false); }} required minLength={4} maxLength={4} pattern="[A-Za-z0-9]{4}" disabled={busy} autoComplete="off" /></div>
       </div>
     </>}
-    {fixed && <p className="muted">This saved listing is locked because quotes already exist. Updates and older-history requests cannot switch listings.</p>}
-    <p><strong>Requested range:</strong> {estimate.range}. {mode === 'backfill' ? 'This explicitly retries older history, rather than only newer dates.' : 'The first acquisition requests history from catalogue inception.'}</p>
-    <p><strong>Estimated provider calls:</strong> {estimate.calls === null ? `At least ${estimate.minimumCalls}` : `About ${estimate.calls}`} = {estimate.lookupCalls > 0 && 'at least 1 tickerslist lookup + '}1 tickerinfo + {estimate.pages === null ? 'at least 1 EOD page' : `${estimate.pages} EOD page(s)`}.
-      {estimate.lookupCalls > 0 && ' Ticker-list lookup may require multiple pages, adding calls beyond this estimate.'}
-      {' '}EOD is paginated at up to 1,000 rows per page. The calendar-day estimate is conservative; actual pages, failures and provider access can change usage.</p>
+    <p><strong>Range:</strong> {estimate.range}.</p>
+    <p><strong>Estimated provider calls:</strong> {estimate.calls === null ? `At least ${estimate.minimumCalls}` : `About ${estimate.calls}`}. Actual usage may vary.</p>
     <Budget budget={detail.budget} />
-    {insufficientBudget && <p className="notice">This request needs at least {estimate.minimumCalls} provider calls; the remaining local budget is insufficient.</p>}
-    <p className="notice">Your plan and the selected listing determine available history; responses may omit older dates. A successful job does not mean complete since-inception coverage. Retry Older History also consumes quota and may return no additional history.</p>
+    {insufficientBudget && <p className="muted">This request needs at least {estimate.minimumCalls} calls. Not enough local budget.</p>}
+    <details className="disclosure"><summary>Request details</summary>
+      <div className="disclosure-content">
+        <p>{manual ? 'Manual selection skips ticker lookup.' : detail.listing
+          ? 'The saved listing is reused without a ticker lookup.'
+          : 'We select the first named, EOD-enabled exact ticker.exchange match with a valid MIC from Marketstack and cache it for future requests.'}</p>
+        {fixed && <p>The listing cannot change once quotes are saved.</p>}
+        <p>{estimate.lookupCalls > 0 && 'At least 1 ticker-list lookup + '}1 profile call + {estimate.pages === null ? 'at least 1 history page' : `${estimate.pages} history page(s)`}.
+          {estimate.lookupCalls > 0 && ' Ticker lookup may need extra pages.'} History pages contain up to 1,000 rows; estimates use calendar days.</p>
+        <p>The local budget excludes requests made outside Hedgehoog.</p>
+      </div>
+    </details>
     <label className="checkbox-label"><input type="checkbox" checked={confirmed} disabled={busy}
       onChange={(event) => setConfirmed(event.target.checked)} required />
-      I authorize this quota-consuming acquisition.</label>
+      Allow this request to use provider quota.</label>
     <div className="button-group"><button type="submit" disabled={blocked || !confirmed}>{busy ? 'Submitting…' : title}</button>
       <button type="button" className="secondary" onClick={onCancel} disabled={busy}>Cancel</button></div>
   </form>;
@@ -62,20 +68,16 @@ function AcquisitionForm({ detail, mode, busy, onCancel, onConfirm }) {
 
 function Budget({ budget }) {
   return <div className="budget">
-    {budget ? <p><strong>Local monthly budget ({budget.month}):</strong> {budget.used} used / {budget.limit} calls · {budget.remaining} remaining.</p>
+    {budget ? <p title={`${budget.month} · ${budget.used} used. Excludes requests outside Hedgehoog.`}><strong>Local budget:</strong> {budget.remaining.toLocaleString()} / {budget.limit.toLocaleString()} calls left</p>
       : <p>Local budget unavailable.</p>}
-    <p className="muted">Conservative local accounting, not the provider dashboard balance. Requests made outside Hedgehoog are not included.</p>
   </div>;
 }
 
-function JobStatus({ job, coverageWarning }) {
+function JobStatus({ job }) {
   if (!job) return null;
   return <div className="job-status">
-    <p role="status"><strong>Acquisition: {job.status}</strong>{job.phase ? ` · ${displayText(job.phase)}` : ''}
-      {' '}· {job.pages ?? 0} pages · {job.rows ?? 0} rows · {job.calls ?? 0} calls</p>
-    {pendingJob(job) && <p className="muted">This job continues on the server if you leave this page. Polling only reads saved status; it does not consume provider quota.</p>}
-    {job.error && <p role="alert">Acquisition failed: {job.error}. Previously saved quotes remain available. Review the cause before explicitly requesting again.</p>}
-    {job.warning && job.warning !== coverageWarning && <p className="notice">{job.warning}</p>}
+    <p role="status"><strong>Acquisition: {job.status}</strong>{pendingJob(job) && ` · ${job.rows ?? 0} rows saved`}</p>
+    {job.error && <p role="alert">Acquisition failed: {job.error}. Saved quotes remain available.</p>}
   </div>;
 }
 
@@ -112,18 +114,15 @@ export default function InstrumentDetail({ isin }) {
     <section className="instrument-heading">
       <p className="eyebrow">{isin}</p>
       <h2 className="instrument-name" ref={heading} tabIndex={-1}>{displayText(catalogue.name) || isin}</h2>
-      <p>{displayText(catalogue.ticker) || 'No catalogue ticker'} · {displayText(catalogue.asset_class) || 'ETF'}
-        {' '}· Fund currency: {catalogue.currency || 'unknown'} (not necessarily the listing price currency)</p>
-      <p><strong>Marketstack listing:</strong> {listing ? `${listing.symbol} / ${listing.exchange}` : 'Not selected yet; resolved after authorization'}</p>
-      {listing && listing_resolution?.source === 'tickerslist' && <p className="muted">Automatically selected from Marketstack's ticker list: {displayText(listing_resolution.name) || listing.symbol}. This is a listing selection, not ISIN verification.</p>}
+      <p className="muted">{[displayText(catalogue.ticker), displayText(catalogue.asset_class) || 'ETF', `Fund currency: ${catalogue.currency || 'unknown'}`].filter(Boolean).join(' · ')}
+        {listing && <> · {listing.symbol} / {listing.exchange}</>}</p>
     </section>
     <section aria-label="Market data acquisition">
       <h2>Market data</h2>
-      <p>Only a confirmed request fetches provider data. Opening this page, searching, polling and viewing charts read the database.</p>
-      <Budget budget={budget} />
-      {!detail.provider_configured && <p className="notice">Marketstack is not configured on the server. Saved data is still available.</p>}
-      {budget && budget.remaining < minimumCalls && <p className="notice">Insufficient local budget for the minimum {minimumCalls} provider calls{!listing ? ' with automatic lookup' : ''}. {budget.remaining >= 2 && !hasData ? 'You can review a manual override, which needs at least 2 calls.' : 'Acquisition is unavailable until budget is available.'}</p>}
-      <JobStatus job={acquisition} coverageWarning={summary.warning} />
+      {!reviewMode && <Budget budget={budget} />}
+      {!detail.provider_configured && <p className="muted">Marketstack is not configured.</p>}
+      {!reviewMode && budget && budget.remaining < minimumCalls && <p className="muted">Insufficient local budget. Requires {minimumCalls} calls{!listing ? ' with automatic lookup' : ''}.</p>}
+      <JobStatus job={acquisition} />
       {pollError && <div><p role="alert">Could not refresh acquisition status: {pollError} {pending ? 'Polling will retry automatically.' : 'You can retry without starting another acquisition.'}</p>
         <button className="secondary" onClick={retry} disabled={submitting}>Retry polling</button></div>}
       {postError && <p role="alert">Request could not be confirmed: {postError} Status is being refreshed; no acquisition is retried automatically.</p>}
@@ -135,29 +134,30 @@ export default function InstrumentDetail({ isin }) {
         onCancel={() => setReviewMode(null)} onConfirm={confirm} />}
     </section>
     <section aria-label="History coverage">
-      <h2>History coverage</h2>
+      <h2>Coverage</h2>
       <dl className="facts">
         <div><dt>Coverage status</dt><dd>{summary.history_status}</dd></div>
         <div><dt>Saved quotes</dt><dd>{summary.quote_count}</dd></div>
         <div><dt>Requested from</dt><dd>{summary.requested_from || 'Not requested'}</dd></div>
         <div><dt>Returned range</dt><dd>{summary.first_date && summary.last_date ? `${summary.first_date} – ${summary.last_date}` : 'No quotes returned'}</dd></div>
-        <div><dt>Profile collected at (UTC)</dt><dd>{profile?.collected_at || 'Not collected'}</dd></div>
-        <div><dt>Latest quote observation (UTC)</dt><dd>{quotes.length ? quotes.reduce((latest, quote) => quote.collected_at > latest ? quote.collected_at : latest, '') || 'Unknown' : 'Not loaded'}</dd></div>
       </dl>
-      {summary.warning && <p className="notice">{summary.warning}</p>}
-      {summary.history_status === 'partial' && !summary.warning && <p className="notice">Only partial history is available. Plan access and listing coverage may limit the requested range; success is not proof of a complete since-inception download.</p>}
-      {summary.history_status === 'available' && <p className="muted">Returned coverage starts near inception; this does not prove that every historical trading session is present.</p>}
-      {summary.history_status === 'empty' && <p>No quotes were returned. Check the selected listing and provider access before requesting again.</p>}
+      {summary.history_status === 'empty' && <p>No quotes returned. Check the listing and plan access.</p>}
     </section>
     {quotesLoading && <p role="status">Loading all quote pages…{quotes.length ? ' Showing previously loaded quotes meanwhile.' : ''}</p>}
     {quotesError && <div><p role="alert">Could not load the complete chart: {quotesError} Previously loaded quotes are retained.</p><button className="secondary" onClick={retryQuotes}>Retry chart</button></div>}
-    {quotes.length > 0 ? <CandlestickChart quotes={quotes} /> : !quotesLoading && <p className="empty-state">No saved quotes to chart yet. {pending ? 'Acquisition is in progress.' : 'Use Request Data to explicitly acquire market data.'}</p>}
-    <section aria-label="All instrument metadata">
-      <h2>All instrument metadata</h2>
-      <p className="muted">Complete saved fields, including nested and unfamiliar provider attributes. Collection time is when data was learned, not a historical fundamentals date. Null means not supplied; adjusted fields are preserved but are not charted. Incremental updates do not refresh earlier corporate-action adjustments.</p>
-      <Metadata title="Catalogue metadata" value={catalogue} />
-      <Metadata title="Tickerinfo profile and collection metadata" value={profile} />
-      <Metadata title="Listing, acquisition and coverage metadata" value={{ instrument_id: detail.instrument_id, listing, listing_resolution, acquisition, summary, provider_configured: detail.provider_configured, budget }} />
-    </section>
+    {quotes.length > 0 ? <CandlestickChart quotes={quotes} /> : !quotesLoading && <p className="empty-state">No saved quotes to chart yet. {pending ? 'Acquisition is in progress.' : 'Choose Request Data to begin.'}</p>}
+    <details className="disclosure instrument-metadata"><summary>Data details</summary>
+      <div className="disclosure-content">
+        {listing && listing_resolution?.source === 'tickerslist' && <p>Auto-selected listing: {displayText(listing_resolution.name) || listing.symbol}.</p>}
+        <dl className="facts">
+          <div><dt>Profile collected (UTC)</dt><dd>{profile?.collected_at || 'Not collected'}</dd></div>
+          <div><dt>Quotes collected (UTC)</dt><dd>{quotes.length ? quotes.reduce((latest, quote) => quote.collected_at > latest ? quote.collected_at : latest, '') || 'Unknown' : 'Not loaded'}</dd></div>
+        </dl>
+        <p className="muted">Collection time records when data was learned. Null means not supplied. Charts use unadjusted prices; updates do not refresh older adjustments.</p>
+        <Metadata title="Catalogue metadata" label="Catalogue" value={catalogue} />
+        <Metadata title="Tickerinfo profile and collection metadata" label="Provider profile" value={profile} />
+        <Metadata title="Listing, acquisition and coverage metadata" label="Acquisition & coverage" value={{ instrument_id: detail.instrument_id, listing, listing_resolution, acquisition, summary, provider_configured: detail.provider_configured, budget }} />
+      </div>
+    </details>
   </article>;
 }

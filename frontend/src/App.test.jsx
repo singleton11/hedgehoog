@@ -18,6 +18,7 @@ function mockServer(initialUser = null) {
     }
     if (url === '/api/auth/logout') { user = null; return response(204); }
     if (!user) return response(401, { detail: 'Authentication required' });
+    if (url.startsWith('/api/instruments/acquired?')) return response(200, { items: [], total: 0, limit: 20, offset: 0 });
     if (url === '/api/') return response(200, { message: 'Hello, World!' });
     if (url === '/api/admin') return response(200, { message: 'Administrator access granted' });
     throw new Error(`Unexpected URL ${url}`);
@@ -59,7 +60,9 @@ describe('authentication', () => {
     expect(screen.getByLabelText('Password')).toHaveValue('');
     await user.type(screen.getByLabelText('Password'), 'admin');
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
-    expect(await screen.findByRole('heading', { name: 'Hello, admin!' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Hedgehoog' })).toBeInTheDocument();
+    expect(screen.getByText('admin')).toBeInTheDocument();
+    expect(screen.queryByText(/Welcome to your workspace/)).not.toBeInTheDocument();
     expect(await screen.findByText('Administrator access granted')).toBeInTheDocument();
     expect(server.fetch).toHaveBeenCalledWith('/api/auth/login', expect.objectContaining({
       credentials: 'same-origin', method: 'POST', body: JSON.stringify({ login: 'admin', password: 'admin' }),
@@ -73,14 +76,15 @@ describe('authentication', () => {
   it('restores the authenticated session on page load', async () => {
     mockServer(admin);
     render(<App />);
-    expect(await screen.findByRole('heading', { name: 'Hello, admin!' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Hedgehoog' })).toBeInTheDocument();
     expect(await screen.findByText('Hello, World!')).toBeInTheDocument();
   });
 
   it('does not render or request the admin section for a regular user', async () => {
     const server = mockServer({ ...admin, login: 'alice', role: 'user' });
     render(<App />);
-    expect(await screen.findByRole('heading', { name: 'Hello, alice!' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Hedgehoog' })).toBeInTheDocument();
+    expect(screen.getByText('alice')).toBeInTheDocument();
     expect(screen.queryByText('Administration')).not.toBeInTheDocument();
     expect(server.fetch.mock.calls.some(([url]) => url === '/api/admin')).toBe(false);
   });
@@ -96,7 +100,7 @@ describe('authentication', () => {
   it('checks for expired sessions when the window gains focus', async () => {
     const server = mockServer(admin);
     render(<App />);
-    await screen.findByRole('heading', { name: 'Hello, admin!' });
+    await screen.findByRole('heading', { name: 'Hedgehoog' });
     server.expire();
     fireEvent.focus(window);
     expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument();
@@ -141,7 +145,7 @@ describe('authentication', () => {
     server.fetch.mockResolvedValueOnce(response(503, { detail: 'Service unavailable' }));
     await userEvent.click(screen.getByRole('button', { name: 'Sign out' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Service unavailable');
-    expect(screen.getByRole('heading', { name: 'Hello, admin!' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Hedgehoog' })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Sign out' })).toBeEnabled());
   });
 });

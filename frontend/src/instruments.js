@@ -37,12 +37,12 @@ export function acquisitionEstimate(detail, mode, manualOverride = false) {
   const days = Number.isFinite(timestamp) && Number.isFinite(end)
     ? Math.max(1, Math.ceil((end - timestamp) / 86400000) + 1) : null;
   const pages = days === null ? null : Math.max(1, Math.ceil(days / 1000));
-  const from = incremental ? `After ${start} (the backend uses its completed-range watermark)` : `From ${start || 'catalogue inception'}`;
+  const from = incremental ? `New quotes after ${start}` : `From ${start || 'catalogue inception'}`;
   // An unresolved automatic listing needs at least one tickerslist request;
   // pagination can add more. Cached listings and manual overrides skip lookup.
   const lookupCalls = detail.listing || manualOverride ? 0 : 1;
   return { pages, lookupCalls, minimumCalls: 2 + lookupCalls, calls: pages === null ? null : lookupCalls + 1 + pages,
-    range: `${from} ${olderEnd ? `to before ${olderEnd}` : 'to the latest available EOD cutoff chosen by the server'}` };
+    range: `${from} ${olderEnd ? `to before ${olderEnd}` : 'to latest available'}` };
 }
 
 export async function loadAllQuotes(request, isin, signal) {

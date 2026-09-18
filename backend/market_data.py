@@ -96,6 +96,42 @@ def search_catalogue(db, query, limit):
     return [{**record, "instrument_id": record["isin"]} for record in records]
 
 
+def acquired_instruments(db, limit=20, offset=0):
+    """One row per saved ETF profile, including partial/failed acquisitions.
+
+    The worker saves tickerinfo before any EOD pages, so profiles are the
+    acquisition inventory. A queued job or cached listing alone is not data.
+    Paginate lightweight observations before fetching catalogue/quote summaries.
+    """
+    result = list(db.instruments.aggregate([
+        {"$project": {"instrument_id": 1, "symbol": 1, "exchange": 1, "collected_at": 1}},
+        {"$sort": {"instrument_id": 1, "collected_at": -1, "_id": -1}},
+        {"$group": {
+            "_id": "$instrument_id",
+            "listing": {"$first": {"symbol": "$symbol", "exchange": "$exchange"}},
+            "collected_at": {"$first": "$collected_at"},
+        }},
+        {"$sort": {"collected_at": -1, "_id": 1}},
+        {"$facet": {"count": [{"$count": "total"}], "items": [{"$skip": offset}, {"$limit": limit}]}},
+    ]))[0]
+    items = []
+    for observation in result["items"]:
+        isin = observation["_id"]
+        catalogue = db.etfs.find_one(
+            {"isin": isin}, {"_id": 0, "name": 1, "ticker": 1},
+            sort=[("import_date", DESCENDING)],
+        ) or {}
+        dates = quote_dates(db, isin, observation["listing"])
+        items.append({
+            "instrument_id": isin, "isin": isin,
+            "name": catalogue.get("name"), "ticker": catalogue.get("ticker"),
+            "listing": observation["listing"], "collected_at": observation["collected_at"],
+            "quote_count": len(dates), "first_date": dates[0] if dates else None,
+            "last_date": dates[-1] if dates else None,
+        })
+    return public({"items": items, "total": result["count"][0]["total"] if result["count"] else 0, "limit": limit, "offset": offset})
+
+
 def budget_status(db, settings):
     month = utcnow().strftime("%Y-%m")
     record = db.marketstack_usage.find_one({"_id": month}) or {}

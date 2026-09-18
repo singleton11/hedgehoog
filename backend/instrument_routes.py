@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from auth import CurrentUser
 from celery_app import enqueue_acquisition
-from market_data import instrument_detail, read_quotes, request_acquisition, search_catalogue
+from market_data import acquired_instruments, instrument_detail, read_quotes, request_acquisition, search_catalogue
 
 router = APIRouter(prefix="/instruments", tags=["instruments"])
 InstrumentId = Annotated[str, Path(pattern=r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")]
@@ -79,6 +79,11 @@ def search(request: Request, user: CurrentUser, q: Annotated[str, Query(min_leng
     if len(q.strip()) < 2:
         raise HTTPException(422, "Enter at least two non-whitespace characters")
     return {"items": search_catalogue(request.app.state.database, q, limit)}
+
+
+@router.get("/acquired")
+def acquired(request: Request, user: CurrentUser, limit: Annotated[int, Query(ge=1, le=100)] = 20, offset: Annotated[int, Query(ge=0)] = 0):
+    return acquired_instruments(request.app.state.database, limit, offset)
 
 
 @router.get("/{isin}")
