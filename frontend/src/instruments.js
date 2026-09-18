@@ -12,6 +12,11 @@ export function displayText(value) {
 
 export const pendingJob = (job) => ['queued', 'running'].includes(job?.status);
 
+export function listingPriceCurrency(quotes) {
+  const currencies = [...new Set(quotes.map((quote) => quote.price_currency || null))];
+  return currencies.length === 1 && currencies[0] ? currencies[0] : null;
+}
+
 // A late/stale read must not replace a job acknowledged by POST, or regress
 // running/terminal state. A genuinely newer job from another tab is accepted.
 export function olderJob(incoming, current) {

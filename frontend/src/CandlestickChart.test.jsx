@@ -8,6 +8,33 @@ const select = (range) => fireEvent.click(screen.getByRole('button', { name: ran
 
 afterEach(cleanup);
 
+describe('price currency labels', () => {
+  it('uses the manual currency in the header, tooltip and hover without modifying raw data or prices', () => {
+    const quotes = [{ ...quote('2024-09-17'), price_currency: null }];
+    const { container, rerender } = render(<CandlestickChart quotes={quotes} priceCurrencyOverride="CHF" />);
+    expect(screen.getByText('Unadjusted OHLC · Listing price currency: CHF (manual)')).toBeInTheDocument();
+    const candle = container.querySelector('.candle');
+    const shape = candle.querySelector('rect').outerHTML;
+    expect(candle.querySelector('title')).toHaveTextContent('Price currency: CHF');
+    fireEvent.mouseEnter(candle);
+    expect(container.querySelector('.chart-readout')).toHaveTextContent('Price currency: CHF');
+    expect(observations()).toEqual(quotes);
+    rerender(<CandlestickChart quotes={quotes} priceCurrencyOverride="GBP" />);
+    expect(container.querySelector('.chart-readout')).toHaveTextContent('Price currency: GBP');
+    expect(container.querySelector('.candle rect').outerHTML).toBe(shape);
+    expect(observations()).toEqual(quotes);
+  });
+
+  it('keeps provider currency unless an explicit manual override is supplied', () => {
+    const quotes = [quote('2024-09-17')];
+    const { rerender } = render(<CandlestickChart quotes={quotes} />);
+    expect(screen.getByText('Unadjusted OHLC · Listing price currency: EUR')).toBeInTheDocument();
+    rerender(<CandlestickChart quotes={quotes} priceCurrencyOverride="USD" />);
+    expect(screen.getByText('Unadjusted OHLC · Listing price currency: USD (manual)')).toBeInTheDocument();
+    expect(observations()[0].price_currency).toBe('EUR');
+  });
+});
+
 describe('price-history calendar ranges', () => {
   const dates = ['2019-09-16', '2019-09-17', '2023-09-16', '2023-09-17', '2024-03-16', '2024-03-17', '2024-08-16', '2024-08-17', '2024-09-17'];
 

@@ -244,6 +244,15 @@ def coverage(catalogue, dates):
     return result
 
 
+def set_price_currency(db, isin, currency):
+    """Save current user-supplied metadata without rewriting provider observations."""
+    require_catalogue(db, isin)
+    db.instrument_state.update_one(
+        {"_id": isin}, {"$set": {"price_currency_override": currency}}, upsert=True,
+    )
+    return {"price_currency_override": currency}
+
+
 def instrument_detail(db, settings, isin, as_of=None):
     catalogue = require_catalogue(db, isin)
     expire_stalled_jobs(db, isin)
@@ -261,7 +270,7 @@ def instrument_detail(db, settings, isin, as_of=None):
     summary = coverage(catalogue, quote_dates(db, isin, listing, as_of))
     if job is None:
         summary["history_status"] = "not_requested"
-    return public({"instrument_id": isin, "catalogue": {key: value for key, value in catalogue.items() if key != "_id"}, "listing": listing, "listing_resolution": state.get("listing_resolution"), "profile": profile, "acquisition": public_job(job), "summary": summary, "provider_configured": bool(settings.marketstack_api_key.get_secret_value()), "budget": budget_status(db, settings)})
+    return public({"instrument_id": isin, "catalogue": {key: value for key, value in catalogue.items() if key != "_id"}, "listing": listing, "listing_resolution": state.get("listing_resolution"), "price_currency_override": state.get("price_currency_override"), "profile": profile, "acquisition": public_job(job), "summary": summary, "provider_configured": bool(settings.marketstack_api_key.get_secret_value()), "budget": budget_status(db, settings)})
 
 
 def read_quotes(db, isin, limit=1000, offset=0, as_of=None):
@@ -513,6 +522,11 @@ def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
                     "next_offset": offset, "expected_total": pagination_integer(page, "total"),
                     "last_page_date": latest_date, "download_complete": not has_more_pages(page, offset),
                 }, {"pages": 1, "rows": len(rows), "unindexed_rows": unindexed})
+        # Derived analytics never rewrite provider evidence. Persist them before
+        # reporting success; DB retries replay saved pages without provider calls.
+        from return_statistics import refresh_statistics
+        checkpoint({"phase": "statistics"})
+        refresh_statistics(db, isin, force=True)
         # Check ownership after all writes and before committing the range watermark.
         checkpoint({"phase": "finishing"})
         state = db.instrument_state.find_one({"_id": isin}) or {}

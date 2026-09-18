@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import CandlestickChart, { Metadata } from './CandlestickChart.jsx';
-import { acquisitionEstimate, displayText, pendingJob } from './instruments.js';
+import { acquisitionEstimate, displayText, listingPriceCurrency, pendingJob } from './instruments.js';
 import useInstrument from './useInstrument.js';
+import PriceCurrencyForm from './PriceCurrencyForm.jsx';
+import ReturnStatistics from './ReturnStatistics.jsx';
 
 function AcquisitionForm({ detail, mode, busy, onCancel, onConfirm }) {
   const [symbol, setSymbol] = useState(detail.listing?.symbol || '');
@@ -82,7 +84,7 @@ function JobStatus({ job }) {
 }
 
 export default function InstrumentDetail({ isin }) {
-  const { detail, loading, error, pollError, postError, submitting, quotes, quotesLoading, quotesError, acquire, retry, retryQuotes } = useInstrument(isin);
+  const { detail, loading, error, pollError, postError, submitting, quotes, quotesLoading, quotesError, acquire, retry, retryQuotes, savingCurrency, currencyError, saveCurrency } = useInstrument(isin);
   const [reviewMode, setReviewMode] = useState(null);
   const heading = useRef(null);
   const reviewButton = useRef(null);
@@ -101,10 +103,11 @@ export default function InstrumentDetail({ isin }) {
   const { catalogue, summary, listing, listing_resolution, acquisition, profile, budget } = detail;
   const pending = pendingJob(acquisition);
   const hasData = summary.quote_count > 0 || quotes.length > 0;
+  const priceCurrency = detail.price_currency_override || listingPriceCurrency(quotes);
   const minimumCalls = acquisitionEstimate(detail, 'update').minimumCalls;
   // Keep review accessible with two calls remaining: a manual override can
   // skip lookup. The form enforces the minimum for the chosen acquisition.
-  const blocked = pending || submitting || !detail.provider_configured || (budget && budget.remaining < 2);
+  const blocked = pending || submitting || savingCurrency || !detail.provider_configured || (budget && budget.remaining < 2);
 
   async function confirm(body) {
     if (await acquire(body)) setReviewMode(null);
@@ -116,6 +119,7 @@ export default function InstrumentDetail({ isin }) {
       <h2 className="instrument-name" ref={heading} tabIndex={-1}>{displayText(catalogue.name) || isin}</h2>
       <p className="muted">{[displayText(catalogue.ticker), displayText(catalogue.asset_class) || 'ETF', `Fund currency: ${catalogue.currency || 'unknown'}`].filter(Boolean).join(' · ')}
         {listing && <> · {listing.symbol} / {listing.exchange}</>}</p>
+      <p><a href={`#/goal/${encodeURIComponent(isin)}`}>Plan a goal with this ETF</a></p>
     </section>
     <section aria-label="Market data acquisition">
       <h2>Market data</h2>
@@ -130,7 +134,7 @@ export default function InstrumentDetail({ isin }) {
         <button ref={reviewButton} disabled={blocked} onClick={() => setReviewMode('update')}>{hasData ? 'Update Data' : 'Request Data'}</button>
         {summary.history_status === 'partial' && <button className="secondary" disabled={blocked} onClick={() => setReviewMode('backfill')}>Retry Older History</button>}
       </div>}
-      {reviewMode && !pending && <AcquisitionForm key={reviewMode} detail={detail} mode={reviewMode} busy={submitting}
+      {reviewMode && !pending && <AcquisitionForm key={reviewMode} detail={detail} mode={reviewMode} busy={submitting || savingCurrency}
         onCancel={() => setReviewMode(null)} onConfirm={confirm} />}
     </section>
     <section aria-label="History coverage">
@@ -143,9 +147,13 @@ export default function InstrumentDetail({ isin }) {
       </dl>
       {summary.history_status === 'empty' && <p>No quotes returned. Check the listing and plan access.</p>}
     </section>
+    {!priceCurrency && !quotesLoading && !quotesError && <PriceCurrencyForm busy={savingCurrency || submitting}
+      saving={savingCurrency} error={currencyError} onSave={saveCurrency} />}
+    {!quotes.length && priceCurrency && <p className="muted">Price currency: {priceCurrency}</p>}
     {quotesLoading && <p role="status">Loading all quote pages…{quotes.length ? ' Showing previously loaded quotes meanwhile.' : ''}</p>}
     {quotesError && <div><p role="alert">Could not load the complete chart: {quotesError} Previously loaded quotes are retained.</p><button className="secondary" onClick={retryQuotes}>Retry chart</button></div>}
-    {quotes.length > 0 ? <CandlestickChart quotes={quotes} /> : !quotesLoading && <p className="empty-state">No saved quotes to chart yet. {pending ? 'Acquisition is in progress.' : 'Choose Request Data to begin.'}</p>}
+    {quotes.length > 0 ? <CandlestickChart quotes={quotes} priceCurrencyOverride={detail.price_currency_override} /> : !quotesLoading && <p className="empty-state">No saved quotes to chart yet. {pending ? 'Acquisition is in progress.' : 'Choose Request Data to begin.'}</p>}
+    <ReturnStatistics isin={isin} refreshKey={JSON.stringify([acquisition?.id, acquisition?.status, detail.price_currency_override])} />
     <details className="disclosure instrument-metadata"><summary>Data details</summary>
       <div className="disclosure-content">
         {listing && listing_resolution?.source === 'tickerslist' && <p>Auto-selected listing: {displayText(listing_resolution.name) || listing.symbol}.</p>}
@@ -156,7 +164,7 @@ export default function InstrumentDetail({ isin }) {
         <p className="muted">Collection time records when data was learned. Null means not supplied. Charts use unadjusted prices; updates do not refresh older adjustments.</p>
         <Metadata title="Catalogue metadata" label="Catalogue" value={catalogue} />
         <Metadata title="Tickerinfo profile and collection metadata" label="Provider profile" value={profile} />
-        <Metadata title="Listing, acquisition and coverage metadata" label="Acquisition & coverage" value={{ instrument_id: detail.instrument_id, listing, listing_resolution, acquisition, summary, provider_configured: detail.provider_configured, budget }} />
+        <Metadata title="Listing, acquisition and coverage metadata" label="Acquisition & coverage" value={{ instrument_id: detail.instrument_id, listing, listing_resolution, price_currency_override: detail.price_currency_override, acquisition, summary, provider_configured: detail.provider_configured, budget }} />
       </div>
     </details>
   </article>;

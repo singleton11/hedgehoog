@@ -15,7 +15,7 @@ const job = (status = 'queued', extra = {}) => ({ id: 'job-1', instrument_id: A,
 const quote = (index = 0, extra = {}) => ({ date: new Date(Date.UTC(2020, 0, 1 + index)).toISOString().slice(0, 10), collected_at: '2026-09-17T11:00:00Z', open: '100.123456789', high: '103', low: '99', close: '102.000000001', volume: '9007199254740993', adj_open: null, adj_high: null, adj_low: null, adj_close: '100', price_currency: null, ...extra });
 const detail = (isin = A, extra = {}) => ({
   instrument_id: isin, catalogue: { ...item(isin, isin === A ? 'iShares S&amp;P ETF' : 'Second ETF'), inception_date: '2010-05-19', unknown: { holdings: [{ label: 'Nested &amp; raw', amount: null }] } },
-  listing: null, profile: null, acquisition: null,
+  listing: null, profile: null, acquisition: null, price_currency_override: null,
   summary: { quote_count: 0, first_date: null, last_date: null, requested_from: null, history_status: 'not_requested', warning: null },
   provider_configured: true, budget: { limit: 10000, used: 0, remaining: 10000, month: '2026-09' }, ...extra,
 });
@@ -49,6 +49,10 @@ function mockServer() {
     server.details[isin] = { ...server.details[isin], listing: body.symbol ? { symbol: body.symbol, exchange: body.exchange } : server.details[isin].listing, acquisition: accepted };
     return { job: accepted };
   };
+  server.saveCurrency = async (isin, body) => {
+    server.details[isin] = { ...server.details[isin], price_currency_override: body.price_currency };
+    return { price_currency_override: body.price_currency };
+  };
   server.fetch = vi.fn(async (url, options = {}) => {
     if (url === '/api/auth/me') return response(200, user);
     if (url === '/api/') return response(200, { message: 'Hello, World!' });
@@ -56,14 +60,16 @@ function mockServer() {
     const parsed = new URL(url, 'http://localhost');
     if (parsed.pathname === '/api/instruments/acquired') return response(200, await server.acquired(parsed.searchParams, options));
     if (parsed.pathname === '/api/instruments/search') return response(200, { items: await server.search(parsed.searchParams.get('q'), options) });
-    const match = parsed.pathname.match(/^\/api\/instruments\/([^/]+)(?:\/(quotes|acquisitions))?$/);
+    const match = parsed.pathname.match(/^\/api\/instruments\/([^/]+)(?:\/(quotes|acquisitions|price-currency))?$/);
     if (!match) throw new Error(`Unexpected URL: ${url}`);
     if (match[2] === 'quotes') return response(200, { as_of: '2026-09-17T12:00:00Z', ...await server.page(match[1], parsed.searchParams, options) });
     if (match[2] === 'acquisitions') return response(202, await server.post(match[1], JSON.parse(options.body), options));
+    if (match[2] === 'price-currency') return response(200, await server.saveCurrency(match[1], JSON.parse(options.body), options));
     return response(200, await server.read(match[1], options));
   });
   vi.stubGlobal('fetch', server.fetch);
   server.posts = () => server.fetch.mock.calls.filter(([, options]) => options.method === 'POST');
+  server.currencySaves = () => server.fetch.mock.calls.filter(([, options]) => options.method === 'PATCH');
   server.reads = (isin = A) => server.fetch.mock.calls.filter(([url]) => url === `/api/instruments/${isin}`);
   server.pages = (isin = A) => server.fetch.mock.calls.filter(([url]) => url.startsWith(`/api/instruments/${isin}/quotes?`));
   return server;
@@ -101,6 +107,189 @@ afterEach(() => { cleanup(); vi.useRealTimers(); window.history.replaceState(nul
 
 const acquiredItem = (isin = A, extra = {}) => ({ ...item(isin), listing: { symbol: 'ETF.DE', exchange: 'XETR' },
   collected_at: '2026-09-17T12:00:00Z', quote_count: 42, first_date: '2020-01-01', last_date: '2026-09-16', ...extra });
+
+describe('manual price currency', () => {
+  it.each(['EUR', 'USD', 'CHF', 'GBP', 'RUB', 'JPY'])('hides the selector when provider prices already have %s currency', async (currency) => {
+    const server = mockServer();
+    server.details[A] = withData();
+    server.quotes[A] = [quote(0, { price_currency: currency }), quote(1, { price_currency: currency })];
+    await open(A);
+    expect(screen.queryByRole('combobox', { name: 'Price currency' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save currency' })).not.toBeInTheDocument();
+    expect(screen.getByText(`Unadjusted OHLC · Listing price currency: ${currency}`)).toBeInTheDocument();
+    expect(server.currencySaves()).toHaveLength(0);
+  });
+
+  it('hides the selector for a saved currency even without quotes', async () => {
+    const server = mockServer();
+    server.details[A] = detail(A, { price_currency_override: 'USD' });
+    await open(A);
+    expect(screen.queryByRole('form', { name: 'Set price currency' })).not.toBeInTheDocument();
+    expect(screen.getByText('Price currency: USD')).toBeInTheDocument();
+  });
+
+  it('does not offer a selector while the currency is still loading or quote loading fails', async () => {
+    const server = mockServer();
+    server.details[A] = withData();
+    const pending = deferred();
+    server.page = () => pending.promise;
+    await open(A);
+    expect(screen.getByText(/Loading all quote pages/)).toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'Set price currency' })).not.toBeInTheDocument();
+    await act(async () => pending.reject(new Error('offline')));
+    expect(screen.getByRole('button', { name: 'Retry chart' })).toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'Set price currency' })).not.toBeInTheDocument();
+    server.page = async () => ({ items: [quote()], total: 1, offset: 0, limit: 1000 });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry chart' }));
+    await flush();
+    expect(screen.getByRole('combobox', { name: 'Price currency' })).toBeInTheDocument();
+  });
+
+  it.each([null, 'USD'])('offers the selector for inconsistent price currencies (EUR and %s)', async (currency) => {
+    const server = mockServer();
+    server.details[A] = withData();
+    server.quotes[A] = [quote(0, { price_currency: 'EUR' }), quote(1, { price_currency: currency })];
+    await open(A);
+    expect(screen.getByText(/Listing price currency: Unknown/)).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Price currency' })).toBeInTheDocument();
+  });
+
+  it.each(['EUR', 'USD', 'CHF', 'GBP', 'RUB'])('saves %s explicitly and retains it on revisit without changing raw quotes', async (currency) => {
+    const server = mockServer();
+    server.details[A] = withData();
+    server.quotes[A] = [quote()];
+    await open(A);
+    const select = screen.getByRole('combobox', { name: 'Price currency' });
+    expect([...select.options].map((option) => option.value)).toEqual(['', 'EUR', 'USD', 'CHF', 'GBP', 'RUB']);
+    expect(select).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'Save currency' })).toBeDisabled();
+    expect(screen.getByText(/Listing price currency: Unknown/)).toBeInTheDocument();
+    fireEvent.change(select, { target: { value: currency } });
+    expect(server.currencySaves()).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Save currency' }));
+    await flush();
+    expect(server.currencySaves()).toHaveLength(1);
+    expect(server.currencySaves()[0]).toEqual([`/api/instruments/${A}/price-currency`, expect.objectContaining({
+      method: 'PATCH', body: JSON.stringify({ price_currency: currency }), credentials: 'same-origin', signal: expect.any(AbortSignal),
+    })]);
+    expect(screen.queryByRole('form', { name: 'Set price currency' })).not.toBeInTheDocument();
+    expect(screen.getByText(`Unadjusted OHLC · Listing price currency: ${currency} (manual)`)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save currency' })).not.toBeInTheDocument();
+    expect(JSON.parse(screen.getByLabelText('Quote observations (current window, all provider fields)').textContent)).toEqual([quote()]);
+    await navigate(B);
+    expect(screen.getByRole('combobox', { name: 'Price currency' })).toHaveValue('');
+    await navigate(A);
+    expect(screen.queryByRole('combobox', { name: 'Price currency' })).not.toBeInTheDocument();
+    expect(screen.getByText(`Unadjusted OHLC · Listing price currency: ${currency} (manual)`)).toBeInTheDocument();
+    expect(server.posts()).toHaveLength(0);
+  });
+
+  it('can set an unknown currency without provider configuration, budget or quotes', async () => {
+    const server = mockServer();
+    server.details[A] = detail(A, { provider_configured: false, budget: { limit: 0, used: 0, remaining: 0 } });
+    await open(A);
+    expect(screen.getByRole('button', { name: 'Request Data' })).toBeDisabled();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Price currency' }), { target: { value: 'CHF' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save currency' }));
+    await flush();
+    expect(server.details[A].price_currency_override).toBe('CHF');
+    expect(screen.queryByRole('combobox', { name: 'Price currency' })).not.toBeInTheDocument();
+    expect(screen.getByText('Price currency: CHF')).toBeInTheDocument();
+    expect(server.posts()).toHaveLength(0);
+  });
+
+  it('keeps currency unknown on failure and allows retry of the selected currency', async () => {
+    const server = mockServer();
+    server.details[A] = withData();
+    server.quotes[A] = [quote()];
+    const goodSave = server.saveCurrency;
+    server.saveCurrency = async () => { throw new Error('offline'); };
+    await open(A);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Price currency' }), { target: { value: 'USD' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save currency' }));
+    await flush();
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not save price currency');
+    expect(screen.getByText(/Listing price currency: Unknown/)).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Price currency' })).toHaveValue('USD');
+    expect(screen.queryByText('Price currency saved.')).not.toBeInTheDocument();
+    server.saveCurrency = goodSave;
+    fireEvent.click(screen.getByRole('button', { name: 'Save currency' }));
+    await flush();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByText(/Listing price currency: USD \(manual\)/)).toBeInTheDocument();
+    expect(server.currencySaves()).toHaveLength(2);
+  });
+
+  it('does not claim success for a malformed save response', async () => {
+    const server = mockServer();
+    server.details[A] = withData();
+    server.quotes[A] = [quote()];
+    server.saveCurrency = async () => ({ price_currency_override: 'CAD' });
+    await open(A);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Price currency' }), { target: { value: 'EUR' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save currency' }));
+    await flush();
+    expect(screen.getByRole('alert')).toHaveTextContent('unexpected response');
+    expect(screen.queryByText('Price currency saved.')).not.toBeInTheDocument();
+    expect(screen.getByText(/Listing price currency: Unknown/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save currency' })).toBeEnabled();
+  });
+
+  it('returns to login when the session expires during a save', async () => {
+    const server = mockServer();
+    await open(A);
+    server.fetch.mockImplementationOnce(async () => response(401, { detail: 'Not authenticated' }));
+    fireEvent.change(screen.getByRole('combobox', { name: 'Price currency' }), { target: { value: 'EUR' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save currency' }));
+    await flush();
+    expect(screen.getByRole('heading', { name: 'Sign in' })).toBeInTheDocument();
+    expect(screen.queryByText('Price currency saved.')).not.toBeInTheDocument();
+  });
+
+  it('blocks duplicate saves and discards a late response after navigation', async () => {
+    const server = mockServer();
+    const pending = deferred();
+    server.saveCurrency = () => pending.promise;
+    await open(A);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Price currency' }), { target: { value: 'RUB' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save currency' }));
+    await flush();
+    expect(screen.getByRole('combobox', { name: 'Price currency' })).toBeDisabled();
+    const saving = screen.getByRole('button', { name: 'Saving…' });
+    expect(saving).toBeDisabled();
+    fireEvent.click(saving);
+    expect(server.currencySaves()).toHaveLength(1);
+    await navigate(B);
+    expect(server.currencySaves()[0][1].signal.aborted).toBe(true);
+    await act(async () => pending.resolve({ price_currency_override: 'RUB' }));
+    expect(screen.getByRole('heading', { name: 'Second ETF' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Price currency' })).toHaveValue('');
+    expect(screen.queryByText('Price currency saved.')).not.toBeInTheDocument();
+    expect(server.reads(A)).toHaveLength(1);
+  });
+
+  it('ignores a stale in-flight poll after saving and resumes polling', async () => {
+    const server = mockServer();
+    server.details[A] = withData(A, { acquisition: job('running') });
+    server.quotes[A] = [quote()];
+    await open(A);
+    const oldDetail = server.details[A];
+    const stale = deferred();
+    server.read = () => stale.promise;
+    await advance(POLL_INTERVAL);
+    server.read = async (isin) => server.details[isin];
+    fireEvent.change(screen.getByRole('combobox', { name: 'Price currency' }), { target: { value: 'GBP' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save currency' }));
+    await flush();
+    expect(server.reads(A)[1][1].signal.aborted).toBe(true);
+    await act(async () => stale.resolve(oldDetail));
+    expect(screen.getByText(/Listing price currency: GBP \(manual\)/)).toBeInTheDocument();
+    await advance(POLL_INTERVAL);
+    expect(server.reads(A)).toHaveLength(4);
+    expect(screen.queryByRole('combobox', { name: 'Price currency' })).not.toBeInTheDocument();
+    expect(server.pages()).toHaveLength(1);
+  });
+});
 
 describe('acquired ETF inventory', () => {
   it.each([
@@ -808,7 +997,7 @@ describe('polling, navigation races and cleanup', () => {
     const pending = deferred();
     server.search = () => pending.promise;
     const view = await open(A);
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'ETF' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Find an ETF' }), { target: { value: 'ETF' } });
     await advance(SEARCH_DELAY);
     const signal = server.fetch.mock.calls.at(-1)[1].signal;
     view.unmount();

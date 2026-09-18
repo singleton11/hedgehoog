@@ -405,6 +405,175 @@ def test_routes_auth_validation_and_db_only_reads(api, db, config):
     assert config.marketstack_api_key.get_secret_value() not in response.text
 
 
+@pytest.mark.parametrize("currency", ["EUR", "USD", "CHF", "GBP", "RUB"])
+def test_price_currency_api_persists_supported_values_without_acquisition(api, db, config, monkeypatch, currency):
+    client, publish = api
+    provider = Mock(side_effect=AssertionError("Currency edits must not call Marketstack"))
+    monkeypatch.setattr(md, "MarketstackClient", provider)
+    config.marketstack_monthly_budget = 0  # Manual metadata does not need provider quota.
+    catalogue = list(db.etfs.find())
+    base = f"/instruments/{ISIN}"
+    assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
+    assert client.get(base).json()["price_currency_override"] is None
+    assert db.instrument_state.find_one({"_id": ISIN}) is None
+
+    response = client.patch(base + "/price-currency", json={"price_currency": currency})
+    assert response.status_code == 200
+    assert response.json() == {"price_currency_override": currency}
+    assert db.instrument_state.find_one({"_id": ISIN}) == {"_id": ISIN, "price_currency_override": currency}
+    fresh = client.get(base)
+    assert fresh.status_code == 200
+    assert fresh.json()["price_currency_override"] == currency
+    assert client.get("/instruments/IE00B4L5Y983").json()["price_currency_override"] is None
+    assert db.instrument_state.count_documents({}) == 1
+    assert list(db.etfs.find()) == catalogue
+    for collection in (db.instruments, db.quotes, db.raw_eod_pages, db.acquisition_jobs, db.marketstack_usage):
+        assert collection.count_documents({}) == 0
+    assert md.budget_status(db, config)["used"] == 0
+    provider.assert_not_called()
+    publish.assert_not_called()
+
+
+def test_price_currency_api_requires_auth_and_same_origin(api, db, config):
+    client, publish = api
+    state = {"_id": ISIN, "price_currency_override": "GBP"}
+    db.instrument_state.insert_one(deepcopy(state))
+    url = f"/instruments/{ISIN}/price-currency"
+    body = {"price_currency": "EUR"}
+    assert client.patch(url, json=body).status_code == 401
+    assert db.instrument_state.find_one({"_id": ISIN}) == state
+    assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
+    for headers in ({"Origin": "https://evil.example"}, {"Origin": "null"}, {"Sec-Fetch-Site": "cross-site"}):
+        assert client.patch(url, json=body, headers=headers).status_code == 403
+        assert db.instrument_state.find_one({"_id": ISIN}) == state
+    assert md.budget_status(db, config)["used"] == 0
+    assert db.acquisition_jobs.count_documents({}) == 0
+    publish.assert_not_called()
+
+
+@pytest.mark.parametrize("body", [
+    {}, {"currency": "EUR"}, {"price_currency": "CAD"}, {"price_currency": "eur"},
+    {"price_currency": " EUR "}, {"price_currency": ""}, {"price_currency": None},
+    {"price_currency": True}, {"price_currency": 1}, {"price_currency": ["EUR"]},
+    {"price_currency": {"$set": "EUR"}}, {"price_currency": "EUR", "extra": True}, [],
+])
+def test_price_currency_api_rejects_invalid_bodies_without_writing(api, db, config, body):
+    client, publish = api
+    state = {"_id": ISIN, "price_currency_override": "GBP"}
+    db.instrument_state.insert_one(deepcopy(state))
+    assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
+    assert client.patch(f"/instruments/{ISIN}/price-currency", json=body).status_code == 422
+    assert list(db.instrument_state.find()) == [state]
+    assert md.budget_status(db, config)["used"] == 0
+    assert db.acquisition_jobs.count_documents({}) == 0
+    publish.assert_not_called()
+
+
+def test_price_currency_api_requires_catalogue_instrument(api, db, config):
+    client, publish = api
+    assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
+    response = client.patch("/instruments/US0378331005/price-currency", json={"price_currency": "EUR"})
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Instrument not found in the ETF catalogue"}
+    assert db.instrument_state.count_documents({}) == 0
+    assert db.acquisition_jobs.count_documents({}) == 0
+    assert md.budget_status(db, config)["used"] == 0
+    publish.assert_not_called()
+
+
+def test_price_currency_updates_preserve_state_and_raw_observations_including_as_of(api, db, config, clock, monkeypatch):
+    source = Provider([page([bar(), {**bar("2026-09-16"), "price_currency": "GBP"}])],
+                      profile={"ticker": "SXR8.DE", "price_currency": "USD", "currency": "USD"})
+    result, _ = collect(db, config, source)
+    assert result["status"] == "succeeded"
+    db.instrument_state.update_one({"_id": ISIN}, {"$set": {
+        "listing_resolution": {"ticker": "SXR8", "source": "cached", "future": None},
+        "future_metadata": {"preserved": [1, None]},
+    }})
+    other = {"_id": "IE00B4L5Y983", "listing": {"symbol": "EUNL.F", "exchange": "XFRA"},
+             "price_currency_override": "RUB", "last_complete_quote_date": "2026-09-14"}
+    db.instrument_state.insert_one(deepcopy(other))
+    state = db.instrument_state.find_one({"_id": ISIN})
+    assert state["last_complete_quote_date"] == "2026-09-16"
+    collections = ("etfs", "instruments", "quotes", "raw_eod_pages", "acquisition_jobs", "marketstack_usage")
+    stored = {name: list(db[name].find()) for name in collections}
+    provider = Mock(side_effect=AssertionError("Currency edits and reads must not call Marketstack"))
+    monkeypatch.setattr(md, "MarketstackClient", provider)
+    client, publish = api
+    base = f"/instruments/{ISIN}"
+    historical = {"as_of": NOW.isoformat()}
+    assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
+    detail = client.get(base).json()
+    assert detail["price_currency_override"] is None
+    quotes = client.get(base + "/quotes", params=historical).json()
+    assert [item["price_currency"] for item in quotes["items"]] == [None, "GBP"]
+
+    for currency in ("CHF", "EUR"):
+        clock[0] += timedelta(hours=1)
+        response = client.patch(base + "/price-currency", json={"price_currency": currency})
+        assert response.status_code == 200
+        assert response.json() == {"price_currency_override": currency}
+        assert db.instrument_state.find_one({"_id": ISIN}) == {**state, "price_currency_override": currency}
+        # The override is current shared metadata, not an as-of observation.
+        for params in ({}, historical):
+            fresh = client.get(base, params=params)
+            assert fresh.status_code == 200
+            assert fresh.json() == {**detail, "price_currency_override": currency}
+        assert client.get(base + "/quotes", params=historical).json() == quotes
+        assert {name: list(db[name].find()) for name in collections} == stored
+        assert db.instrument_state.find_one({"_id": other["_id"]}) == other
+        assert client.get(f"/instruments/{other['_id']}").json()["price_currency_override"] == "RUB"
+    provider.assert_not_called()
+    publish.assert_not_called()
+
+
+@pytest.mark.parametrize("already_acquired", [False, True], ids=["initial", "update"])
+def test_price_currency_override_survives_provider_acquisition(api, db, config, already_acquired):
+    if already_acquired:
+        result, _ = collect(db, config)
+        assert result["status"] == "succeeded"
+    client, publish = api
+    assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
+    base = f"/instruments/{ISIN}"
+    assert client.patch(base + "/price-currency", json={"price_currency": "CHF"}).status_code == 200
+    used = md.budget_status(db, config)["used"]
+    source = Provider([page([{**bar("2026-09-16"), "price_currency": "GBP"}])],
+                      profile={"ticker": "SXR8.DE", "price_currency": "USD"})
+    result, source = collect(db, config, source)
+    assert result["status"] == "succeeded"
+    assert result["mode"] == ("update" if already_acquired else "initial")
+    assert len(source.calls) == 2
+    assert md.budget_status(db, config)["used"] == used + 2
+    state = db.instrument_state.find_one({"_id": ISIN})
+    assert state["price_currency_override"] == "CHF"
+    assert state["listing"] == LISTING
+    assert state["last_complete_quote_date"] == "2026-09-16"
+    fresh = client.get(base)
+    assert fresh.status_code == 200
+    assert fresh.json()["price_currency_override"] == "CHF"
+    assert db.instruments.find_one({"job_id": result["id"]})["data"] == source.profile
+    assert db.quotes.find_one({"job_id": result["id"]})["data"]["price_currency"] == "GBP"
+    publish.assert_not_called()
+
+
+def test_price_currency_override_is_shared_between_authenticated_users(api, db):
+    client, publish = api
+    admin = db.users.find_one({"login": "admin"})
+    db.users.insert_one({"login": "reader", "password_hash": admin["password_hash"], "role": "user"})
+    base = f"/instruments/{ISIN}"
+    assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
+    assert client.patch(base + "/price-currency", json={"price_currency": "EUR"}).status_code == 200
+    assert client.post("/auth/logout").status_code == 204
+    assert client.post("/auth/login", json={"login": "reader", "password": "admin"}).status_code == 200
+    assert client.get(base).json()["price_currency_override"] == "EUR"
+    assert client.patch(base + "/price-currency", json={"price_currency": "USD"}).status_code == 200
+    assert client.post("/auth/logout").status_code == 204
+    assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
+    assert client.get(base).json()["price_currency_override"] == "USD"
+    assert list(db.instrument_state.find()) == [{"_id": ISIN, "price_currency_override": "USD"}]
+    publish.assert_not_called()
+
+
 def test_acquired_api_returns_saved_data_without_provider_calls(api, db, config, monkeypatch):
     collect(db, config)
     provider = Mock(side_effect=AssertionError("Browsing must not call Marketstack"))

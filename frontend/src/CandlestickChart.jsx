@@ -1,4 +1,5 @@
 import { useId, useMemo, useState } from 'react';
+import { listingPriceCurrency } from './instruments.js';
 
 export function Metadata({ title, label = title, value }) {
   return <details className="metadata"><summary>{label}</summary>
@@ -20,8 +21,8 @@ function candle(quote) {
 }
 
 const raw = (value) => value == null ? 'Not supplied' : String(value);
-function description(quote) {
-  return `${quote.date} · Open ${raw(quote.open)} · High ${raw(quote.high)} · Low ${raw(quote.low)} · Close ${raw(quote.close)} · Volume ${raw(quote.volume)} · Price currency: ${quote.price_currency || 'unknown'}`;
+function description(quote, priceCurrencyOverride) {
+  return `${quote.date} · Open ${raw(quote.open)} · High ${raw(quote.high)} · Low ${raw(quote.low)} · Close ${raw(quote.close)} · Volume ${raw(quote.volume)} · Price currency: ${priceCurrencyOverride || quote.price_currency || 'unknown'}`;
 }
 
 const RANGE_MONTHS = { '1m': 1, '6m': 6, '1y': 12, '5y': 60 };
@@ -38,14 +39,13 @@ function quotesInRange(quotes, range) {
   return quotes.filter((quote) => quote.date >= firstDate);
 }
 
-export default function CandlestickChart({ quotes }) {
+export default function CandlestickChart({ quotes, priceCurrencyOverride = null }) {
   const [range, setRange] = useState('1y');
   const [hover, setHover] = useState(null);
   const id = useId();
   const visible = useMemo(() => quotesInRange(quotes, range), [quotes, range]);
   const candles = useMemo(() => visible.map(candle).filter(Boolean), [visible]);
-  const currencies = [...new Set(visible.map((quote) => quote.price_currency || null))];
-  const currency = currencies.length === 1 && currencies[0] ? currencies[0] : 'Unknown';
+  const currency = priceCurrencyOverride || listingPriceCurrency(visible) || 'Unknown';
   const width = 960, height = 380, left = 86, right = 22, top = 20, bottom = 48;
   const plotWidth = width - left - right, plotHeight = height - top - bottom;
   // Plot the values as supplied, including inconsistent/zero/negative prices.
@@ -69,7 +69,7 @@ export default function CandlestickChart({ quotes }) {
             onClick={() => { setRange(value); setHover(null); }}>{value}</button>)}
       </div>
     </div>
-    <p className="muted">Unadjusted OHLC · Listing price currency: {currency}</p>
+    <p className="muted">Unadjusted OHLC · Listing price currency: {currency}{priceCurrencyOverride && ' (manual)'}</p>
     <p>{candles.length} {candles.length === 1 ? 'candle' : 'candles'} · {visible.length} of {quotes.length} quotes</p>
     {!candles.length ? <p role="status">No plottable OHLC candles available.</p> : <>
       <div className="chart-scroll">
@@ -83,7 +83,7 @@ export default function CandlestickChart({ quotes }) {
           })}
           {candles.map((item, index) => <g key={`${item.quote.date}-${index}`} className={item.close >= item.open ? 'candle candle-up' : 'candle candle-down'}
             onMouseEnter={() => setHover(item.quote)}>
-            <title>{description(item.quote)}</title>
+            <title>{description(item.quote, priceCurrencyOverride)}</title>
             <line x1={x(index)} x2={x(index)} y1={y(item.high)} y2={y(item.low)} />
             <rect x={x(index) - bodyWidth / 2} y={y(Math.max(item.open, item.close))} width={bodyWidth}
               height={Math.max(1, Math.abs(y(item.open) - y(item.close)))} />
@@ -92,7 +92,7 @@ export default function CandlestickChart({ quotes }) {
             textAnchor={index === 0 ? 'start' : index === candles.length - 1 ? 'end' : 'middle'}>{candles[index].quote.date}</text>)}
         </svg>
       </div>
-      <p className="chart-readout">{hover && visible.includes(hover) ? description(hover) : 'Hover for prices, or expand Raw quotes.'}</p>
+      <p className="chart-readout">{hover && visible.includes(hover) ? description(hover, priceCurrencyOverride) : 'Hover for prices, or expand Raw quotes.'}</p>
     </>}
     <Metadata title="Quote observations (current window, all provider fields)" label="Raw quotes" value={visible} />
   </section>;

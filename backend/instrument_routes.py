@@ -7,8 +7,9 @@ from fastapi import APIRouter, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from auth import CurrentUser
+from return_statistics import instrument_statistics
 from celery_app import enqueue_acquisition
-from market_data import acquired_instruments, instrument_detail, read_quotes, request_acquisition, search_catalogue
+from market_data import acquired_instruments, instrument_detail, read_quotes, request_acquisition, search_catalogue, set_price_currency
 
 router = APIRouter(prefix="/instruments", tags=["instruments"])
 InstrumentId = Annotated[str, Path(pattern=r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")]
@@ -38,6 +39,11 @@ class AcquisitionRequest(BaseModel):
         if value is not True:
             raise ValueError("Explicit acquisition authorization is required")
         return value
+
+
+class PriceCurrencyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    price_currency: Literal["EUR", "USD", "CHF", "GBP", "RUB"]
 
 
 class QuoteResponse(BaseModel):
@@ -89,6 +95,16 @@ def acquired(request: Request, user: CurrentUser, limit: Annotated[int, Query(ge
 @router.get("/{isin}")
 def detail(isin: InstrumentId, request: Request, user: CurrentUser, as_of: datetime | None = None):
     return instrument_detail(request.app.state.database, request.app.state.settings, isin, knowledge_time(as_of))
+
+
+@router.get("/{isin}/statistics")
+def statistics(isin: InstrumentId, request: Request, user: CurrentUser):
+    return instrument_statistics(request.app.state.database, isin)
+
+
+@router.patch("/{isin}/price-currency")
+def update_price_currency(isin: InstrumentId, body: PriceCurrencyRequest, request: Request, user: CurrentUser):
+    return set_price_currency(request.app.state.database, isin, body.price_currency)
 
 
 @router.get("/{isin}/quotes", response_model=QuotesResponse, response_model_exclude_unset=True)

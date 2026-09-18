@@ -101,11 +101,11 @@ Storage:
 - **`raw_eod_pages`**: complete parsed provider envelopes, keyed by job and offset, saved before indexing. Retains all rows, including duplicates, malformed dates, unexpected shapes and missing values for later cleanup. Re-indexing a saved page after a worker/DB interruption does not consume another provider call.
 - **`quotes`**: dated-object projection (first occurrence per job/date; all duplicates remain in raw pages); quote date separate from `collected_at` / `collection_date`, original raw and adjusted provider fields in `data`, listing and job ID. Observations are immutable; retries of the same job/date are idempotent. API reads select the latest observation per date, optionally bounded by `as_of`.
 - **`acquisition_jobs`**: durable status, progress, sanitized errors, requested range and pagination checkpoint. A partial unique index allows only one active job per ISIN. A five-minute renewable worker lease fences abandoned work; polling exposes expired jobs as retryable failures. Queued requests not started within 30 minutes are also exposed as retryable failures, covering offline workers or an interrupted Mongo-to-broker handoff; any later delivery of an expired job is skipped. Delivery is at least once: a crash between a paid response and its checkpoint can require another request, so HTTP is not exactly once.
-- **`instrument_state`**: cached listing, optional `listing_resolution` evidence (source, query, name, collection timestamp and complete chosen row), and last fully processed quote watermark. Earlier records remain available if an update fails.
+- **`instrument_state`**: cached listing, optional `listing_resolution` evidence (source, query, name, collection timestamp and complete chosen row), optional manual `price_currency_override`, and last fully processed quote watermark. Earlier records remain available if an update fails.
 
 **Ingestion is deliberately permissive; cleanup is deferred.** Null/missing prices, zero/negative values, unexpected field types, identifier mismatches, out-of-range/unordered/duplicate dates and changing pagination metadata do not block downloads. Full EOD responses are retained in `raw_eod_pages`; rows without a usable date remain there and are counted in `unindexed_rows`, rather than crashing acquisition. No new quality flags or quality-based chart filtering are applied. Pagination advances by returned row count, stops on empty/exhausted pages and remains bounded by the per-job quota cap. Authentication, transport/JSON-envelope handling, explicit authorization, leases and budget safeguards remain.
 
-The candlestick chart uses **unadjusted** OHLC; adjusted values remain available as returned, including nulls. Incremental updates do not recalculate older corporate-action adjustments. Numeric prices and volumes are returned as exact strings; nulls, missing fields and unexpected JSON shapes are preserved. Non-finite tokens and integers outside BSON's signed-64-bit range are represented as strings for storage. Only chart rendering converts values to JavaScript numbers. It plots finite numeric OHLC as supplied, including inconsistent bounds and zero/negative prices; rows that cannot be drawn remain saved. Unknown listing currency remains unknown; fund currency is not substituted.
+The candlestick chart uses **unadjusted** OHLC; adjusted values remain available as returned, including nulls. Incremental updates do not recalculate older corporate-action adjustments. Numeric prices and volumes are returned as exact strings; nulls, missing fields and unexpected JSON shapes are preserved. Non-finite tokens and integers outside BSON's signed-64-bit range are represented as strings for storage. Only chart rendering converts values to JavaScript numbers. It plots finite numeric OHLC as supplied, including inconsistent bounds and zero/negative prices; rows that cannot be drawn remain saved. Unknown listing currency remains unknown; fund currency is not substituted. When price currency is unknown, use **Price currency → Save currency** on the instrument page to set **EUR, USD, CHF, GBP or RUB**. The selector is hidden when provider prices determine the currency or a manual choice is already saved. The saved manual setting is shared across users, persists through data updates, and labels chart prices and tooltips without converting amounts or rewriting raw provider observations. Saving does not consume provider quota.
 
 Authenticated endpoints (browser prefix `/api`):
 
@@ -115,9 +115,36 @@ Authenticated endpoints (browser prefix `/api`):
 | `GET /instruments/acquired?limit=20&offset=0` | Paginated acquired ETFs with saved profile and quote coverage, no provider calls |
 | `GET /instruments/{isin}[?as_of=...Z]` | Catalogue, collected profile, coverage, job and local budget |
 | `GET /instruments/{isin}/quotes?limit=1000&offset=0[&as_of=...Z]` | Latest-observation candles, ascending and paginated |
+| `PATCH /instruments/{isin}/price-currency` | `{price_currency: "EUR" \| "USD" \| "CHF" \| "GBP" \| "RUB"}`; saves a manual chart currency override |
 | `POST /instruments/{isin}/acquisitions` | `{confirmed: true, mode: "update" \| "backfill"}`; optional paired `symbol`/`exchange` manual override; returns 202 and durable job |
 
-`as_of` requires an explicit timezone and filters **collected market-data observations**; the catalogue and current operational job/budget are still current. See [the design contract](docs/on-demand-market-data.md).
+`as_of` requires an explicit timezone and filters **collected market-data observations**; the catalogue, manual price-currency setting and operational job/budget are still current. See [the design contract](docs/on-demand-market-data.md).
+
+## Return statistics and goal planning
+
+After EOD acquisition, Hedgehoog calculates each instrument's daily return mean
+and sample variance (not the mean/variance of price levels). Existing downloads
+are calculated lazily without spending provider quota. Statistics appear on the
+instrument page.
+
+Open **Goal planner** to choose one EUR-priced instrument and enter your goal in
+EUR, starting capital, goal date and target reliability (50–99%). A repeatable
+10,000-path Monte Carlo simulation estimates the fixed monthly contribution
+needed, plus model success probability and terminal-value percentiles. A projection
+graph shows average portfolio value as a line, shaded 5th–95th and 25th–75th
+percentile clouds across all 10,000 traces, and the goal as a dashed line. It requires
+at least 60 usable daily returns; monthly payments start one month from today.
+
+This is a **model estimate, not a guarantee**. It uses historical log returns,
+assumes fractional shares and independent returns, and excludes inflation, taxes
+and transaction fees. Unknown or conflicting currencies must be resolved; a EUR
+label does not convert non-EUR history. See [model, data rules and API details](docs/goal-planner.md).
+Rebuild the worker with `make services-up` after updating backend dependencies.
+
+Authenticated endpoints: `GET /instruments/{isin}/statistics` and
+`POST /goals/simulate` with `{instrument_id, goal_eur, starting_capital_eur,
+goal_date, reliability}`. Reliability is a fraction, e.g. `0.90`; money outputs
+are decimal strings. Neither endpoint calls the provider.
 
 ## Authentication and authorization
 

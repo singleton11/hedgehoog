@@ -21,6 +21,7 @@ from auth import (
 from celery_app import enqueue_etf_import
 from config import Settings
 from instrument_routes import router as instrument_router
+from goal_planner import router as goal_router
 from market_data import DataError
 
 
@@ -41,6 +42,7 @@ def create_app(settings: Settings | None = None, client_factory=MongoClient) -> 
 
     app = FastAPI(lifespan=lifespan)
     app.include_router(instrument_router)
+    app.include_router(goal_router)
 
     @app.exception_handler(DataError)
     async def acquisition_error(request: Request, exc: DataError):
