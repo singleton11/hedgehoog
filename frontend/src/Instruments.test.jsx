@@ -240,14 +240,14 @@ describe('explicit acquisition and complete charts', () => {
     await advance(POLL_INTERVAL);
     expect(screen.getByText('Acquisition: succeeded')).toBeInTheDocument();
     expect(screen.getByRole('img', { name: /Unadjusted OHLC candlestick chart/ })).toBeInTheDocument();
-    expect(screen.getByText('1001 quotes loaded · 250 in this window · 250 candles plotted')).toBeInTheDocument();
+    expect(screen.getByText('1001 quotes loaded · 366 in this window · 366 candles plotted')).toBeInTheDocument();
     expect(screen.getByText('Plan or listing history truncated.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Update Data' })).toBeEnabled();
     const pages = server.pages().slice(-2).map(([url]) => new URL(url, 'http://localhost').searchParams);
     expect(pages.map((params) => params.get('offset'))).toEqual(['0', '1000']);
     expect(pages[0].get('as_of')).toBeNull();
     expect(pages[1].get('as_of')).toBe('2026-09-17T12:00:00Z');
-    fireEvent.click(screen.getByRole('button', { name: 'All quotes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'all' }));
     expect(screen.getByText('1001 quotes loaded · 1001 in this window · 1001 candles plotted')).toBeInTheDocument();
     const reads = server.reads().length;
     await advance(POLL_INTERVAL * 2);
@@ -438,12 +438,12 @@ describe('explicit acquisition and complete charts', () => {
   it('plots EUNL out-of-bounds prices as supplied without filtering on old quality flags', async () => {
     const server = mockServer();
     server.details[A] = withData();
-    server.quotes[A] = [quote(0, { open: '44.213', high: '44.213', low: '44.213', close: '44.21', quality_flags: ['ohlc_bounds'] }),
+    server.quotes[A] = [quote(0, { date: '2018-01-01', open: '44.213', high: '44.213', low: '44.213', close: '44.21', quality_flags: ['ohlc_bounds'] }),
       ...Array.from({ length: 250 }, (_, index) => quote(index + 1))];
     await open(A);
     expect(screen.getByText('251 quotes loaded · 250 in this window · 250 candles plotted')).toBeInTheDocument();
     expect(screen.queryByText(/inconsistent OHLC bounds are excluded/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'All quotes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'all' }));
     expect(screen.getByText('251 quotes loaded · 251 in this window · 251 candles plotted')).toBeInTheDocument();
     const raw = JSON.parse(screen.getByLabelText('Quote observations (current window, all provider fields)').textContent);
     expect(raw[0]).toMatchObject({ low: '44.213', close: '44.21', quality_flags: ['ohlc_bounds'] });

@@ -24,11 +24,25 @@ function description(quote) {
   return `${quote.date} · Open ${raw(quote.open)} · High ${raw(quote.high)} · Low ${raw(quote.low)} · Close ${raw(quote.close)} · Volume ${raw(quote.volume)} · Price currency: ${quote.price_currency || 'unknown'}`;
 }
 
+const RANGE_MONTHS = { '1m': 1, '6m': 6, '1y': 12, '5y': 60 };
+
+function quotesInRange(quotes, range) {
+  if (range === 'all' || !quotes.length) return quotes;
+  // Quote pages are chronological; anchor ranges to the latest loaded observation.
+  const latest = new Date(`${quotes.at(-1).date}T00:00:00Z`);
+  const start = new Date(Date.UTC(latest.getUTCFullYear(), latest.getUTCMonth() - RANGE_MONTHS[range], 1));
+  // Clamp month ends (and leap days) instead of overflowing into the next month.
+  const lastDay = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0)).getUTCDate();
+  start.setUTCDate(Math.min(latest.getUTCDate(), lastDay));
+  const firstDate = start.toISOString().slice(0, 10);
+  return quotes.filter((quote) => quote.date >= firstDate);
+}
+
 export default function CandlestickChart({ quotes }) {
-  const [windowSize, setWindowSize] = useState('250');
+  const [range, setRange] = useState('1y');
   const [hover, setHover] = useState(null);
   const id = useId();
-  const visible = useMemo(() => windowSize === 'all' ? quotes : quotes.slice(-Number(windowSize)), [quotes, windowSize]);
+  const visible = useMemo(() => quotesInRange(quotes, range), [quotes, range]);
   const candles = useMemo(() => visible.map(candle).filter(Boolean), [visible]);
   const currencies = [...new Set(visible.map((quote) => quote.price_currency || null))];
   const currency = currencies.length === 1 && currencies[0] ? currencies[0] : 'Unknown / not consistently supplied';
@@ -50,9 +64,9 @@ export default function CandlestickChart({ quotes }) {
   return <section aria-label="Price history" className="price-history">
     <div className="section-heading"><h2>Price history</h2>
       <div className="button-group" role="group" aria-label="Chart window">
-        {[["60", 'Recent 60'], ["250", 'Recent 250'], ['all', 'All quotes']].map(([value, label]) =>
-          <button type="button" key={value} className="secondary" aria-pressed={windowSize === value}
-            onClick={() => { setWindowSize(value); setHover(null); }}>{label}</button>)}
+        {['1m', '6m', '1y', '5y', 'all'].map((value) =>
+          <button type="button" key={value} className="secondary" aria-pressed={range === value}
+            onClick={() => { setRange(value); setHover(null); }}>{value}</button>)}
       </div>
     </div>
     <p className="muted">Unadjusted OHLC · Listing price currency: {currency}. Fund currency is not a substitute. Dates are trading observations, not evenly spaced calendar days.</p>
