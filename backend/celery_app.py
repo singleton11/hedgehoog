@@ -7,6 +7,7 @@ from celery import Celery
 from config import TaskSettings
 
 ETF_IMPORT_TASK = "etfs.import_daily"
+ACQUISITION_TASK = "marketdata.acquire"
 logger = logging.getLogger(__name__)
 
 
@@ -57,4 +58,12 @@ def enqueue_etf_import(settings: TaskSettings) -> str:
     with create_celery_app(settings) as producer:
         result = producer.send_task(ETF_IMPORT_TASK)
     logger.info("Queued ETF import task %s", result.id)
+    return result.id
+
+
+def enqueue_acquisition(settings: TaskSettings, job_id: str) -> str:
+    # The message contains only a durable job ID, never credentials or payloads.
+    with create_celery_app(settings) as producer:
+        result = producer.send_task(ACQUISITION_TASK, args=[job_id], task_id=job_id, queue="marketdata")
+    logger.info("Queued acquisition job %s", job_id)
     return result.id

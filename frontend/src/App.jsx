@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './Auth.jsx';
+import InstrumentWorkspace from './InstrumentWorkspace.jsx';
 
 function Login() {
   const { signIn } = useAuth();
@@ -92,7 +93,7 @@ function Dashboard() {
   }
 
   return (
-    <main>
+    <main className="workspace">
       <header>
         <span className="eyebrow">Hedgehoog</span>
         <button className="secondary" onClick={logout} disabled={busy}>{busy ? 'Signing out…' : 'Sign out'}</button>
@@ -100,8 +101,11 @@ function Dashboard() {
       <h1>Hello, {user.login}!</h1>
       <p>Welcome to your workspace. <span className="badge">{user.role}</span></p>
       {error && <p role="alert">{error}</p>}
-      <BackendMessage path="/" heading="Backend response" />
-      {user.role === 'admin' && <BackendMessage path="/admin" heading="Administration" />}
+      <InstrumentWorkspace />
+      <details className="service-status"><summary>Service status</summary>
+        <BackendMessage path="/" heading="Backend response" />
+        {user.role === 'admin' && <BackendMessage path="/admin" heading="Administration" />}
+      </details>
     </main>
   );
 }

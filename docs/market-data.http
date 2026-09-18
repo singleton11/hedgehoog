@@ -1,0 +1,12 @@
+
+###
+GET https://api.marketstack.com/v2/etflist?access_key={{$processEnv MARKETSTACK_API_KEY}}&limit=1000&offset=0
+
+###
+GET https://api.marketstack.com/v2/eod/latest?access_key={{$processEnv MARKETSTACK_API_KEY}}&symbols=IWDA.AS
+
+###
+GET https://api.marketstack.com/v2/tickers/IWDA.AS?access_key={{$processEnv MARKETSTACK_API_KEY}}
+
+###
+GET https://api.marketstack.com/v2/etfholdings?access_key={{$processEnv MARKETSTACK_API_KEY}}&ticker=IWDA.AS

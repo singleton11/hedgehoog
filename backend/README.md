@@ -1,6 +1,6 @@
 # Backend
 
-A minimal FastAPI app, managed with [uv](https://docs.astral.sh/uv/).
+FastAPI, MongoDB and Celery backend, managed with [uv](https://docs.astral.sh/uv/).
 
 ## Install uv
 
@@ -93,6 +93,21 @@ Try it in another terminal:
 
 ```sh
 curl http://127.0.0.1:8000/
+```
+
+## Instrument acquisition
+
+Authenticated `/instruments/search`, `/instruments/{isin}` and `/instruments/{isin}/quotes` routes read the catalogue and collected observations from MongoDB. Explicit `POST /instruments/{isin}/acquisitions` requests queue `marketdata.acquire`; the worker consumes both `etfs` and `marketdata`.
+
+Set the server-only `MARKETSTACK_API_KEY` and an explicit `MARKETSTACK_MONTHLY_BUDGET` in the root `.env`; zero (the default) disables acquisition. Restart the API and rebuild the worker after configuration changes. No provider requests run automatically on startup, search or page load. Provider HTTP errors are sanitized and are not automatically retried. Market-data ingestion is permissive: missing/null/unusual values, identifier mismatches, dates/order/duplicates and inconsistent pagination metadata do not block downloads. Complete envelopes are saved in `raw_eod_pages` before projecting dated objects into `quotes`; unindexable rows remain in raw pages. API fields accept arbitrary provider values. Charts draw finite numeric OHLC as supplied, without quality-based filtering. Transport errors, unusable JSON/envelope shapes and quota limits still fail safely.
+
+Initial requests use a saved listing or resolve the catalogue ticker via `/v2/tickerslist`: first named exact `TICKER.suffix` match with EOD support and a valid `stock_exchange.mic`. Cache the mapping and evidence in `instrument_state` before tickerinfo/EOD; retries and updates reuse it. POST only needs `{confirmed: true}` (plus optional mode); paired symbol/MIC overrides remain supported. Lookup pagination consumes the same job/monthly quota. The current paid allowance is 10,000 requests/month, configured locally; defaults remain disabled.
+
+Initial requests target inception; provider plan and listing coverage can restrict returned history. Coverage is shown explicitly. Updates request newer dates and refresh tickerinfo; older-history backfill is separate. `instruments` and `quotes` retain immutable observations with exact collection timestamps and support knowledge-time `as_of` reads. See the [full storage, quota and API contract](../README.md#on-demand-instrument-data).
+
+```sh
+uv run pytest  # Includes provider MockTransport, acquisition and API tests; no live API calls
+# Optional: set TEST_MONGODB_URI and TEST_CELERY_BROKER_URL for isolated real-service tests.
 ```
 
 ## Manage dependencies

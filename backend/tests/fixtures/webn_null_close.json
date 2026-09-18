@@ -1,0 +1,11 @@
+{
+  "pagination": {"limit": 1000, "offset": 0, "count": 1, "total": 1},
+  "data": [{
+    "open": 12.338, "high": 12.34, "low": 12.236, "close": null,
+    "volume": 259383.0, "adj_high": null, "adj_low": null, "adj_close": null,
+    "adj_open": null, "adj_volume": null, "split_factor": 1.0, "dividend": 0.0,
+    "name": "Amundi Prime All Country World UCITS ETF Acc", "exchange_code": null,
+    "asset_type": null, "price_currency": null, "symbol": "WEBN.DE", "exchange": "XETR",
+    "date": "2026-06-09T00:00:00+0000"
+  }]
+}

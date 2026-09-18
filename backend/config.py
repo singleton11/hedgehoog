@@ -20,6 +20,11 @@ class TaskSettings(BaseSettings):
     celery_broker_url: SecretStr = SecretStr(
         "amqp://hedgehoog:hedgehoog-local@127.0.0.1:5672//"
     )
+    marketstack_api_key: SecretStr = SecretStr("")
+    # Local conservative cap, independent of provider usage outside this app.
+    # Disabled by default: explicitly configure a budget before spending quota.
+    marketstack_monthly_budget: int = Field(default=0, ge=0, le=1_000_000)
+    marketstack_max_calls_per_job: int = Field(default=12, ge=1, le=100)
 
 
 class Settings(TaskSettings):

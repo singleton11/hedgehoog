@@ -1,6 +1,6 @@
 # Hedgehoog
 
-React/Vite frontend and FastAPI backend, with MongoDB users, JWT authentication, and Celery ETF catalogue ingestion backed by RabbitMQ.
+React/Vite frontend and FastAPI backend, with MongoDB users, JWT authentication, ETF search, and on-demand Marketstack acquisition through Celery/RabbitMQ.
 
 ## Run locally
 
@@ -60,7 +60,7 @@ losing the import request. MongoDB must still be available for API authenticatio
 - ISINs absent from a later feed are **not deleted**, including records written by an earlier partial attempt that day. No UCITS filtering or completeness checks are applied beyond importing the supplied source.
 - The entire feed must be a non-empty JSON array of objects with valid, distinct ISINs before any **ETF document** writes occur. HTTP, validation or database failures fail the task, not the API; the incomplete status permits a retry.
 - Existing installations automatically replace the old ISIN-only unique index with the compound index. Legacy **undated documents are retained unchanged** because their original import date is unknown; they are not treated as today's snapshot.
-- HTTP timeouts are 10 seconds for connection establishment and 60 seconds for other network operations. A writable database is always required; GitHub access is needed only for an incomplete day. Bulk writes are not transactional, and the completion flag is **not an exclusive lock** between simultaneous importers. Compose runs one worker with concurrency **1**, consuming only the `etfs` queue; do not scale it up without adding distributed import locking.
+- HTTP timeouts are 10 seconds for connection establishment and 60 seconds for other network operations. A writable database is always required; GitHub access is needed only for an incomplete day. Bulk writes are not transactional, and the completion flag is **not an exclusive lock** between simultaneous importers. Compose runs one worker with concurrency **1**, consuming the `etfs` and `marketdata` queues; do not scale catalogue imports up without adding distributed import locking. On-demand market-data acquisitions have their own per-instrument gate and worker lease.
 
 The task retries import/database failures up to **5 times** after its initial attempt,
 with exponential backoff starting at 30 seconds, capped at 10 minutes, and jitter.
@@ -79,9 +79,42 @@ docker compose exec celery-worker celery -A celery_app:app call etfs.import_dail
 docker compose logs -f celery-worker      # Watch imports/retries/failures
 ```
 
-Startup and explicit manual dispatch are the only triggers. No Celery Beat,
-ETF query endpoint or scheduled refresh is added yet. A continuously running
-server will not automatically import at midnight.
+Startup and explicit manual dispatch are the only catalogue-import triggers. There is no Celery Beat or scheduled refresh. A continuously running server will not automatically import at midnight.
+
+## On-demand instrument data
+
+After sign-in, search the local ETF catalogue by name, ticker or ISIN and open an instrument page. Search, page reads, polling and charts use MongoDB only: browsing never spends Marketstack quota.
+
+1. Configure `MARKETSTACK_API_KEY` in the gitignored root `.env`, and set `MARKETSTACK_MONTHLY_BUDGET` to the local monthly cap (`10000` for the current paid plan; reduce it if the key is shared with other applications). The default **0 disables acquisition**. Rebuild/restart the worker with `make services-up`; restart the API when its settings change. Both processes must use the same key, budget and database. Never use a `VITE_` variable for this key.
+2. Authorize acquisition without entering a provider symbol or MIC. If no mapping is saved, the worker searches `/v2/tickerslist?search=<catalogue ticker>` and picks the first named, EOD-enabled exact `TICKER.exchange` match in provider order with a valid `stock_exchange.mic`. For example, `WEBN` skips `WEBNF` and unnamed listings, selecting `WEBN.DE` / `XETR`. The suffix is **not** the MIC. The mapping and lookup evidence are persisted per instrument and reused without searching again. This heuristic is not an independently verified ISIN match; provider identifiers are retained as supplied without identity-validation blockers. Manual symbol/MIC override remains available before quotes exist; thereafter the listing cannot change or mix with another listing.
+3. **Request Data** queues `marketdata.acquire` on the durable `marketdata` queue. The worker retrieves `/v2/tickerinfo` plus paginated `/v2/eod` with `limit=1000`, from inception through yesterday UTC. The page displays queued/running progress, failures, returned coverage, all metadata and unadjusted OHLC candles.
+4. **Update Data** refreshes tickerinfo and requests dates after the last quote of the last fully processed range. Empty responses do not move this watermark forward, so late publication beyond the last received date can be retrieved next time. Failed ranges do not advance it. There is no market-calendar inference or automatic repair of interior historical gaps/corrections.
+5. **Retry Older History** explicitly retries the gap between inception and the earliest stored quote. Normal updates do not repeatedly request inaccessible older data. The Free plan can silently return only one year even for a since-inception request with HTTP 200; the page warns about incomplete history instead of claiming a full backfill. Provider/exchange coverage may also start later than fund inception. Historical access requires the appropriate plan.
+
+An uncached acquisition also costs **one ticker search request per result page until a match**, using `limit=1000` and the same job/monthly limits. No match fails safely without tickerinfo/EOD and is not cached. A saved mapping survives later download failures. Each acquisition then normally costs **one tickerinfo request plus one EOD request per 1,000-row page**. Marketstack charges per symbol, not just per HTTP request. The app reserves each attempt against `marketstack_usage` atomically before HTTP and does not refund errors, timeouts or abandoned reservations. This is intentionally conservative: the displayed local budget is **not** the provider dashboard balance and does not include other applications' usage. Counters are keyed by UTC calendar month (not necessarily the provider billing cycle); recheck/set the allowance when those differ. `MARKETSTACK_MAX_CALLS_PER_JOB` defaults to 12. No provider failure is automatically retried; inspect the error before explicitly requesting again. Mongo failures can resume persisted job checkpoints.
+
+Storage:
+
+- **`instruments`**: append-only tickerinfo observations, including complete nested provider `data`, `instrument_id` (ISIN), provider symbol/MIC, job ID, exact UTC `collected_at` and UTC `collection_date`. Multiple observations in a day are retained. Point-in-time means *known when collected*, not historical fundamentals reconstructed before collection.
+- **`raw_eod_pages`**: complete parsed provider envelopes, keyed by job and offset, saved before indexing. Retains all rows, including duplicates, malformed dates, unexpected shapes and missing values for later cleanup. Re-indexing a saved page after a worker/DB interruption does not consume another provider call.
+- **`quotes`**: dated-object projection (first occurrence per job/date; all duplicates remain in raw pages); quote date separate from `collected_at` / `collection_date`, original raw and adjusted provider fields in `data`, listing and job ID. Observations are immutable; retries of the same job/date are idempotent. API reads select the latest observation per date, optionally bounded by `as_of`.
+- **`acquisition_jobs`**: durable status, progress, sanitized errors, requested range and pagination checkpoint. A partial unique index allows only one active job per ISIN. A five-minute renewable worker lease fences abandoned work; polling exposes expired jobs as retryable failures. Queued requests not started within 30 minutes are also exposed as retryable failures, covering offline workers or an interrupted Mongo-to-broker handoff; any later delivery of an expired job is skipped. Delivery is at least once: a crash between a paid response and its checkpoint can require another request, so HTTP is not exactly once.
+- **`instrument_state`**: cached listing, optional `listing_resolution` evidence (source, query, name, collection timestamp and complete chosen row), and last fully processed quote watermark. Earlier records remain available if an update fails.
+
+**Ingestion is deliberately permissive; cleanup is deferred.** Null/missing prices, zero/negative values, unexpected field types, identifier mismatches, out-of-range/unordered/duplicate dates and changing pagination metadata do not block downloads. Full EOD responses are retained in `raw_eod_pages`; rows without a usable date remain there and are counted in `unindexed_rows`, rather than crashing acquisition. No new quality flags or quality-based chart filtering are applied. Pagination advances by returned row count, stops on empty/exhausted pages and remains bounded by the per-job quota cap. Authentication, transport/JSON-envelope handling, explicit authorization, leases and budget safeguards remain.
+
+The candlestick chart uses **unadjusted** OHLC; adjusted values remain available as returned, including nulls. Incremental updates do not recalculate older corporate-action adjustments. Numeric prices and volumes are returned as exact strings; nulls, missing fields and unexpected JSON shapes are preserved. Non-finite tokens and integers outside BSON's signed-64-bit range are represented as strings for storage. Only chart rendering converts values to JavaScript numbers. It plots finite numeric OHLC as supplied, including inconsistent bounds and zero/negative prices; rows that cannot be drawn remain saved. Unknown listing currency remains unknown; fund currency is not substituted.
+
+Authenticated endpoints (browser prefix `/api`):
+
+| Route | Purpose |
+| --- | --- |
+| `GET /instruments/search?q=...` | Latest-snapshot autocomplete, no provider calls |
+| `GET /instruments/{isin}[?as_of=...Z]` | Catalogue, collected profile, coverage, job and local budget |
+| `GET /instruments/{isin}/quotes?limit=1000&offset=0[&as_of=...Z]` | Latest-observation candles, ascending and paginated |
+| `POST /instruments/{isin}/acquisitions` | `{confirmed: true, mode: "update" \| "backfill"}`; optional paired `symbol`/`exchange` manual override; returns 202 and durable job |
+
+`as_of` requires an explicit timezone and filters **collected market-data observations**; the catalogue and current operational job/budget are still current. See [the design contract](docs/on-demand-market-data.md).
 
 ## Authentication and authorization
 
