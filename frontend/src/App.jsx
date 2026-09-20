@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { AuthProvider, useAuth } from './Auth.jsx';
 import InstrumentWorkspace from './InstrumentWorkspace.jsx';
 
@@ -42,38 +42,6 @@ function Login() {
   );
 }
 
-function BackendMessage({ path, heading }) {
-  const { request } = useAuth();
-  const [message, setMessage] = useState(null);
-  const [error, setError] = useState(null);
-  const [attempt, setAttempt] = useState(0);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setMessage(null);
-    setError(null);
-    async function load() {
-      try {
-        const data = await request(path, { signal: controller.signal });
-        if (typeof data?.message !== 'string') throw new Error('Backend returned an unexpected response.');
-        if (!controller.signal.aborted) setMessage(data.message);
-      } catch (error) {
-        if (!controller.signal.aborted) setError(error.message);
-      }
-    }
-    load();
-    return () => controller.abort();
-  }, [path, request, attempt]);
-
-  return (
-    <section aria-label={heading}>
-      <h2>{heading}</h2>
-      {error ? <><p role="alert">{error}</p><button className="secondary" onClick={() => setAttempt(attempt + 1)}>Retry</button></>
-        : <p role="status">{message ?? 'Loading…'}</p>}
-    </section>
-  );
-}
-
 function Dashboard() {
   const { user, signOut } = useAuth();
   const [busy, setBusy] = useState(false);
@@ -101,10 +69,6 @@ function Dashboard() {
       </header>
       {error && <p role="alert">{error}</p>}
       <InstrumentWorkspace />
-      <details className="service-status"><summary>Service status</summary>
-        <BackendMessage path="/" heading="Backend response" />
-        {user.role === 'admin' && <BackendMessage path="/admin" heading="Administration" />}
-      </details>
     </main>
   );
 }
