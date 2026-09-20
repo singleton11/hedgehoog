@@ -1,5 +1,7 @@
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import math
+from statistics import mean, variance
 from unittest.mock import Mock
 
 import mongomock
@@ -137,6 +139,7 @@ def test_acquired_list_includes_profile_only_after_failed_download(db, config):
         "instrument_id": ISIN, "isin": ISIN, "name": "iShares Core S&P 500 UCITS ETF",
         "ticker": "SXR8", "listing": LISTING, "collected_at": "2026-09-17T12:00:00Z",
         "quote_count": 0, "first_date": None, "last_date": None,
+        "annualized_mean_log_return": None, "annualized_volatility": None,
     }]
 
 
@@ -161,6 +164,7 @@ def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config
         "instrument_id": ISIN, "isin": ISIN, "name": "Updated catalogue name", "ticker": "NEW",
         "listing": LISTING, "collected_at": "2026-09-17T13:00:00Z", "quote_count": 2,
         "first_date": "2026-09-15", "last_date": "2026-09-16",
+        "annualized_mean_log_return": 0.0, "annualized_volatility": None,
     }]}
     assert md.acquired_instruments(db, limit=1, offset=2) == {"items": [], "total": 2, "limit": 1, "offset": 2}
     # Later failed updates do not remove already acquired observations.
@@ -168,6 +172,49 @@ def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config
     assert md.acquired_instruments(db)["total"] == 2
     db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "collected_at": clock[0] + timedelta(hours=1), "job_id": "newest"})
     assert md.acquired_instruments(db)["items"][0]["instrument_id"] == ISIN
+
+
+def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(db, config, clock, monkeypatch):
+    import return_statistics
+
+    rows = [bar(f"2026-09-{day}", close) for day, close in [(14, "100"), (15, "110"), (16, "99")]]
+    collect(db, config, Provider([page(rows)]))
+    db.instruments.insert_one({"instrument_id": "IE00B4L5Y983", **LISTING,
+                              "collected_at": NOW - timedelta(hours=1), "job_id": "other-profile"})
+    db.instrument_statistics.delete_many({})  # Previously acquired, not yet calculated.
+    original_quotes = list(db.quotes.find())
+    refresh = Mock(wraps=return_statistics.refresh_statistics)
+    monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
+    item = md.acquired_instruments(db, limit=1)["items"][0]
+    refresh.assert_called_once_with(db, ISIN)
+    assert db.instrument_statistics.count_documents({}) == 1  # Not the off-page ETF.
+    logs = [math.log(1.1), math.log(0.9)]
+    assert item["annualized_mean_log_return"] == pytest.approx(mean(logs) * 252)
+    assert item["annualized_volatility"] == pytest.approx(math.sqrt(variance(logs) * 252))
+    assert list(db.quotes.find()) == original_quotes
+    cached = db.instrument_statistics.find_one({"_id": ISIN})
+    clock[0] += timedelta(hours=1)
+    assert md.acquired_instruments(db, limit=1)["items"][0] == item
+    assert db.instrument_statistics.find_one({"_id": ISIN}) == cached
+    revised = original_quotes[-1]
+    db.quotes.insert_one({**revised, "_id": "revision", "job_id": "revision", "collected_at": clock[0],
+                          "data": {**revised["data"], "adj_close": "121"}})
+    updated = md.acquired_instruments(db, limit=1)["items"][0]
+    assert updated["quote_count"] == 3
+    assert updated["annualized_mean_log_return"] == pytest.approx(math.log(1.1) * 252)
+    assert updated["annualized_volatility"] == pytest.approx(0)
+
+
+@pytest.mark.parametrize("missing_state", [True, False])
+def test_acquired_annual_statistics_never_use_a_different_listing(db, config, missing_state):
+    collect(db, config, Provider([page([bar("2026-09-14", "100"), bar("2026-09-15", "110"), bar("2026-09-16", "121")])]))
+    db.instruments.update_many({}, {"$set": {"symbol": "PROFILE.DE"}})
+    if missing_state:
+        db.instrument_state.delete_one({"_id": ISIN})
+    item = md.acquired_instruments(db)["items"][0]
+    assert item["listing"]["symbol"] == "PROFILE.DE"
+    assert item["annualized_mean_log_return"] is None
+    assert item["annualized_volatility"] is None
 
 
 def test_request_queues_only_once_and_does_not_collect(db, config):
@@ -575,7 +622,7 @@ def test_price_currency_override_is_shared_between_authenticated_users(api, db):
 
 
 def test_acquired_api_returns_saved_data_without_provider_calls(api, db, config, monkeypatch):
-    collect(db, config)
+    collect(db, config, Provider([page([bar("2026-09-14", "100"), bar("2026-09-15", "110"), bar("2026-09-16", "99")])]))
     provider = Mock(side_effect=AssertionError("Browsing must not call Marketstack"))
     monkeypatch.setattr(md, "MarketstackClient", provider)
     used = md.budget_status(db, config)["used"]
@@ -583,7 +630,12 @@ def test_acquired_api_returns_saved_data_without_provider_calls(api, db, config,
     client.post("/auth/login", json={"login": "admin", "password": "admin"})
     response = client.get("/instruments/acquired?limit=1&offset=0")
     assert response.status_code == 200
-    assert response.json()["items"][0]["quote_count"] == 1
+    item = response.json()["items"][0]
+    assert item["quote_count"] == 3
+    stats = client.get(f"/instruments/{ISIN}/statistics").json()
+    for key in ("annualized_mean_log_return", "annualized_volatility"):
+        assert item[key] == stats[key]
+        assert isinstance(item[key], float)
     assert response.json()["total"] == 1
     assert "data" not in response.json()["items"][0]
     assert config.marketstack_api_key.get_secret_value() not in response.text

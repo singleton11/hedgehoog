@@ -15,8 +15,9 @@ const statistics = (isin = A, extra = {}) => ({
   instrument_id: isin, name: isin === A ? 'World &amp; Europe ETF' : 'Second ETF', listing: { symbol: 'ETF.DE', exchange: 'XETR' },
   computed_at: '2026-09-17T12:00:00Z', as_of: '2026-09-17T12:00:00Z', price_basis: 'adj_close',
   quote_count: 301, price_count: 300, return_count: 299, first_date: '2025-07-01', last_date: '2026-09-16',
-  daily_mean_return: 0.0005, daily_return_variance: 0.000123, daily_mean_log_return: 0.0004,
-  daily_log_return_variance: 0.00012, annualized_volatility: 0.176, price_currency: 'EUR', currency_source: 'provider',
+  daily_mean_log_return: 0.0004,
+  daily_log_return_variance: 0.00012, daily_volatility: Math.sqrt(0.00012), annualized_mean_log_return: 0.1008,
+  annualized_volatility: Math.sqrt(0.00012 * 252), price_currency: 'EUR', currency_source: 'provider',
   eligible: true, ineligible_reason: null, warnings: [], ...extra,
 });
 const simulation = (body, extra = {}) => ({
@@ -132,7 +133,7 @@ describe('planner routes and eligibility', () => {
   it.each([
     ['non-EUR', { price_currency: 'USD', eligible: false, ineligible_reason: 'Only EUR-traded instruments are supported.' }],
     ['unknown currency', { price_currency: null, currency_source: null, eligible: false, ineligible_reason: 'Price currency is unknown.' }],
-    ['no data', { quote_count: 0, price_count: 0, return_count: 0, first_date: null, last_date: null, daily_mean_return: null, daily_return_variance: null, annualized_volatility: null, eligible: false, ineligible_reason: 'Download history first.' }],
+    ['no data', { quote_count: 0, price_count: 0, return_count: 0, first_date: null, last_date: null, daily_mean_log_return: null, daily_log_return_variance: null, daily_volatility: null, annualized_mean_log_return: null, annualized_volatility: null, eligible: false, ineligible_reason: 'Download history first.' }],
     ['insufficient history', { return_count: 59, eligible: false, ineligible_reason: 'At least 60 return observations are required.' }],
   ])('gates %s and explains how to obtain eligible saved data', async (_, extra) => {
     const server = mockServer();
@@ -146,15 +147,21 @@ describe('planner routes and eligibility', () => {
     expect(posts()).toHaveLength(0);
   });
 
-  it('renders daily statistics, raw fraction-squared variance, counts, basis and warnings', async () => {
+  it('renders daily and annual log returns and volatility as percentages, with counts, basis and warnings', async () => {
     const server = mockServer();
     server.stats = async () => statistics(A, { price_basis: 'close', warnings: ['Some rows were unusable.'], currency_source: 'manual' });
     await openGoal();
     fireEvent.click(screen.getByText('Saved return statistics'));
-    expect(screen.getByText('0.05%')).toBeInTheDocument();
-    expect(screen.getByText('0.000123')).toBeInTheDocument();
-    expect(screen.queryByText('0.0123%')).not.toBeInTheDocument();
-    expect(screen.getByText('17.6%')).toBeInTheDocument();
+    expect(screen.getAllByRole('term').slice(0, 4).map((term) => term.textContent)).toEqual([
+      'Daily return', 'Daily volatility', 'Annual return', 'Annual volatility',
+    ]);
+    for (const [label, value] of [['Daily return', '0.04%'], ['Daily volatility', '1.1%'],
+      ['Annual return', '10.08%'], ['Annual volatility', '17.39%']]) {
+      expect(within(screen.getByText(label).closest('div')).getByText(value)).toBeInTheDocument();
+    }
+    expect(screen.getByText('Annual return')).toHaveAttribute('title', 'Average daily log return × 252 trading days');
+    expect(screen.queryByText(/simple.return|fraction²/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('0.00012')).not.toBeInTheDocument();
     expect(screen.getByText('301 / 300 / 299')).toBeInTheDocument();
     expect(screen.getByText('2025-07-01 – 2026-09-16')).toBeInTheDocument();
     expect(screen.getByText('Unadjusted close')).toBeInTheDocument();
@@ -222,7 +229,14 @@ describe('explicit monthly simulation', () => {
     expect(details.closest('details')).not.toHaveAttribute('open');
     fireEvent.click(details);
     expect(view.getByText('2026-10-17 / 2036-09-17')).toBeVisible();
-    expect(view.getByText('0.000123')).toBeVisible();
+    expect(view.getByText('Daily return')).toBeVisible();
+    expect(view.getByText('0.04%')).toBeVisible();
+    expect(view.getByText('Daily volatility')).toBeVisible();
+    expect(view.getByText('1.1%')).toBeVisible();
+    expect(view.getByText('Annual return')).toBeVisible();
+    expect(view.getByText('10.08%')).toBeVisible();
+    expect(view.getByText('Annual volatility')).toBeVisible();
+    expect(view.getByText('17.39%')).toBeVisible();
   });
 
   it('keeps data-quality warnings in calculation details without model caveats', async () => {
@@ -436,6 +450,37 @@ describe('stale reads and results', () => {
 });
 
 describe('detail statistics refresh', () => {
+  it.each([[null, 'Unavailable'], [-0.0004, '-0.04%'], [0, '0%']])('renders log mean %s without falling back to legacy simple returns', async (mean, display) => {
+    const server = mockServer();
+    server.stats = async () => statistics(A, { daily_mean_log_return: mean, daily_mean_return: 0.1 });
+    render(<ReturnStatistics isin={A} />);
+    await flush();
+    const meanRow = screen.getByText('Daily return').closest('div');
+    expect(within(meanRow).getByText(display)).toBeInTheDocument();
+    expect(screen.queryByText('10%')).not.toBeInTheDocument();
+  });
+
+  it.each([[null, 'Unavailable'], [undefined, 'Unavailable'], [NaN, 'Unavailable'], [Infinity, 'Unavailable'], [0, '0%']])('renders unavailable or zero return/volatility values correctly: %s', async (value, display) => {
+    const server = mockServer();
+    server.stats = async () => statistics(A, {
+      daily_mean_log_return: value, daily_volatility: value, annualized_mean_log_return: value, annualized_volatility: value,
+    });
+    render(<ReturnStatistics isin={A} />);
+    await flush();
+    for (const label of ['Daily return', 'Daily volatility', 'Annual return', 'Annual volatility']) {
+      expect(within(screen.getByText(label).closest('div')).getByText(display)).toBeInTheDocument();
+    }
+  });
+
+  it('shows a negative annual log return without compounding it into a simple return', async () => {
+    const server = mockServer();
+    server.stats = async () => statistics(A, { daily_mean_log_return: -0.0004, annualized_mean_log_return: -0.1008 });
+    render(<ReturnStatistics isin={A} />);
+    await flush();
+    expect(within(screen.getByText('Daily return').closest('div')).getByText('-0.04%')).toBeInTheDocument();
+    expect(within(screen.getByText('Annual return').closest('div')).getByText('-10.08%')).toBeInTheDocument();
+  });
+
   it('updates statistics after acquisition completion and a saved manual currency without an acquisition POST', async () => {
     const server = mockServer();
     server.detail.acquisition = { id: 'job-1', status: 'running', requested_at: '2026-09-17T12:00:00Z' };
@@ -476,7 +521,14 @@ describe('detail statistics refresh', () => {
     server.stats = async () => statistics();
     fireEvent.click(screen.getByRole('button', { name: 'Retry statistics' }));
     await flush();
-    expect(screen.getByText('0.000123')).toBeInTheDocument();
+    expect(screen.getByText('Daily return')).toBeInTheDocument();
+    expect(screen.getByText('0.04%')).toBeInTheDocument();
+    expect(screen.getByText('Daily volatility')).toBeInTheDocument();
+    expect(screen.getByText('1.1%')).toBeInTheDocument();
+    expect(screen.getByText('Annual return')).toBeInTheDocument();
+    expect(screen.getByText('10.08%')).toBeInTheDocument();
+    expect(screen.getByText('Annual volatility')).toBeInTheDocument();
+    expect(screen.getByText('17.39%')).toBeInTheDocument();
     expect(posts()).toHaveLength(0);
   });
 });

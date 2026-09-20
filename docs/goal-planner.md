@@ -10,7 +10,7 @@ The planner keeps the inputs, monthly estimate and chart prominent. Payment date
 and supporting statistics are under **Calculation details**; refresh is under
 **Saved return statistics**. Model explanations and limitations live in this
 document rather than the UI. Validation errors and data-quality warnings remain
-available; calculations and API responses are unchanged.
+available.
 
 Only EUR-priced history is eligible. Fund base currency is not trading currency.
 A saved manual price-currency setting can fill unknown prices; it cannot convert
@@ -57,14 +57,35 @@ History selection:
 For consecutive closes `P[t]`:
 
 ```
-r[t] = P[t] / P[t-1] - 1        # simple return
-x[t] = log(P[t]) - log(P[t-1])  # log return
+x[t] = ln(P[t]) - ln(P[t-1])  # daily log return
+m = sum(x) / n                # arithmetic average of daily log returns
+v = sum((x[t] - m)^2) / (n-1) # sample log-return variance
 ```
 
-The UI's daily mean and variance describe **simple returns, not price levels**.
-Variance is in squared return-fraction units, not percent. The model additionally
-uses daily log-return mean `m` and sample variance `v`. Annualized volatility is
-`sqrt(252 * v)`.
+All return statistics and model parameters use **log returns, not simple returns
+or price levels**. The UI displays four percentages:
+
+| Label | Formula | API/cache field |
+| --- | --- | --- |
+| Daily return | `m` | `daily_mean_log_return` |
+| Daily volatility | `sqrt(v)` | `daily_volatility` |
+| Annual return | `252 * m` | `annualized_mean_log_return` |
+| Annual volatility | `sqrt(252 * v)` | `annualized_volatility` |
+
+Returns are historical average log returns, displayed as percentages (`100 *
+value`); annual return is annualized using 252 trading days, not an observed
+calendar-year return or a simple compounded return. Volatility is the standard
+deviation, not variance. The model still uses `daily_log_return_variance`
+internally and in the API, but squared units are no longer displayed.
+The former simple-return fields `daily_mean_return` and `daily_return_variance`
+are no longer calculated or returned. Older caches are recomputed automatically
+under the new model version without downloading prices again.
+
+Log returns add across consecutive periods. Convert their sum to a monetary
+growth factor with `exp(sum(x))`, not `1 + sum(x)`. The greater-than-50% price-move
+warning uses the equivalent log thresholds `ln(1.5)` and `ln(0.5)`. Finite log
+returns remain usable even when the direct price ratio would overflow; unstable
+simulations are still rejected rather than clipped.
 
 ## Monte Carlo model and monthly amount
 

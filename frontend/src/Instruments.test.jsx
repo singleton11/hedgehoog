@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.jsx';
 import { POLL_INTERVAL } from './useInstrument.js';
@@ -106,7 +106,8 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-17T12:
 afterEach(() => { cleanup(); vi.useRealTimers(); window.history.replaceState(null, '', '#/'); });
 
 const acquiredItem = (isin = A, extra = {}) => ({ ...item(isin), listing: { symbol: 'ETF.DE', exchange: 'XETR' },
-  collected_at: '2026-09-17T12:00:00Z', quote_count: 42, first_date: '2020-01-01', last_date: '2026-09-16', ...extra });
+  collected_at: '2026-09-17T12:00:00Z', quote_count: 42, first_date: '2020-01-01', last_date: '2026-09-16',
+  annualized_mean_log_return: 0.1008, annualized_volatility: 0.1739, ...extra });
 
 describe('manual price currency', () => {
   it.each(['EUR', 'USD', 'CHF', 'GBP', 'RUB', 'JPY'])('hides the selector when provider prices already have %s currency', async (currency) => {
@@ -292,6 +293,51 @@ describe('manual price currency', () => {
 });
 
 describe('acquired ETF inventory', () => {
+  it('shows annual log return and volatility percentages from one inventory read, without per-ETF requests', async () => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(A, { name: 'Growing ETF' }),
+      acquiredItem(B, { name: 'Declining ETF', annualized_mean_log_return: -0.05, annualized_volatility: 0 })];
+    await open();
+    expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'ETF', 'Saved listing', 'Annual return', 'Annual volatility', 'Saved quotes', 'Profile collected',
+    ]);
+    expect(screen.getByRole('columnheader', { name: 'Annual return' })).toHaveAttribute('title', 'Average daily log return × 252 trading days');
+    const growing = within(screen.getByRole('link', { name: 'Growing ETF' }).closest('tr'));
+    expect(growing.getByRole('cell', { name: '10.08%' })).toBeInTheDocument();
+    expect(growing.getByRole('cell', { name: '17.39%' })).toBeInTheDocument();
+    const declining = within(screen.getByRole('link', { name: 'Declining ETF' }).closest('tr'));
+    expect(declining.getByRole('cell', { name: '-5%' })).toBeInTheDocument();
+    expect(declining.getByRole('cell', { name: '0%' })).toBeInTheDocument();
+    expect(server.fetch.mock.calls.filter(([url]) => url.startsWith('/api/instruments/')).map(([url]) => url))
+      .toEqual(['/api/instruments/acquired?limit=20&offset=0']);
+    expect(server.posts()).toHaveLength(0);
+  });
+
+  it.each([null, undefined, NaN, Infinity, '0.1'])('shows unavailable annual estimates rather than zero or invalid percentages: %s', async (value) => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(A, { quote_count: 0, first_date: null, last_date: null,
+      annualized_mean_log_return: value, annualized_volatility: value })];
+    await open();
+    const row = within(screen.getByRole('link', { name: 'iShares S&P ETF' }).closest('tr'));
+    expect(row.getAllByRole('cell', { name: 'Unavailable' })).toHaveLength(2);
+    expect(row.getByText('Profile only')).toBeInTheDocument();
+    expect(row.queryByText('0%')).not.toBeInTheDocument();
+  });
+
+  it('refreshes annual values together with the saved inventory', async () => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem()];
+    await open();
+    expect(screen.getByRole('cell', { name: '10.08%' })).toBeInTheDocument();
+    server.acquiredItems = [acquiredItem(A, { annualized_mean_log_return: -0.02, annualized_volatility: 0.25 })];
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh list' }));
+    await flush();
+    expect(screen.getByRole('cell', { name: '-2%' })).toBeInTheDocument();
+    expect(screen.getByRole('cell', { name: '25%' })).toBeInTheDocument();
+    expect(screen.queryByRole('cell', { name: '10.08%' })).not.toBeInTheDocument();
+    expect(server.posts()).toHaveLength(0);
+  });
+
   it.each([
     ['2026-09-17T12:00:00Z', '0 days ago'],
     ['2026-09-16T12:00:01Z', '0 days ago'],
@@ -327,7 +373,7 @@ describe('acquired ETF inventory', () => {
     await open();
     expect(screen.getByText('Loading acquired ETFs…')).toHaveAttribute('role', 'status');
     expect(screen.getByRole('button', { name: 'Refresh list' })).toBeDisabled();
-    await act(async () => pending.resolve({ items: [acquiredItem(), acquiredItem(B, { name: 'Profile-only ETF', quote_count: 0, first_date: null, last_date: null })], total: 2, limit: ACQUIRED_PAGE_SIZE, offset: 0 }));
+    await act(async () => pending.resolve({ items: [acquiredItem(), acquiredItem(B, { name: 'Profile-only ETF', quote_count: 0, first_date: null, last_date: null, annualized_mean_log_return: null, annualized_volatility: null })], total: 2, limit: ACQUIRED_PAGE_SIZE, offset: 0 }));
     expect(screen.getByRole('heading', { name: 'Acquired ETFs (2)' })).toBeInTheDocument();
     expect(screen.getByText('42 quotes')).toBeInTheDocument();
     expect(screen.getByText('2020-01-01 – 2026-09-16')).toBeInTheDocument();

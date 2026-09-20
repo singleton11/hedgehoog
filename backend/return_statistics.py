@@ -1,4 +1,4 @@
-"""Derived return estimates; never alter or reject the saved provider evidence."""
+"""Derived log-return estimates; never alter or reject saved provider evidence."""
 
 from datetime import date, timedelta
 import math
@@ -8,7 +8,7 @@ from bson import Decimal128
 
 import market_data as md
 
-MODEL_VERSION = 2
+MODEL_VERSION = 4
 TRADING_DAYS = 252
 MIN_RETURNS = 60
 
@@ -43,7 +43,7 @@ def calculate_statistics(rows):
         warnings.append(f"{weekend_count} weekend quote(s) excluded from weekday return estimation.")
     if basis == "close" and rows:
         warnings.append("Adjusted closes are incomplete; all returns use unadjusted closes. Splits and distributions can distort these estimates.")
-    simple, logs, valid_dates = [], [], []
+    logs, valid_dates = [], []
     invalid_prices = skipped_gaps = invalid_returns = 0
     previous = None
     for row in rows:
@@ -62,9 +62,7 @@ def calculate_statistics(rows):
                 skipped_gaps += 1
             else:
                 log_return = math.log(price) - math.log(previous_price)
-                simple_return = price / previous_price - 1
-                if math.isfinite(simple_return):
-                    simple.append(simple_return)
+                if math.isfinite(log_return):
                     logs.append(log_return)
                 else:
                     invalid_returns += 1
@@ -75,18 +73,21 @@ def calculate_statistics(rows):
         warnings.append(f"{skipped_gaps} interval(s) spanning missing weekdays excluded from daily returns. Exchange holidays may also be excluded; no exchange calendar is assumed.")
     if invalid_returns:
         warnings.append(f"{invalid_returns} numerically unrepresentable return(s) excluded.")
-    if len(simple) < TRADING_DAYS:
+    if len(logs) < TRADING_DAYS:
         warnings.append("Less than one trading year of usable returns; estimates may be particularly unreliable.")
-    if any(abs(value) > 0.5 for value in simple):
+    # Preserve the +/-50% price-move warning using equivalent log thresholds.
+    if any(value > math.log(1.5) or value < math.log(0.5) for value in logs):
         warnings.append("History includes daily moves greater than 50%; check corporate actions and data quality before relying on a projection.")
-    metrics = {"daily_mean_return": None, "daily_return_variance": None,
-               "daily_mean_log_return": None, "daily_log_return_variance": None,
+    metrics = {"daily_mean_log_return": None, "daily_log_return_variance": None,
+               "daily_volatility": None, "annualized_mean_log_return": None,
                "annualized_volatility": None}
     try:
-        if simple:
-            metrics.update(daily_mean_return=fmean(simple), daily_mean_log_return=fmean(logs))
-        if len(simple) >= 2:
-            metrics.update(daily_return_variance=variance(simple), daily_log_return_variance=variance(logs))
+        if logs:
+            metrics["daily_mean_log_return"] = fmean(logs)
+            metrics["annualized_mean_log_return"] = metrics["daily_mean_log_return"] * TRADING_DAYS
+        if len(logs) >= 2:
+            metrics["daily_log_return_variance"] = variance(logs)
+            metrics["daily_volatility"] = math.sqrt(metrics["daily_log_return_variance"])
             metrics["annualized_volatility"] = math.sqrt(metrics["daily_log_return_variance"] * TRADING_DAYS)
         if any(value is not None and not math.isfinite(value) for value in metrics.values()):
             raise OverflowError
@@ -95,7 +96,7 @@ def calculate_statistics(rows):
         warnings.append("Return estimates exceed numerical limits; this history cannot be simulated.")
     return {
         "price_basis": basis, "quote_count": quote_count, "price_count": len(valid_dates),
-        "return_count": len(simple), "first_date": valid_dates[0] if valid_dates else None,
+        "return_count": len(logs), "first_date": valid_dates[0] if valid_dates else None,
         "last_date": valid_dates[-1] if valid_dates else None,
         "invalid_price_count": invalid_prices, "skipped_gap_count": skipped_gaps, "weekend_quote_count": weekend_count,
         **metrics, "warnings": warnings,

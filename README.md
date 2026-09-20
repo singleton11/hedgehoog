@@ -83,7 +83,7 @@ Startup and explicit manual dispatch are the only catalogue-import triggers. The
 
 ## On-demand instrument data
 
-After sign-in, the workspace shows **Acquired ETFs** beneath catalogue search: one entry per ETF with a saved provider profile, newest profile collection first, with the saved listing, distinct quote count and date range. Profile-only and partial/failed downloads remain visible; catalogue-only entries and requests that have not saved data are excluded. Open any ETF from the list, page through results, or use **Refresh list** to reload saved data. Returning from instrument details also refreshes the list.
+After sign-in, the workspace shows **Acquired ETFs** beneath catalogue search: one entry per ETF with a saved provider profile, newest profile collection first, with the saved listing, **Annual return**, **Annual volatility**, distinct quote count and date range. Annual values use the same log-based statistics as instrument details and are shown as percentages; missing estimates show **Unavailable**. Statistics are refreshed from saved prices for the current page only, without provider requests. Profile-only and partial/failed downloads remain visible; catalogue-only entries and requests that have not saved data are excluded. Open any ETF from the list, page through results, or use **Refresh list** to reload saved data. Returning from instrument details also refreshes the list.
 
 Search the local ETF catalogue by name, ticker or ISIN to find additional ETFs. Search, acquired-list reads, page reads, polling and charts use MongoDB only: browsing never spends Marketstack quota.
 
@@ -112,7 +112,7 @@ Authenticated endpoints (browser prefix `/api`):
 | Route | Purpose |
 | --- | --- |
 | `GET /instruments/search?q=...` | Latest-snapshot autocomplete, no provider calls |
-| `GET /instruments/acquired?limit=20&offset=0` | Paginated acquired ETFs with saved profile and quote coverage, no provider calls |
+| `GET /instruments/acquired?limit=20&offset=0` | Paginated acquired ETFs with annual return/volatility, saved profile and quote coverage, no provider calls |
 | `GET /instruments/{isin}[?as_of=...Z]` | Catalogue, collected profile, coverage, job and local budget |
 | `GET /instruments/{isin}/quotes?limit=1000&offset=0[&as_of=...Z]` | Latest-observation candles, ascending and paginated |
 | `PATCH /instruments/{isin}/price-currency` | `{price_currency: "EUR" \| "USD" \| "CHF" \| "GBP" \| "RUB"}`; saves a manual chart currency override |
@@ -122,10 +122,13 @@ Authenticated endpoints (browser prefix `/api`):
 
 ## Return statistics and goal planning
 
-After EOD acquisition, Hedgehoog calculates each instrument's daily return mean
-and sample variance (not the mean/variance of price levels). Existing downloads
-are calculated lazily without spending provider quota. Statistics appear on the
-instrument page.
+After EOD acquisition, Hedgehoog calculates each instrument's average daily log
+return and sample log-return variance (not simple returns or price levels). The
+statistics display and Monte Carlo model use these same log-return estimates.
+Existing downloads are calculated lazily without spending provider quota.
+The instrument page shows **Daily return**, **Daily volatility**, **Annual return**
+and **Annual volatility** as percentages. Returns remain log-based; volatility
+is the square root of variance, with annualization using 252 trading days.
 
 Open **Goal planner** to choose one EUR-priced instrument and enter your goal in
 EUR, starting capital, goal date and target reliability (50–99%). A repeatable

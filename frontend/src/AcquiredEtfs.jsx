@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from './Auth.jsx';
 import { displayText } from './instruments.js';
+import { percent } from './ReturnStatistics.jsx';
 
 export const ACQUIRED_PAGE_SIZE = 20;
 
@@ -62,12 +63,19 @@ export default function AcquiredEtfs() {
       : <>
         <div className="acquired-table-scroll" role="region" aria-label="Acquired ETF data" tabIndex={0}>
           <table className="acquired-table">
-            <caption className="sr-only">Acquired ETFs and saved quote coverage</caption>
-            <thead><tr><th scope="col">ETF</th><th scope="col">Saved listing</th><th scope="col">Saved quotes</th><th scope="col">Profile collected</th></tr></thead>
+            <caption className="sr-only">Acquired ETFs, annual return and volatility, and saved quote coverage</caption>
+            <thead><tr>
+              <th scope="col">ETF</th><th scope="col">Saved listing</th>
+              <th scope="col" className="annual-statistic" title="Average daily log return × 252 trading days">Annual return</th>
+              <th scope="col" className="annual-statistic" title="Daily volatility × √252 trading days">Annual volatility</th>
+              <th scope="col">Saved quotes</th><th scope="col">Profile collected</th>
+            </tr></thead>
             <tbody>{page.items.map((item) => <tr key={item.instrument_id}>
               <th scope="row"><a href={`#/instruments/${encodeURIComponent(item.instrument_id)}`}>{displayText(item.name) || item.isin}</a>
                 <span className="muted">{[displayText(item.ticker), item.isin].filter(Boolean).join(' · ')}</span></th>
               <td>{item.listing?.symbol || 'Unknown'}<span className="muted">{item.listing?.exchange || 'Unknown MIC'}</span></td>
+              <td className="annual-statistic">{percent(item.annualized_mean_log_return)}</td>
+              <td className="annual-statistic">{percent(item.annualized_volatility)}</td>
               <td>{item.quote_count > 0 ? <>{item.quote_count.toLocaleString()} {item.quote_count === 1 ? 'quote' : 'quotes'}<span className="muted">{item.first_date} – {item.last_date}</span></>
                 : <span className="badge">Profile only</span>}</td>
               <td><CollectionTime value={item.collected_at} /></td>

@@ -134,11 +134,12 @@ main.workspace { width: min(100%, 80rem); align-self: start; }
 .instrument-heading h2 { margin-top: 0.5rem; }
 .instrument-workspace nav { margin-top: 1.25rem; }
 .acquired-table-scroll { overflow-x: auto; }
-.acquired-table { width: 100%; min-width: 48rem; border-collapse: collapse; text-align: left; }
+.acquired-table { width: 100%; min-width: 64rem; border-collapse: collapse; text-align: left; }
 .acquired-table th, .acquired-table td { padding: 0.85rem 0.65rem; border-bottom: 1px solid #dce2eb; vertical-align: top; }
 .acquired-table thead { background: #f6f8fc; font-size: 0.85rem; }
-.acquired-table th[scope='row'] { width: 40%; font-weight: 600; }
+.acquired-table th[scope='row'] { width: 30%; font-weight: 600; }
 .acquired-table th, .acquired-table td { overflow-wrap: anywhere; }
+.acquired-table .annual-statistic { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .acquired-table .muted { display: block; margin-top: 0.2rem; font-size: 0.85rem; font-weight: 400; }
 .acquired-table tbody tr:hover { background: #f6f8fc; }
 .acquired-pagination { margin-top: 0.75rem; }

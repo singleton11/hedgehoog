@@ -48,16 +48,15 @@ export function useReturnStatistics(isin, refreshKey = '') {
 
 export const percent = (value) => typeof value === 'number' && Number.isFinite(value)
   ? new Intl.NumberFormat('en', { style: 'percent', maximumFractionDigits: 2 }).format(value) : 'Unavailable';
-const variance = (value) => typeof value === 'number' && Number.isFinite(value)
-  ? value.toLocaleString('en', { maximumSignificantDigits: 6, useGrouping: false }) : 'Unavailable';
 
 export function StatisticsSummary({ statistics }) {
   const stats = statistics;
   return <div className="return-statistics">
     <dl className="facts">
-      <div><dt>Daily mean simple return</dt><dd>{percent(stats.daily_mean_return)}</dd></div>
-      <div><dt>Daily simple-return variance (fraction²)</dt><dd>{variance(stats.daily_return_variance)}</dd></div>
-      <div><dt>Annualized volatility</dt><dd>{percent(stats.annualized_volatility)}</dd></div>
+      <div><dt title="Average daily log return">Daily return</dt><dd>{percent(stats.daily_mean_log_return)}</dd></div>
+      <div><dt title="Square root of daily log-return variance">Daily volatility</dt><dd>{percent(stats.daily_volatility)}</dd></div>
+      <div><dt title="Average daily log return × 252 trading days">Annual return</dt><dd>{percent(stats.annualized_mean_log_return)}</dd></div>
+      <div><dt title="Daily volatility × √252 trading days">Annual volatility</dt><dd>{percent(stats.annualized_volatility)}</dd></div>
       <div><dt>Saved quotes / usable prices / returns</dt><dd>{stats.quote_count} / {stats.price_count} / {stats.return_count}</dd></div>
       <div><dt>History window</dt><dd>{stats.first_date && stats.last_date ? `${stats.first_date} – ${stats.last_date}` : 'No usable history'}</dd></div>
       <div><dt>Price basis</dt><dd>{stats.price_basis === 'adj_close' ? 'Adjusted close' : stats.price_basis === 'close' ? 'Unadjusted close' : 'Unavailable'}</dd></div>

@@ -13,7 +13,7 @@ from pymongo.errors import ConnectionFailure
 
 import market_data as md
 from goal_planner import GoalRequest, add_months, contribution_dates, simulate_goal
-from return_statistics import calculate_statistics, instrument_statistics
+from return_statistics import MODEL_VERSION, calculate_statistics, instrument_statistics
 from test_market_data import ISIN, LISTING, NOW, Provider, api, bar, clock, collect, config, db, enqueue, page
 
 
@@ -49,18 +49,21 @@ def login(client):
     assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
 
 
-def test_daily_simple_mean_and_sample_variance_not_price_levels():
+def test_daily_log_mean_and_sample_variance_not_simple_returns_or_price_levels():
     rows = [{"date": f"2026-09-{day:02}", "close": raw, "adj_close": adjusted}
             for day, raw, adjusted in [(1, 100, "10"), (2, 200, "11"), (3, 100, "9.9")]]
     stats = calculate_statistics(rows)
     assert stats["price_basis"] == "adj_close"
     assert stats["return_count"] == 2
-    assert stats["daily_mean_return"] == pytest.approx(0, abs=1e-15)
-    assert stats["daily_return_variance"] == pytest.approx(0.02)
+    assert "daily_mean_return" not in stats
+    assert "daily_return_variance" not in stats
     logs = [math.log(1.1), math.log(0.9)]
     assert stats["daily_mean_log_return"] == pytest.approx(mean(logs))
+    assert stats["daily_mean_log_return"] < 0  # +10%, then -10% loses value.
     assert stats["daily_log_return_variance"] == pytest.approx(variance(logs))
-    assert stats["annualized_volatility"] == pytest.approx(math.sqrt(variance(logs) * 252))
+    assert stats["daily_volatility"] == pytest.approx(math.sqrt(variance(logs)))
+    assert stats["annualized_mean_log_return"] == pytest.approx(mean(logs) * 252)
+    assert stats["annualized_volatility"] == pytest.approx(stats["daily_volatility"] * math.sqrt(252))
 
 
 def test_partial_adjustments_fall_back_for_entire_series():
@@ -70,8 +73,10 @@ def test_partial_adjustments_fall_back_for_entire_series():
         {"date": "2026-09-03", "close": "121", "adj_close": "60.5"},
     ])
     assert stats["price_basis"] == "close"
-    assert stats["daily_mean_return"] == pytest.approx(0.1)
-    assert stats["daily_return_variance"] == pytest.approx(0)
+    assert stats["daily_mean_log_return"] == pytest.approx(math.log(1.1))
+    assert stats["annualized_mean_log_return"] == pytest.approx(math.log(1.1) * 252)
+    assert stats["daily_log_return_variance"] == pytest.approx(0)
+    assert stats["daily_volatility"] == pytest.approx(0)
     assert "unadjusted" in stats["warnings"][0]
 
 
@@ -83,8 +88,8 @@ def test_invalid_prices_break_chain_and_do_not_change_raw_rows(invalid):
     assert rows == original
     assert stats["invalid_price_count"] == 1
     assert stats["price_count"] == 3 and stats["return_count"] == 1
-    assert stats["daily_mean_return"] == pytest.approx(0.1)
-    assert stats["daily_return_variance"] is None
+    assert stats["daily_mean_log_return"] == pytest.approx(math.log(1.1))
+    assert stats["daily_log_return_variance"] is None
 
 
 def test_long_gaps_are_not_daily_returns_and_weekends_are_allowed():
@@ -92,7 +97,7 @@ def test_long_gaps_are_not_daily_returns_and_weekends_are_allowed():
         ("2026-09-04", 100), ("2026-09-07", 110), ("2026-09-16", 200), ("2026-09-17", 220)]])
     assert stats["skipped_gap_count"] == 1
     assert stats["return_count"] == 2
-    assert stats["daily_mean_return"] == pytest.approx(0.1)
+    assert stats["daily_mean_log_return"] == pytest.approx(math.log(1.1))
 
 
 def test_weekly_prices_are_never_annualized_as_daily_returns(db):
@@ -116,15 +121,58 @@ def test_missing_weekdays_and_weekend_rows_do_not_distort_daily_stats():
     assert stats["weekend_quote_count"] == 2
     assert stats["skipped_gap_count"] == 1
     assert stats["return_count"] == 2
-    assert stats["daily_mean_return"] == pytest.approx(0.1)
-    assert stats["daily_return_variance"] == pytest.approx(0)
+    assert stats["daily_mean_log_return"] == pytest.approx(math.log(1.1))
+    assert stats["daily_log_return_variance"] == pytest.approx(0)
 
 
-def test_extreme_preserved_data_does_not_break_statistics():
+def test_log_returns_add_over_time_and_round_trip_has_zero_mean():
+    stats = calculate_statistics([
+        {"date": "2026-09-01", "adj_close": 100},
+        {"date": "2026-09-02", "adj_close": 110},
+        {"date": "2026-09-03", "adj_close": 100},
+    ])
+    assert stats["daily_mean_log_return"] == pytest.approx(0, abs=1e-15)
+    assert stats["daily_log_return_variance"] == pytest.approx(2 * math.log(1.1) ** 2)
+    assert math.exp(stats["daily_mean_log_return"] * stats["return_count"]) == pytest.approx(1)
+
+
+@pytest.mark.parametrize("prices", [[], [100], [100, 100], [100, 100, 100]])
+def test_empty_single_price_and_flat_history_log_statistics(prices):
+    stats = calculate_statistics([{"date": f"2026-09-0{i + 1}", "adj_close": p}
+                                  for i, p in enumerate(prices)])
+    assert stats["return_count"] == max(0, len(prices) - 1)
+    assert stats["daily_mean_log_return"] == (0 if len(prices) >= 2 else None)
+    assert stats["annualized_mean_log_return"] == (0 if len(prices) >= 2 else None)
+    assert stats["daily_log_return_variance"] == (0 if len(prices) >= 3 else None)
+    assert stats["daily_volatility"] == (0 if len(prices) >= 3 else None)
+    assert stats["annualized_volatility"] == (0 if len(prices) >= 3 else None)
+
+
+@pytest.mark.parametrize("factor, warned", [
+    (1.49, False), (1.51, True), (0.51, False), (0.49, True),
+    (math.exp(0.45), True), (math.exp(-0.6), False),
+])
+def test_large_price_move_warning_uses_equivalent_log_thresholds(factor, warned):
+    stats = calculate_statistics([
+        {"date": "2026-09-01", "adj_close": 100},
+        {"date": "2026-09-02", "adj_close": 100 * factor},
+    ])
+    assert any("greater than 50%" in warning for warning in stats["warnings"]) is warned
+
+
+def test_extreme_prices_keep_finite_log_returns_even_when_price_ratios_overflow():
+    prices = [1e-300, 1e300, 1e-300, 1e308]
     stats = calculate_statistics([{"date": f"2026-09-0{i + 1}", "close": p}
-                                  for i, p in enumerate([1e-300, 1e300, 1, 1e308])])
-    assert stats["daily_return_variance"] is None  # Overflow is not JSON infinity.
-    assert any("numerical" in warning for warning in stats["warnings"])
+                                  for i, p in enumerate(prices)])
+    logs = [math.log(current) - math.log(previous) for previous, current in zip(prices, prices[1:])]
+    assert stats["return_count"] == 3
+    assert stats["daily_mean_log_return"] == pytest.approx(mean(logs))
+    assert stats["daily_log_return_variance"] == pytest.approx(variance(logs))
+    assert stats["annualized_volatility"] == pytest.approx(math.sqrt(variance(logs) * 252))
+    json.dumps(stats, allow_nan=False)
+    assert any("greater than 50%" in warning for warning in stats["warnings"])
+    with pytest.raises(md.DataError, match="unstable"):
+        simulate_goal(stats, GoalRequest(**request_body()), NOW.date())
 
 
 def test_successful_download_persists_stats_and_updates_recompute(db, config, clock):
@@ -142,7 +190,7 @@ def test_successful_download_persists_stats_and_updates_recompute(db, config, cl
     after = instrument_statistics(db, ISIN)
     assert after["return_count"] == before["return_count"] + 1
     assert after["computed_at"] > before["computed_at"]
-    assert after["daily_mean_return"] != before["daily_mean_return"]
+    assert after["daily_mean_log_return"] != before["daily_mean_log_return"]
 
 
 def test_statistics_db_failure_resumes_without_provider_calls(db, config, clock, monkeypatch):
@@ -180,10 +228,29 @@ def test_lazy_stats_latest_observation_listing_and_cache_invalidation(db, clock)
     second = instrument_statistics(db, ISIN)
     assert second["quote_count"] == 81
     assert second["computed_at"] > first["computed_at"]
-    assert second["daily_mean_return"] != first["daily_mean_return"]
-    assert second["daily_mean_return"] == pytest.approx(calculate_statistics([
+    assert second["daily_mean_log_return"] != first["daily_mean_log_return"]
+    assert second["daily_mean_log_return"] == pytest.approx(calculate_statistics([
         {**row["data"], "date": row["date"]} for row in original_quotes[:-1]] +
-        [{**revised["data"], "date": revised["date"]}])["daily_mean_return"])
+        [{**revised["data"], "date": revised["date"]}])["daily_mean_log_return"])
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_old_statistics_cache_is_recomputed_without_changing_quotes(db, version):
+    seed_history(db)
+    expected = instrument_statistics(db, ISIN)
+    original_quotes = list(db.quotes.find())
+    db.instrument_statistics.update_one({"_id": ISIN}, {"$set": {
+        "signature.version": version,
+        "statistics.daily_mean_return": 0.1,
+        "statistics.daily_return_variance": 0.02,
+        "statistics.daily_mean_log_return": 999,
+    }, "$unset": {"statistics.daily_volatility": "", "statistics.annualized_mean_log_return": ""}})
+    assert instrument_statistics(db, ISIN) == expected
+    saved = db.instrument_statistics.find_one({"_id": ISIN})
+    assert saved["signature"]["version"] == MODEL_VERSION > version
+    assert "daily_mean_return" not in saved["statistics"]
+    assert "daily_return_variance" not in saved["statistics"]
+    assert list(db.quotes.find()) == original_quotes
 
 
 @pytest.mark.parametrize("currency,override,eligible", [
@@ -360,12 +427,19 @@ def test_api_statistics_and_simulation_auth_origin_and_no_provider_calls(api, db
     assert client.post("/goals/simulate", json=request_body()).status_code == 401
     login(client)
     assert client.post("/goals/simulate", json=request_body(), headers={"Origin": "https://evil.example"}).status_code == 403
-    assert client.get(url).json()["eligible"]
+    stats = client.get(url).json()
+    assert stats["eligible"]
+    expected = calculate_statistics([{**row, "date": row["date"][:10]} for row in history()])
+    for key in ("daily_mean_log_return", "daily_log_return_variance", "daily_volatility",
+                "annualized_mean_log_return", "annualized_volatility"):
+        assert stats[key] == pytest.approx(expected[key])
+    assert "daily_mean_return" not in stats and "daily_return_variance" not in stats
     response = client.post("/goals/simulate", json=request_body())
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["simulation_paths"] == 10000
     assert result["success_probability"] >= 0.9
+    assert result["statistics"] == stats
     assert isinstance(result["monthly_contribution_eur"], str)
     assert len(result["monthly_contribution_eur"].split(".")[1]) == 2
     assert result == client.post("/goals/simulate", json=request_body()).json()

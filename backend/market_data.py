@@ -101,8 +101,11 @@ def acquired_instruments(db, limit=20, offset=0):
 
     The worker saves tickerinfo before any EOD pages, so profiles are the
     acquisition inventory. A queued job or cached listing alone is not data.
-    Paginate lightweight observations before fetching catalogue/quote summaries.
+    Paginate lightweight observations before fetching catalogue/quote summaries
+    and refreshing cached return statistics from saved prices only.
     """
+    from return_statistics import refresh_statistics
+
     result = list(db.instruments.aggregate([
         {"$project": {"instrument_id": 1, "symbol": 1, "exchange": 1, "collected_at": 1}},
         {"$sort": {"instrument_id": 1, "collected_at": -1, "_id": -1}},
@@ -122,12 +125,18 @@ def acquired_instruments(db, limit=20, offset=0):
             sort=[("import_date", DESCENDING)],
         ) or {}
         dates = quote_dates(db, isin, observation["listing"])
+        statistics, state = refresh_statistics(db, isin)
+        # Never attach another listing's returns to the displayed profile.
+        if state.get("listing") != observation["listing"]:
+            statistics = {}
         items.append({
             "instrument_id": isin, "isin": isin,
             "name": catalogue.get("name"), "ticker": catalogue.get("ticker"),
             "listing": observation["listing"], "collected_at": observation["collected_at"],
             "quote_count": len(dates), "first_date": dates[0] if dates else None,
             "last_date": dates[-1] if dates else None,
+            "annualized_mean_log_return": statistics.get("annualized_mean_log_return"),
+            "annualized_volatility": statistics.get("annualized_volatility"),
         })
     return public({"items": items, "total": result["count"][0]["total"] if result["count"] else 0, "limit": limit, "offset": offset})
 

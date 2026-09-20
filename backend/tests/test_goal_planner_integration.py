@@ -40,6 +40,9 @@ def test_real_mongo_acquisition_statistics_and_simulation(environment, monkeypat
         assert stats.status_code == 200
         assert stats.json()["eligible"] and stats.json()["price_currency"] == "EUR"
         assert stats.json()["computed_at"] == md.public(saved["statistics"]["computed_at"])
+        acquired = client.get("/instruments/acquired").json()["items"][0]
+        for key in ("annualized_mean_log_return", "annualized_volatility"):
+            assert acquired[key] == stats.json()[key]
         response = client.post("/goals/simulate", json=request_body())
         assert response.status_code == 200, response.text
         assert response.json()["success_probability"] >= 0.9
@@ -56,6 +59,9 @@ def test_real_mongo_acquisition_statistics_and_simulation(environment, monkeypat
         db.quotes.insert_one(revised)
         refreshed = client.get(f"/instruments/{ISIN}/statistics").json()
         assert refreshed["quote_count"] == 81
-        assert refreshed["daily_mean_return"] != stats.json()["daily_mean_return"]
+        assert refreshed["daily_mean_log_return"] != stats.json()["daily_mean_log_return"]
+        acquired = client.get("/instruments/acquired").json()["items"][0]
+        for key in ("annualized_mean_log_return", "annualized_volatility"):
+            assert acquired[key] == refreshed[key]
     assert len(calls) == 2
     assert md.budget_status(db, settings)["used"] == 2

@@ -100,6 +100,7 @@ def test_real_mongo_atomic_job_gate_budget_and_observations(environment, listing
         "instrument_id": ISIN, "isin": ISIN, "name": "Synthetic ETF", "ticker": "SXR8",
         "listing": LISTING, "collected_at": "2026-09-17T12:00:00Z", "quote_count": 2,
         "first_date": "2026-09-15", "last_date": "2026-09-16",
+        "annualized_mean_log_return": 0.0, "annualized_volatility": None,
     }]}
     assert md.acquired_instruments(db, limit=1, offset=1)["items"] == []
     assert db.quotes.count_documents({}) == 2
