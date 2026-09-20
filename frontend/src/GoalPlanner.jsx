@@ -52,49 +52,35 @@ function validResult(data, body) {
     && Number.isInteger(data.contribution_count) && data.contribution_count > 0;
 }
 
-function Assumptions() {
-  return <details className="disclosure"><summary>Model assumptions and limitations</summary>
-    <div className="disclosure-content">
-      <ul>
-        <li>All amounts are nominal euros. The instrument must trade in EUR; underlying foreign-exchange exposure may still exist.</li>
-        <li>Starting capital is invested today. Fixed monthly payments are additional to starting capital, on calendar anniversaries starting one month from today (UTC), clamped to the last day of shorter months. Deposits occur at the end of each period; fractional shares are assumed.</li>
-        <li>Independent, normally distributed log returns are fitted to saved history, using 252 trading days per year. Historical simple-return statistics are descriptive, not forecasts.</li>
-        <li>Distributions are reinvested only insofar as adjusted history includes them. A consistent adjusted-close series is preferred; otherwise unadjusted closes are used with a caveat.</li>
-        <li>No taxes, transaction fees or inflation are included.</li>
-        <li>Monte Carlo sampling and estimated historical parameters are uncertain. Markets can differ materially from this model: model-estimated success is not a guarantee or investment advice.</li>
-      </ul>
-    </div>
-  </details>;
-}
-
 function SimulationResult({ result }) {
   return <section aria-label="Goal simulation result" className="goal-result">
     <h3>Estimated monthly contribution</h3>
     <div role="status">
       <p className="monthly-contribution">{formatEuros(result.monthly_contribution_eur)} <span>per month</span></p>
-      <p><strong>{percent(result.success_probability)} model-estimated success</strong> against a {percent(result.target_probability)} reliability target. Not a guarantee.</p>
+      <p><strong>{percent(result.success_probability)} estimated success</strong> · {percent(result.target_probability)} target</p>
     </div>
-    <p>These payments are additional to your starting capital. {result.monthly_contribution_eur && /^0+(?:\.0+)?$/.test(result.monthly_contribution_eur)
-      && 'The model estimates no additional monthly contribution is needed.'}</p>
+    {/^0+(?:\.0+)?$/.test(result.monthly_contribution_eur) && <p>No monthly contribution needed.</p>}
     <dl className="facts">
-      <div><dt>Monthly contributions</dt><dd>{result.contribution_count} payments</dd></div>
-      <div><dt>First / last contribution (UTC)</dt><dd>{result.first_contribution_date} / {result.last_contribution_date}</dd></div>
-      <div><dt>Valuation / goal date (UTC)</dt><dd>{result.valuation_date} / {result.goal_date}</dd></div>
-      <div><dt>Total monthly contributions</dt><dd>{formatEuros(result.total_contributions_eur)}</dd></div>
-      <div><dt>Total invested, including starting capital</dt><dd>{formatEuros(result.total_invested_eur)}</dd></div>
-      <div><dt>Success with no monthly contributions</dt><dd>{percent(result.zero_contribution_success_probability)}</dd></div>
+      <div><dt>Schedule</dt><dd>{result.contribution_count} payments</dd></div>
+      <div><dt>Total contributions</dt><dd>{formatEuros(result.total_contributions_eur)}</dd></div>
+      <div><dt>Total invested</dt><dd>{formatEuros(result.total_invested_eur)}</dd></div>
     </dl>
     <GoalProjectionChart trajectory={result.trajectory} goal={result.goal_eur} pathCount={result.simulation_paths} />
-    <h3>Modelled terminal values</h3>
+    <h3>Projected final value</h3>
     <dl className="facts terminal-values">
       <div><dt>Downside · 5th percentile</dt><dd>{formatEuros(result.terminal_percentiles_eur.p05)}</dd></div>
       <div><dt>Median · 50th percentile</dt><dd>{formatEuros(result.terminal_percentiles_eur.p50)}</dd></div>
       <div><dt>Upside · 95th percentile</dt><dd>{formatEuros(result.terminal_percentiles_eur.p95)}</dd></div>
     </dl>
-    <p className="muted">Percentiles are not minimum or maximum outcomes. {result.simulation_paths?.toLocaleString('en')} simulated paths · seed {result.seed}.</p>
-    {result.warnings.length > 0 && <ul aria-label="Simulation warnings">{result.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
-    <details className="disclosure"><summary>Statistics used for this simulation</summary>
-      <div className="disclosure-content"><StatisticsSummary statistics={result.statistics} /></div>
+    <details className="disclosure"><summary>Calculation details</summary>
+      <div className="disclosure-content">
+        <dl className="facts">
+          <div><dt>First / last contribution (UTC)</dt><dd>{result.first_contribution_date} / {result.last_contribution_date}</dd></div>
+          <div><dt>Valuation / goal date (UTC)</dt><dd>{result.valuation_date} / {result.goal_date}</dd></div>
+          <div><dt>Success without contributions</dt><dd>{percent(result.zero_contribution_success_probability)}</dd></div>
+        </dl>
+        <StatisticsSummary statistics={result.statistics} />
+      </div>
     </details>
   </section>;
 }
@@ -153,24 +139,32 @@ function SelectedGoal({ isin }) {
   }
 
   return <>
-    <section aria-label="Selected goal instrument">
-      <p className="eyebrow">{isin}</p>
-      <h3>{displayText(statistics?.name) || 'Selected ETF'}</h3>
-      {statistics?.listing && <p>{statistics.listing.symbol} / {statistics.listing.exchange}</p>}
-      <p><a href={`#/instruments/${encodeURIComponent(isin)}`}>Instrument details and data</a></p>
-      {loading && <p role="status">Checking saved data and EUR eligibility…</p>}
-      {statisticsError && <p role="alert">Could not load statistics: {statisticsError}</p>}
-      {(statistics || statisticsError) && <button className="secondary" onClick={() => { invalidate(); retry(); }}>{statisticsError ? 'Retry statistics' : 'Refresh statistics'}</button>}
+    <section aria-label="Selected goal instrument" className="goal-instrument">
+      <div className="section-heading">
+        <div>
+          <h3>{displayText(statistics?.name) || 'Selected ETF'}</h3>
+          <p className="muted">{isin}{statistics?.listing && ` · ${statistics.listing.symbol} / ${statistics.listing.exchange}`}</p>
+        </div>
+        <a href={`#/instruments/${encodeURIComponent(isin)}`}>Instrument details</a>
+      </div>
+      {loading && <p role="status">Checking saved data…</p>}
+      {statisticsError && <>
+        <p role="alert">Could not load statistics: {statisticsError}</p>
+        <button className="secondary" onClick={() => { invalidate(); retry(); }}>Retry statistics</button>
+      </>}
       {statistics && <>
-        {eligible ? <p role="status">Eligible for EUR goal planning · {statistics.return_count} daily return observations.</p>
+        {eligible ? <p role="status" className="muted">EUR · {statistics.return_count} daily returns</p>
           : <div className="empty-state" role="status">
             <p><strong>Not eligible for goal planning.</strong> {statistics.ineligible_reason || 'EUR prices and at least 60 return observations are required.'}</p>
-            <p>Open instrument details to explicitly download history or set the correct listing price currency when it is missing. At least 60 return observations and EUR-traded prices are required; fund currency alone is not sufficient. A non-EUR listing is not converted to EUR by this planner.</p>
+            <p>Download history or update the price currency in instrument details.</p>
           </div>}
-        <details className="disclosure"><summary>Saved return statistics</summary><div className="disclosure-content"><StatisticsSummary statistics={statistics} /></div></details>
+        <details className="disclosure"><summary>Saved return statistics</summary><div className="disclosure-content">
+          <StatisticsSummary statistics={statistics} />
+          <button className="secondary" onClick={() => { invalidate(); retry(); }}>Refresh statistics</button>
+        </div></details>
       </>}
     </section>
-    <form aria-label="Goal planner inputs" className="goal-form" noValidate onSubmit={simulate} aria-describedby="goal-schedule">
+    <form aria-label="Goal planner inputs" className="goal-form" noValidate onSubmit={simulate}>
       <div className="goal-fields">
         <div><label htmlFor="goal-eur">Target (EUR)</label><input id="goal-eur" inputMode="decimal" value={inputs.goal} required maxLength={100}
           onChange={(event) => change('goal', event.target.value)} /></div>
@@ -181,11 +175,9 @@ function SelectedGoal({ isin }) {
         <div><label htmlFor="goal-reliability">Reliability target (%)</label><input id="goal-reliability" type="number" min="50" max="99" step="any" value={inputs.reliability} required
           onChange={(event) => change('reliability', event.target.value)} /></div>
       </div>
-      <p id="goal-schedule" className="muted">Solve a fixed monthly payment above starting capital. Goal dates: {monthlyAnniversary(now, 1)} through {monthlyAnniversary(now, 600)} (UTC); the backend validates today's UTC date and payment schedule. Reliability must be 50–99%.</p>
-      <p className="muted">Reliability is a model-estimated chance of meeting the target, not a promise. All amounts are nominal EUR.</p>
-      {error && <p role="alert">{error} You can edit the inputs and try again.</p>}
+      {error && <p role="alert">{error}</p>}
       <button type="submit" disabled={!eligible || loading || busy}>{busy ? 'Simulating…' : 'Calculate monthly contribution'}</button>
-      {busy && <p role="status">Running the model with saved data… Editing any input cancels this result.</p>}
+      {busy && <p role="status" className="sr-only">Simulating…</p>}
     </form>
     {result?.signature === signature && <SimulationResult result={result.data} />}
   </>;
@@ -194,10 +186,7 @@ function SelectedGoal({ isin }) {
 export default function GoalPlanner({ isin, onSelect }) {
   return <article aria-label="Goal planner" className="goal-planner">
     <h2 className="instrument-name">Goal planner</h2>
-    <p>Estimate a fixed monthly contribution for one EUR-traded ETF using its saved history.</p>
-    <p className="muted">Searching, viewing statistics and simulating make no provider calls. Simulations run only when you choose Calculate.</p>
     <InstrumentSearch key={`search-${isin || 'home'}`} onSelect={onSelect} />
-    {isin ? <SelectedGoal key={isin} isin={isin} /> : <p className="empty-state">Select an ETF to check its saved data and eligibility.</p>}
-    <Assumptions />
+    {isin ? <SelectedGoal key={isin} isin={isin} /> : <p className="muted">Choose an ETF to get started.</p>}
   </article>;
 }

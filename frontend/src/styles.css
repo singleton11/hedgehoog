@@ -207,13 +207,16 @@ summary { padding: 0.75rem; cursor: pointer; font-weight: 600; overflow-wrap: an
 .workspace-navigation a[aria-current='page'] { font-weight: 700; text-decoration-thickness: 0.18em; }
 .goal-planner > .instrument-name { margin-bottom: 0.75rem; }
 .goal-planner > .instrument-search { margin-top: 1.5rem; }
-.goal-form { padding: 1.25rem; border: 1px solid #c7d3e8; border-radius: 0.6rem; background: #f6f8fc; }
+.goal-instrument { margin-top: 1.5rem; }
+.goal-instrument h3 { margin: 0; }
+.goal-instrument .section-heading p { margin: 0.25rem 0 0; font-size: 0.85rem; }
+.goal-form { gap: 1rem; }
 .goal-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .goal-fields label { display: block; margin-bottom: 0.4rem; }
 .goal-fields input { margin: 0; min-width: 0; }
 .goal-form p { margin: 0.3rem 0; }
 .goal-form > button { align-self: flex-start; margin-top: 0.5rem; }
-.goal-result { padding: 1.25rem; border: 1px solid #c7d3e8; border-radius: 0.6rem; }
+.goal-result { padding-top: 1.5rem; }
 .goal-result h3:first-child { margin-top: 0; }
 .monthly-contribution { margin: 0.5rem 0; font-size: clamp(1.8rem, 5vw, 2.75rem); font-weight: 700; color: #254c9c; }
 .monthly-contribution span { font-size: 1rem; font-weight: 400; color: #536077; white-space: nowrap; }
@@ -237,6 +240,5 @@ summary { padding: 0.75rem; cursor: pointer; font-weight: 600; overflow-wrap: an
 .projection-readout { padding: 0.75rem; border-radius: 0.4rem; background: #f6f8fc; font-size: 0.9rem; }
 @media (max-width: 600px) {
   .goal-fields { grid-template-columns: minmax(0, 1fr); }
-  .goal-form, .goal-result { padding: 0.75rem; }
   .goal-form > button { width: 100%; }
 }

@@ -6,6 +6,12 @@ then enter a goal amount, starting capital, goal date and target reliability
 instrument page also shows daily return statistics and links to its planner at
 `#/goal/{isin}`.
 
+The planner keeps the inputs, monthly estimate and chart prominent. Payment dates
+and supporting statistics are under **Calculation details**; refresh is under
+**Saved return statistics**. Model explanations and limitations live in this
+document rather than the UI. Validation errors and data-quality warnings remain
+available; calculations and API responses are unchanged.
+
 Only EUR-priced history is eligible. Fund base currency is not trading currency.
 A saved manual price-currency setting can fill unknown prices; it cannot convert
 explicit USD (or mixed-currency) observations to EUR. Underlying FX exposure may

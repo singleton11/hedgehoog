@@ -93,7 +93,8 @@ describe('planner routes and eligibility', () => {
   it('selects a planner ISIN via catalogue search without detail reads, acquisition or automatic simulation', async () => {
     mockServer();
     await openWorkspace('#/goal');
-    expect(screen.getByText(/Select an ETF to check/)).toBeInTheDocument();
+    expect(screen.getByText('Choose an ETF to get started.')).toBeInTheDocument();
+    expect(screen.queryByText('Model assumptions and limitations')).not.toBeInTheDocument();
     expect(request).not.toHaveBeenCalled();
     expect(screen.getByRole('link', { name: 'Goal planner' })).toHaveAttribute('aria-current', 'page');
     fireEvent.change(screen.getByRole('combobox', { name: 'Find an ETF' }), { target: { value: 'World' } });
@@ -102,7 +103,7 @@ describe('planner routes and eligibility', () => {
     await flush();
     expect(window.location.hash).toBe(`#/goal/${A}`);
     expect(screen.getByRole('heading', { name: 'World & Europe ETF' })).toBeInTheDocument();
-    expect(screen.getByText(/Eligible for EUR goal planning/)).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('EUR · 299 daily returns');
     expect(calculate()).toBeEnabled();
     expect(request.mock.calls.map(([path]) => path)).toEqual([expect.stringContaining('/instruments/search?'), `/instruments/${A}/statistics`]);
     expect(posts()).toHaveLength(0);
@@ -111,7 +112,7 @@ describe('planner routes and eligibility', () => {
   it('navigates using native ETF, detail and goal links and supports invalid routes', async () => {
     mockServer();
     await openWorkspace();
-    fireEvent.click(screen.getByRole('link', { name: 'Instrument details and data' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Instrument details' }));
     await advance(5);
     expect(window.location.hash).toBe(`#/instruments/${A}`);
     expect(screen.getByRole('region', { name: 'Return statistics' })).toBeInTheDocument();
@@ -139,8 +140,8 @@ describe('planner routes and eligibility', () => {
     await openGoal();
     expect(calculate()).toBeDisabled();
     expect(screen.getByText(/Not eligible for goal planning/)).toBeInTheDocument();
-    expect(screen.getByText(/Open instrument details to explicitly download/)).toHaveTextContent('set the correct listing price currency');
-    expect(screen.getByRole('link', { name: 'Instrument details and data' })).toHaveAttribute('href', `#/instruments/${A}`);
+    expect(screen.getByText('Download history or update the price currency in instrument details.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Instrument details' })).toHaveAttribute('href', `#/instruments/${A}`);
     fireEvent.submit(screen.getByRole('form', { name: 'Goal planner inputs' }));
     expect(posts()).toHaveLength(0);
   });
@@ -157,7 +158,7 @@ describe('planner routes and eligibility', () => {
     expect(screen.getByText('301 / 300 / 299')).toBeInTheDocument();
     expect(screen.getByText('2025-07-01 – 2026-09-16')).toBeInTheDocument();
     expect(screen.getByText('Unadjusted close')).toBeInTheDocument();
-    expect(screen.getByText(/unadjusted closes may distort/)).toBeInTheDocument();
+    expect(screen.getByText('Unadjusted prices: splits and distributions may affect returns.')).toBeInTheDocument();
     expect(screen.getByText('Some rows were unusable.')).toBeInTheDocument();
     expect(screen.getByText('EUR (manual)')).toBeInTheDocument();
   });
@@ -202,22 +203,41 @@ describe('explicit monthly simulation', () => {
     expect(result()).toBeInTheDocument();
     const view = within(result());
     expect(view.getByRole('status')).toHaveTextContent('€456.78 per month');
-    expect(view.getByRole('status')).toHaveTextContent('90.43% model-estimated success');
+    expect(view.getByRole('status')).toHaveTextContent('90.43% estimated success · 90% target');
     expect(view.getByText('120 payments')).toBeInTheDocument();
-    expect(view.getByText('2026-10-17 / 2036-09-17')).toBeInTheDocument();
     expect(view.getByText('€54,813.60')).toBeInTheDocument();
     expect(view.getByText('€64,813.60')).toBeInTheDocument();
     expect(view.getByText('€90,000.25')).toBeInTheDocument();
     expect(view.getByText('€132,000.45')).toBeInTheDocument();
     expect(view.getByText('€230,000.99')).toBeInTheDocument();
-    expect(view.getByText('Historical parameters may not persist.')).toBeInTheDocument();
-    expect(view.getByText(/10,000 simulated paths · seed 42/)).toBeInTheDocument();
     expect(view.getByRole('img', { name: 'Monte Carlo portfolio projection' })).toBeInTheDocument();
-    expect(view.getByText(/all 10,000 simulated traces/)).toBeInTheDocument();
     expect(view.getByText('Goal: €100,000.00')).toBeInTheDocument();
-    expect(screen.getByText('Model assumptions and limitations').closest('details')).not.toHaveAttribute('open');
-    expect(screen.getByText(/Independent, normally distributed log returns/)).toHaveTextContent('252 trading days');
-    expect(screen.getByText(/No taxes, transaction fees or inflation/)).toBeInTheDocument();
+    expect(view.queryByText('Historical parameters may not persist.')).not.toBeInTheDocument();
+    expect(view.queryByRole('list', { name: 'Simulation warnings' })).not.toBeInTheDocument();
+    expect(view.queryByText(/simulated paths · seed/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Model assumptions and limitations')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Independent, normally distributed log returns/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No taxes, transaction fees or inflation/)).not.toBeInTheDocument();
+    const details = view.getByText('Calculation details');
+    expect(details.closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(details);
+    expect(view.getByText('2026-10-17 / 2036-09-17')).toBeVisible();
+    expect(view.getByText('0.000123')).toBeVisible();
+  });
+
+  it('keeps data-quality warnings in calculation details without model caveats', async () => {
+    const server = mockServer();
+    server.simulate = async (body) => simulation(body, {
+      statistics: statistics(A, { warnings: ['Some rows were unusable.'] }),
+      warnings: ['Some rows were unusable.', 'Historical parameters may not persist.'],
+    });
+    await openGoal();
+    await submit();
+    const view = within(result());
+    expect(view.getByText('Calculation details').closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(view.getByText('Calculation details'));
+    expect(view.getByRole('list', { name: 'Statistics warnings' })).toHaveTextContent('Some rows were unusable.');
+    expect(view.queryByText('Historical parameters may not persist.')).not.toBeInTheDocument();
   });
 
   it('handles a zero monthly contribution without claiming certainty', async () => {
@@ -226,8 +246,8 @@ describe('explicit monthly simulation', () => {
     await openGoal();
     await submit();
     expect(within(result()).getByRole('status')).toHaveTextContent('€0.00 per month');
-    expect(within(result()).getByRole('status')).toHaveTextContent('Not a guarantee');
-    expect(within(result()).getByText(/no additional monthly contribution is needed/)).toBeInTheDocument();
+    expect(within(result()).getByRole('status')).toHaveTextContent('estimated success');
+    expect(within(result()).getByText('No monthly contribution needed.')).toBeInTheDocument();
   });
 
   it('blocks duplicates while busy and makes failures explicitly retryable', async () => {
@@ -354,6 +374,7 @@ describe('stale reads and results', () => {
     await submit();
     const pending = deferred();
     server.stats = () => pending.promise;
+    fireEvent.click(screen.getByText('Saved return statistics'));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh statistics' }));
     expect(result()).not.toBeInTheDocument();
     expect(calculate()).toBeDisabled();

@@ -64,8 +64,7 @@ export function StatisticsSummary({ statistics }) {
       <div><dt>Listing price currency</dt><dd>{stats.price_currency || 'Unknown'}{stats.currency_source && ` (${stats.currency_source})`}</dd></div>
       <div><dt>Saved-data snapshot (UTC)</dt><dd>{stats.as_of || 'Unavailable'}</dd></div>
     </dl>
-    <p className="muted">Mean and variance describe daily simple returns, not annual returns. Variance is in return-fraction squared, not percent.</p>
-    {stats.price_basis === 'close' && <p className="muted">A consistent adjusted-close series was unavailable; unadjusted closes may distort returns around distributions or splits.</p>}
+    {stats.price_basis === 'close' && <p className="muted">Unadjusted prices: splits and distributions may affect returns.</p>}
     {stats.warnings.length > 0 && <ul aria-label="Statistics warnings">{stats.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
   </div>;
 }
@@ -74,7 +73,6 @@ export default function ReturnStatistics({ isin, refreshKey }) {
   const { data, error, loading, retry } = useReturnStatistics(isin, refreshKey);
   return <section aria-label="Return statistics">
     <h2>Return statistics</h2>
-    <p className="muted">Computed from saved quotes only; viewing statistics uses no provider quota.</p>
     {loading && <p role="status">Loading return statistics…</p>}
     {error && <div><p>Return statistics unavailable: {error}</p><button className="secondary" onClick={retry}>Retry statistics</button></div>}
     {data && <>

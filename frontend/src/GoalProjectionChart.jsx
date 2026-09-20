@@ -38,7 +38,6 @@ export default function GoalProjectionChart({ trajectory, goal, pathCount }) {
 
   return <section className="goal-projection" aria-label="Portfolio projection">
     <h3>Portfolio projection</h3>
-    <p className="muted">Average and outcome cloud from all {pathCount.toLocaleString('en')} simulated traces, using the calculated monthly contribution.</p>
     <div className="projection-legend" aria-label="Graph legend">
       <span><i className="projection-mean-key" />Average (mean)</span>
       <span><i className="projection-outer-key" />5th–95th percentiles</span>
@@ -48,7 +47,7 @@ export default function GoalProjectionChart({ trajectory, goal, pathCount }) {
     <div className="chart-scroll">
       <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-labelledby={`${id}-title`} aria-describedby={`${id}-description`} onPointerMove={hover}>
         <title id={`${id}-title`}>Monte Carlo portfolio projection</title>
-        <desc id={`${id}-description`}>Portfolio value in EUR from {first.date} to {last.date}. A solid blue line shows the arithmetic mean of {pathCount.toLocaleString('en')} traces. The light cloud spans the 5th–95th percentiles; the darker cloud spans the 25th–75th percentiles at each date. A dashed line marks the goal. Outcomes outside the cloud are possible. Use the projection date slider for exact values.</desc>
+        <desc id={`${id}-description`}>Portfolio value in EUR from {first.date} to {last.date}. A solid blue line shows the arithmetic mean of {pathCount.toLocaleString('en')} traces. The light cloud spans the 5th–95th percentiles; the darker cloud spans the 25th–75th percentiles at each date. A dashed line marks the goal. Use the projection date slider for exact values.</desc>
         {Array.from({ length: 5 }, (_, index) => {
           const value = maximum * (index / 4);
           return <g key={index} className="chart-axis"><line x1={LEFT} x2={WIDTH - RIGHT} y1={y(value)} y2={y(value)} />
@@ -70,6 +69,5 @@ export default function GoalProjectionChart({ trajectory, goal, pathCount }) {
     <p id={`${id}-readout`} className="projection-readout" aria-live="polite">
       <strong>{active.date}</strong> · Average: {formatEuros(active.raw.mean_eur)} · 5th–95th: {formatEuros(active.raw.p05_eur)} – {formatEuros(active.raw.p95_eur)} · 25th–75th: {formatEuros(active.raw.p25_eur)} – {formatEuros(active.raw.p75_eur)}
     </p>
-    <p className="muted">The cloud shows pointwise percentile ranges, not every trace or a guarantee. It is not a confidence interval for the mean. Values are sampled after each monthly payment, plus the goal date; the average line is not a single simulated path.</p>
   </section>;
 }

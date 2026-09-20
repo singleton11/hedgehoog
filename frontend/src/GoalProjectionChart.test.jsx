@@ -23,7 +23,7 @@ describe('portfolio projection graph', () => {
     const { container } = draw();
     const image = screen.getByRole('img', { name: 'Monte Carlo portfolio projection' });
     expect(image).toHaveAccessibleDescription(expect.stringContaining('arithmetic mean of 10,000 traces'));
-    expect(image).toHaveAccessibleDescription(expect.stringContaining('Outcomes outside the cloud are possible'));
+    expect(image).toHaveAccessibleDescription(expect.stringContaining('Use the projection date slider for exact values'));
     expect(container.querySelector('.projection-outer')).toHaveAttribute('d', expect.stringMatching(/^M.+ Z$/));
     expect(container.querySelector('.projection-inner')).toHaveAttribute('d', expect.stringMatching(/^M.+ Z$/));
     expect(container.querySelector('.projection-mean').getAttribute('d').match(/L/g)).toHaveLength(2);
@@ -32,7 +32,8 @@ describe('portfolio projection graph', () => {
     expect(screen.getByText('5th–95th percentiles')).toBeInTheDocument();
     expect(screen.getByText('25th–75th percentiles')).toBeInTheDocument();
     expect(screen.getByText('Goal: €20,000.00')).toBeInTheDocument();
-    expect(screen.getByText(/not a confidence interval for the mean/)).toBeInTheDocument();
+    expect(screen.queryByText(/not a confidence interval for the mean/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Average and outcome cloud from all/)).not.toBeInTheDocument();
     expectFiniteChart(container);
   });
 
