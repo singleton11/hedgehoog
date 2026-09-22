@@ -14,4 +14,5 @@ COPY *.py ./
 RUN useradd --create-home --uid 10001 worker
 USER worker
 
-CMD ["celery", "-A", "celery_app:app", "worker", "--loglevel=info", "--queues=etfs", "--concurrency=1"]
+# Keep the application directory importable after Celery finishes startup.
+CMD ["python", "-m", "celery", "-A", "celery_app:app", "worker", "--loglevel=info", "--queues=etfs,marketdata", "--concurrency=1"]

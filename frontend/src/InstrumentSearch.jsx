@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
 import { displayText } from './instruments.js';
+import Icon from './Icon.jsx';
 
 export const SEARCH_DELAY = 300;
 
@@ -102,11 +103,13 @@ export default function InstrumentSearch({ onSelect }) {
       if (!event.currentTarget.contains(event.relatedTarget)) { setOpen(false); setActive(-1); }
     }}>
       <label htmlFor={`${id}-input`}>Find an ETF</label>
+      <div className="search-input-wrap"><Icon name="search" />
       <input id={`${id}-input`} role="combobox" aria-autocomplete="list" aria-expanded={expanded}
         aria-controls={`${id}-results`} aria-describedby={`${id}-help`}
         aria-activedescendant={expanded && active >= 0 ? `${id}-option-${active}` : undefined}
         autoComplete="off" maxLength={100} placeholder="Name, ticker or ISIN" value={query}
         onChange={change} onKeyDown={keyDown} onFocus={reopen} />
+      </div>
       <p id={`${id}-help`} className={open && query.trim().length === 1 ? 'muted' : 'sr-only'}>Enter at least 2 characters.</p>
       {expanded && <div className="search-results">
         <ul id={`${id}-results`} role="listbox" aria-label="Matching ETFs" aria-busy={['waiting', 'loading'].includes(status)}>

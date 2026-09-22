@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import FrozenInstanceError
 from datetime import date, timedelta
 from decimal import Decimal
 import math
@@ -9,10 +10,13 @@ from statistics import mean, variance
 from unittest.mock import Mock
 
 import pytest
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pymongo.errors import ConnectionFailure
 
+import goal_strategies as gs
 import market_data as md
-from goal_planner import GoalRequest, add_months, contribution_dates, simulate_goal
+from goal_planner import GoalRequest
+from goal_simulation import GoalInputs, add_months, contribution_dates, simulate_buy_and_hold
 from return_statistics import MODEL_VERSION, calculate_statistics, instrument_statistics
 from test_market_data import ISIN, LISTING, NOW, Provider, api, bar, clock, collect, config, db, enqueue, page
 
@@ -36,9 +40,19 @@ def seed_history(db, rows=None):
                               "job_id": f"seed-{index}", "collected_at": NOW, "collection_date": NOW.date().isoformat()})
 
 
-def request_body(**changes):
-    return {"instrument_id": ISIN, "goal_eur": "100000.00", "starting_capital_eur": "10000.00",
+def seed_profile(db):
+    db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "data": {"name": "Synthetic ETF"},
+                               "job_id": "seed-profile", "collected_at": NOW})
+
+
+def goal_inputs(**changes):
+    return {"goal_eur": "100000.00", "starting_capital_eur": "10000.00",
             "goal_date": "2036-09-17", "reliability": 0.9, **changes}
+
+
+def request_body(**changes):
+    return {**goal_inputs(), "strategy": {"id": "buy_and_hold_single_instrument",
+                                         "parameters": {"instrument": ISIN}}, **changes}
 
 
 def flat_estimates(m=0.0, v=0.0):
@@ -172,7 +186,7 @@ def test_extreme_prices_keep_finite_log_returns_even_when_price_ratios_overflow(
     json.dumps(stats, allow_nan=False)
     assert any("greater than 50%" in warning for warning in stats["warnings"])
     with pytest.raises(md.DataError, match="unstable"):
-        simulate_goal(stats, GoalRequest(**request_body()), NOW.date())
+        simulate_buy_and_hold(stats, GoalInputs(**goal_inputs()), NOW.date())
 
 
 def test_successful_download_persists_stats_and_updates_recompute(db, config, clock):
@@ -234,7 +248,7 @@ def test_lazy_stats_latest_observation_listing_and_cache_invalidation(db, clock)
         [{**revised["data"], "date": revised["date"]}])["daily_mean_log_return"])
 
 
-@pytest.mark.parametrize("version", [2, 3])
+@pytest.mark.parametrize("version", [2, 3, 4])
 def test_old_statistics_cache_is_recomputed_without_changing_quotes(db, version):
     seed_history(db)
     expected = instrument_statistics(db, ISIN)
@@ -244,7 +258,9 @@ def test_old_statistics_cache_is_recomputed_without_changing_quotes(db, version)
         "statistics.daily_mean_return": 0.1,
         "statistics.daily_return_variance": 0.02,
         "statistics.daily_mean_log_return": 999,
-    }, "$unset": {"statistics.daily_volatility": "", "statistics.annualized_mean_log_return": ""}})
+    }, "$unset": {"statistics.daily_volatility": "", "statistics.annualized_mean_log_return": "",
+                  "statistics.historical_year_return": "", "statistics.historical_year_start_date": "",
+                  "statistics.historical_year_end_date": "", "statistics.historical_year_price_basis": ""}})
     assert instrument_statistics(db, ISIN) == expected
     saved = db.instrument_statistics.find_one({"_id": ISIN})
     assert saved["signature"]["version"] == MODEL_VERSION > version
@@ -304,8 +320,9 @@ def test_month_end_schedule_leap_years_and_partial_final_period():
 
 
 def test_zero_return_known_monthly_solution_and_rounds_up():
-    body = GoalRequest(**request_body(goal_eur="10000", starting_capital_eur="0", goal_date="2027-09-17"))
-    result = simulate_goal(flat_estimates(), body, NOW.date())
+    body = GoalInputs(**goal_inputs(goal_eur="10000", starting_capital_eur="0", goal_date="2027-09-17"))
+    result = simulate_buy_and_hold(flat_estimates(), body, NOW.date())
+    assert "statistics" not in result and "parameter_statistics" not in result
     assert result["monthly_contribution_eur"] == "833.34"
     assert result["total_contributions_eur"] == "10000.08"
     assert result["terminal_percentiles_eur"] == {"p05": "10000.08", "p50": "10000.08", "p95": "10000.08"}
@@ -314,20 +331,20 @@ def test_zero_return_known_monthly_solution_and_rounds_up():
 
 
 def test_zero_monthly_only_when_initial_capital_alone_meets_probability():
-    body = GoalRequest(**request_body(goal_eur="10000", starting_capital_eur="10000"))
-    result = simulate_goal(flat_estimates(), body, NOW.date())
+    body = GoalInputs(**goal_inputs(goal_eur="10000", starting_capital_eur="10000"))
+    result = simulate_buy_and_hold(flat_estimates(), body, NOW.date())
     assert result["monthly_contribution_eur"] == "0.00"
     assert result["zero_contribution_success_probability"] == 1
     # Already holding the nominal target does not guarantee preserving it.
-    risky = simulate_goal(flat_estimates(m=-0.0002, v=0.0004), body, NOW.date())
+    risky = simulate_buy_and_hold(flat_estimates(m=-0.0002, v=0.0004), body, NOW.date())
     assert Decimal(risky["monthly_contribution_eur"]) > 0
 
 
 def test_positive_and_negative_deterministic_growth_and_end_period_deposits():
     today = date(2026, 1, 31)
     for annual_log_growth in (-0.1, 0.1):
-        body = GoalRequest(**request_body(goal_eur="10000", starting_capital_eur="1000", goal_date="2026-04-15"))
-        result = simulate_goal(flat_estimates(m=annual_log_growth / 252), body, today)
+        body = GoalInputs(**goal_inputs(goal_eur="10000", starting_capital_eur="1000", goal_date="2026-04-15"))
+        result = simulate_buy_and_hold(flat_estimates(m=annual_log_growth / 252), body, today)
         terminal_start = 1000 * math.exp(annual_log_growth * (body.goal_date - today).days / 365.25)
         annuity = sum(math.exp(annual_log_growth * (body.goal_date - d).days / 365.25)
                       for d in [date(2026, 2, 28), date(2026, 3, 31)])
@@ -339,22 +356,22 @@ def test_positive_and_negative_deterministic_growth_and_end_period_deposits():
 
 def test_simulation_reproducible_probability_met_and_monotone_inputs():
     estimates = flat_estimates(m=0.0001, v=0.0002)
-    body = GoalRequest(**request_body())
-    result = simulate_goal(estimates, body, NOW.date())
-    assert simulate_goal(estimates, body, NOW.date()) == result
+    body = GoalInputs(**goal_inputs())
+    result = simulate_buy_and_hold(estimates, body, NOW.date())
+    assert simulate_buy_and_hold(estimates, body, NOW.date()) == result
     amount = Decimal(result["monthly_contribution_eur"])
     assert result["success_probability"] >= 0.9
     assert result["success_probability"] < 0.905
     for changes, larger in [({"reliability": 0.99}, True), ({"goal_eur": "200000"}, True),
                             ({"starting_capital_eur": "20000"}, False), ({"reliability": 0.5}, False)]:
-        changed = simulate_goal(estimates, GoalRequest(**request_body(**changes)), NOW.date())
+        changed = simulate_buy_and_hold(estimates, GoalInputs(**goal_inputs(**changes)), NOW.date())
         assert (Decimal(changed["monthly_contribution_eur"]) > amount) is larger
         assert changed["success_probability"] >= changed["target_probability"]
 
 
 def test_zero_variance_trajectory_is_one_line_with_initial_capital_and_end_period_deposits():
-    body = GoalRequest(**request_body(goal_eur="10000", starting_capital_eur="1000", goal_date="2027-09-17"))
-    result = simulate_goal(flat_estimates(), body, NOW.date())
+    body = GoalInputs(**goal_inputs(goal_eur="10000", starting_capital_eur="1000", goal_date="2027-09-17"))
+    result = simulate_buy_and_hold(flat_estimates(), body, NOW.date())
     assert result["goal_eur"] == "10000.00"
     assert len(result["trajectory"]) == 13
     for index, point in enumerate(result["trajectory"]):
@@ -365,8 +382,8 @@ def test_zero_variance_trajectory_is_one_line_with_initial_capital_and_end_perio
 
 def test_trajectory_partial_month_does_not_add_an_extra_payment():
     today = date(2028, 1, 31)
-    body = GoalRequest(**request_body(goal_eur="10000", starting_capital_eur="0", goal_date="2028-04-15"))
-    result = simulate_goal(flat_estimates(), body, today)
+    body = GoalInputs(**goal_inputs(goal_eur="10000", starting_capital_eur="0", goal_date="2028-04-15"))
+    result = simulate_buy_and_hold(flat_estimates(), body, today)
     assert result["contribution_count"] == 2
     points = result["trajectory"]
     assert [point["date"] for point in points] == ["2028-01-31", "2028-02-29", "2028-03-31", "2028-04-15"]
@@ -375,9 +392,9 @@ def test_trajectory_partial_month_does_not_add_an_extra_payment():
 
 def test_cloud_and_mean_use_all_original_paths_with_the_recommended_contribution():
     paths, seed = 512, 123
-    body = GoalRequest(**request_body(goal_date="2027-01-22"))
+    body = GoalInputs(**goal_inputs(goal_date="2027-01-22"))
     estimates = flat_estimates(m=0.0001, v=0.0002)
-    result = simulate_goal(estimates, body, NOW.date(), paths=paths, seed=seed)
+    result = simulate_buy_and_hold(estimates, body, NOW.date(), paths=paths, seed=seed)
     rng = np.random.default_rng(seed)
     wealth = np.full(paths, float(body.starting_capital_eur))
     monthly = float(result["monthly_contribution_eur"])
@@ -398,12 +415,12 @@ def test_cloud_and_mean_use_all_original_paths_with_the_recommended_contribution
     terminal = result["trajectory"][-1]
     assert {key: terminal[f"{key}_eur"] for key in ("p05", "p50", "p95")} == result["terminal_percentiles_eur"]
     assert float(np.mean(wealth >= float(body.goal_eur))) == result["success_probability"]
-    assert result == simulate_goal(estimates, body, NOW.date(), paths=paths, seed=seed)
+    assert result == simulate_buy_and_hold(estimates, body, NOW.date(), paths=paths, seed=seed)
 
 
 def test_maximum_horizon_returns_bounded_monthly_summaries_not_all_traces():
-    body = GoalRequest(**request_body(goal_date=add_months(NOW.date(), 600).isoformat()))
-    result = simulate_goal(flat_estimates(m=0.0001, v=0.0002), body, NOW.date())
+    body = GoalInputs(**goal_inputs(goal_date=add_months(NOW.date(), 600).isoformat()))
+    result = simulate_buy_and_hold(flat_estimates(m=0.0001, v=0.0002), body, NOW.date())
     assert result["simulation_paths"] == 10000
     assert len(result["trajectory"]) == 601
     assert result["trajectory"][0]["date"] == result["valuation_date"]
@@ -414,12 +431,13 @@ def test_maximum_horizon_returns_bounded_monthly_summaries_not_all_traces():
 
 def test_extreme_simulation_rejected_not_silently_clipped():
     with pytest.raises(md.DataError, match="unstable"):
-        simulate_goal(flat_estimates(m=1000, v=1), GoalRequest(**request_body()), NOW.date())
+        simulate_buy_and_hold(flat_estimates(m=1000, v=1), GoalInputs(**goal_inputs()), NOW.date())
 
 
 def test_api_statistics_and_simulation_auth_origin_and_no_provider_calls(api, db, config, monkeypatch):
     client, publish = api
     seed_history(db)
+    seed_profile(db)
     provider = Mock(side_effect=AssertionError("No provider call"))
     monkeypatch.setattr(md, "MarketstackClient", provider)
     url = f"/instruments/{ISIN}/statistics"
@@ -439,7 +457,9 @@ def test_api_statistics_and_simulation_auth_origin_and_no_provider_calls(api, db
     result = response.json()
     assert result["simulation_paths"] == 10000
     assert result["success_probability"] >= 0.9
-    assert result["statistics"] == stats
+    assert result["strategy"] == request_body()["strategy"]
+    assert result["parameter_statistics"] == {"instrument": stats}
+    assert "statistics" not in result and "instrument_id" not in result
     assert isinstance(result["monthly_contribution_eur"], str)
     assert len(result["monthly_contribution_eur"].split(".")[1]) == 2
     assert result == client.post("/goals/simulate", json=request_body()).json()
@@ -456,19 +476,254 @@ def test_api_statistics_and_simulation_auth_origin_and_no_provider_calls(api, db
     {"goal_eur": "1000000000001"}, {"goal_eur": "1.001"}, {"starting_capital_eur": "-1"},
     {"reliability": 0.499}, {"reliability": 1}, {"reliability": "NaN"},
     {"goal_date": "2026-10-16"}, {"goal_date": "2026-09-17"}, {"goal_date": "2076-09-18"},
-    {"goal_date": "tomorrow"}, {"instrument_id": "bad"}, {"paths": 1000000},
+    {"goal_date": "tomorrow"}, {"paths": 1000000},
 ])
-def test_api_input_bounds(api, changes):
+def test_api_input_bounds_before_strategy_database_work(api, db, changes, monkeypatch):
     client, _ = api
     login(client)
+    lookup = Mock(side_effect=AssertionError("Invalid goal must not read strategy data"))
+    monkeypatch.setattr(db.instruments, "find_one", lookup)
     assert client.post("/goals/simulate", json=request_body(**changes)).status_code == 422
+    lookup.assert_not_called()
 
 
-@pytest.mark.parametrize("rows", [[], history(3), history(currency="USD"), history(currency=None)])
+@pytest.mark.parametrize("rows", [[], history(3), history(currency="USD"), history(currency=None)],
+                         ids=["profile-only", "short-history", "non-eur", "unknown-currency"])
 def test_api_rejects_insufficient_or_non_eur_history(api, db, rows):
     client, _ = api
     seed_history(db, rows)
+    seed_profile(db)
     login(client)
     response = client.post("/goals/simulate", json=request_body())
     assert response.status_code == 422
-    assert response.json()["detail"]
+    assert response.json()["detail"] == instrument_statistics(db, ISIN)["ineligible_reason"]
+
+
+def test_strategy_catalogue_auth_field_metadata_and_no_provider_calls(api, db, config, monkeypatch):
+    client, publish = api
+    forbidden = Mock(side_effect=AssertionError("Catalogue must not acquire or estimate data"))
+    monkeypatch.setattr(md, "MarketstackClient", forbidden)
+    monkeypatch.setattr(gs, "instrument_statistics", forbidden)
+    monkeypatch.setattr(db.instruments, "find_one", forbidden)
+    assert client.get("/goals/strategies").status_code == 401
+    login(client)
+    response = client.get("/goals/strategies")
+    assert response.status_code == 200
+    assert response.json() == {"items": [{
+        "id": "buy_and_hold_single_instrument",
+        "name": "Buy and hold single instrument",
+        "description": "Invest starting capital and each monthly contribution in one instrument and hold it.",
+        "parameters": [{"key": "instrument", "type": "instrument", "label": "Instrument",
+                        "required": True, "universe": "acquired"}],
+    }]}
+    definition = gs.get_strategy("buy_and_hold_single_instrument")
+    assert definition.parameters_model is gs.BuyAndHoldParameters
+    with pytest.raises(FrozenInstanceError):
+        definition.name = "Changed"
+    field = gs.BuyAndHoldParameters.model_fields["instrument"]
+    monkeypatch.setattr(field, "title", "Updated instrument label")
+    assert client.get("/goals/strategies").json()["items"][0]["parameters"][0]["label"] == field.title
+    assert md.budget_status(db, config)["used"] == 0
+    assert db.acquisition_jobs.count_documents({}) == 0
+    assert db.instrument_statistics.count_documents({}) == 0
+    forbidden.assert_not_called()
+    publish.assert_not_called()
+
+
+@pytest.mark.parametrize("selection", [
+    None, True, [], {},
+    {"id": "unknown_strategy", "parameters": {}},
+    {"id": None, "parameters": {}},
+    {"id": True, "parameters": {}},
+    {"id": [], "parameters": {}},
+    {"id": {}, "parameters": {}},
+    {"parameters": {"instrument": ISIN}},
+    {"id": "buy_and_hold_single_instrument"},
+    *[{"id": "buy_and_hold_single_instrument", "parameters": parameters}
+      for parameters in (None, True, [], "invalid", {}, {"instrument_id": ISIN},
+                         {"instrument": ISIN, "unknown": 1})],
+    {"id": "buy_and_hold_single_instrument", "parameters": {"instrument": ISIN}, "unknown": 1},
+])
+def test_strategy_selection_rejected_by_pydantic_before_database_work(api, db, monkeypatch, selection):
+    client, _ = api
+    login(client)
+    forbidden = Mock(side_effect=AssertionError("Invalid strategy must not access data"))
+    monkeypatch.setattr(db.instruments, "find_one", forbidden)
+    body = request_body(strategy=selection)
+    with pytest.raises(ValidationError):
+        GoalRequest(**body)
+    response = client.post("/goals/simulate", json=body)
+    assert response.status_code == 422
+    assert isinstance(response.json()["detail"], list)
+    forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("instrument", [None, True, False, 123, 1.2, [], [ISIN], {}, {"isin": ISIN},
+                                       "", "bad", ISIN.lower(), f" {ISIN}", f"{ISIN}\n"])
+def test_strategy_instrument_requires_a_strict_isin_string(api, instrument):
+    client, _ = api
+    login(client)
+    body = request_body(strategy={"id": "buy_and_hold_single_instrument", "parameters": {"instrument": instrument}})
+    with pytest.raises(ValidationError):
+        GoalRequest(**body)
+    response = client.post("/goals/simulate", json=body)
+    assert response.status_code == 422
+    assert isinstance(response.json()["detail"], list)
+
+
+@pytest.mark.parametrize("include_strategy", [False, True])
+def test_legacy_top_level_instrument_is_rejected(api, include_strategy):
+    client, _ = api
+    login(client)
+    body = request_body(instrument_id=ISIN)
+    if not include_strategy:
+        body.pop("strategy")
+    response = client.post("/goals/simulate", json=body)
+    assert response.status_code == 422
+    assert any(error["loc"] == ["body", "instrument_id"] and error["type"] == "extra_forbidden"
+               for error in response.json()["detail"])
+
+
+@pytest.mark.parametrize("inventory", ["catalogue-only", "listing-only", "quote-only"])
+def test_strategy_requires_its_own_saved_profile_even_when_quotes_are_eligible(api, db, monkeypatch, inventory):
+    client, publish = api
+    # A different acquired instrument must not satisfy the selected parameter.
+    db.instruments.insert_one({"instrument_id": "IE00B4L5Y983", "job_id": "another-profile"})
+    if inventory == "listing-only":
+        db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
+    elif inventory == "quote-only":
+        seed_history(db)
+        assert instrument_statistics(db, ISIN)["eligible"]
+    assert db.instruments.find_one({"instrument_id": ISIN}) is None
+    forbidden = Mock(side_effect=AssertionError("Acquired gate must precede statistics and simulation"))
+    monkeypatch.setattr(gs, "instrument_statistics", forbidden)
+    monkeypatch.setattr(gs, "simulate_buy_and_hold", forbidden)
+    monkeypatch.setattr(md, "MarketstackClient", forbidden)
+    login(client)
+    response = client.post("/goals/simulate", json=request_body())
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Choose an instrument from the acquired universe. Acquire its data first."
+    forbidden.assert_not_called()
+    publish.assert_not_called()
+
+
+@pytest.mark.parametrize("change", ["active-job", "price-currency"])
+def test_simulation_revalidates_cached_eligibility_after_operational_changes(api, db, config, monkeypatch, change):
+    client, publish = api
+    seed_profile(db)
+    seed_history(db, history(currency=None))
+    md.set_price_currency(db, ISIN, "EUR")
+    login(client)
+    before = client.post("/goals/simulate", json=request_body())
+    assert before.status_code == 200
+    cached = db.instrument_statistics.find_one({"_id": ISIN})
+    provider = Mock(side_effect=AssertionError("Simulation must not call a provider"))
+    solver = Mock(side_effect=AssertionError("Ineligible history must not reach the solver"))
+    monkeypatch.setattr(md, "MarketstackClient", provider)
+    original_solver = gs.simulate_buy_and_hold
+    monkeypatch.setattr(gs, "simulate_buy_and_hold", solver)
+    if change == "active-job":
+        job = enqueue(db, config)
+        expected_reason = "Wait for the current EOD acquisition to finish, then refresh these estimates."
+    else:
+        assert client.patch(f"/instruments/{ISIN}/price-currency", json={"price_currency": "USD"}).status_code == 200
+        expected_reason = instrument_statistics(db, ISIN)["ineligible_reason"]
+        assert "EUR" in expected_reason
+    response = client.post("/goals/simulate", json=request_body())
+    assert response.status_code == 422
+    assert response.json()["detail"] == expected_reason
+    assert db.instrument_statistics.find_one({"_id": ISIN}) == cached
+    solver.assert_not_called()
+    monkeypatch.setattr(gs, "simulate_buy_and_hold", original_solver)
+    if change == "active-job":
+        db.acquisition_jobs.update_one({"_id": job["id"]}, {"$set": {"active": False, "status": "failed"}})
+    else:
+        assert client.patch(f"/instruments/{ISIN}/price-currency", json={"price_currency": "EUR"}).status_code == 200
+    restored = client.post("/goals/simulate", json=request_body())
+    assert restored.status_code == 200
+    assert restored.json() == before.json()
+    provider.assert_not_called()
+    publish.assert_not_called()
+
+
+def test_acquired_instrument_type_enforces_membership_for_every_strategy_parameter(api, db, monkeypatch):
+    class PairParameters(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        primary: gs.AcquiredInstrument = Field(title="Primary")
+        secondary: gs.AcquiredInstrument = Field(title="Secondary")
+
+    execute = Mock(return_value={"parameter_statistics": {}})
+    definition = gs.StrategyDefinition(
+        id="test_pair", name="Test pair", description="Test-only two-instrument strategy.",
+        parameters_model=PairParameters, simulate=execute,
+    )
+    monkeypatch.setitem(gs.STRATEGIES, definition.id, definition)
+    seed_profile(db)
+    second = "IE00B4L5Y983"
+    body = request_body(strategy={"id": definition.id, "parameters": {"primary": ISIN, "secondary": second}})
+    client, _ = api
+    login(client)
+    assert client.post("/goals/simulate", json=body).status_code == 422
+    execute.assert_not_called()
+    db.instruments.insert_one({"instrument_id": second, "job_id": "second-profile"})
+    response = client.post("/goals/simulate", json=body)
+    assert response.status_code == 200
+    assert response.json()["strategy"] == body["strategy"]
+    assert isinstance(execute.call_args.args[0], PairParameters)
+    execute.assert_called_once()
+    # Recheck the first parameter too, not only the most recently changed one.
+    db.instruments.delete_one({"instrument_id": ISIN})
+    assert client.post("/goals/simulate", json=body).status_code == 422
+    execute.assert_called_once()
+
+
+def test_registry_dispatches_another_typed_strategy_without_buy_and_hold_assumptions(api, db, monkeypatch):
+    class SeparateParameters(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        periods: int = Field(gt=0, title="Periods", json_schema_extra={"parameter_type": "integer"})
+        settlement_date: date = Field(default=NOW.date(), title="Settlement date",
+                                      json_schema_extra={"parameter_type": "date"})
+
+    calls = []
+    output = {"monthly_contribution_eur": "12.34", "parameter_statistics": {}, "separate_projection": [7, 2, 9]}
+
+    def separate_simulation(parameters: SeparateParameters, goals: GoalInputs, database, today):
+        assert isinstance(parameters, SeparateParameters)
+        assert parameters.periods == 3 and parameters.settlement_date == NOW.date()
+        assert isinstance(goals, GoalInputs) and goals.goal_eur == Decimal("100000.00")
+        assert database is db and today == NOW.date()
+        calls.append(parameters)
+        return deepcopy(output)
+
+    definition = gs.StrategyDefinition(
+        id="test_separate_strategy", name="Separate test strategy", description="A different execution model.",
+        parameters_model=SeparateParameters, simulate=separate_simulation,
+    )
+    monkeypatch.setitem(gs.STRATEGIES, definition.id, definition)
+    forbidden = Mock(side_effect=AssertionError("Generic dispatch must not use buy-and-hold data or math"))
+    monkeypatch.setattr(gs, "instrument_statistics", forbidden)
+    monkeypatch.setattr(gs, "simulate_buy_and_hold", forbidden)
+    monkeypatch.setattr(db.instruments, "find_one", forbidden)
+    client, publish = api
+    login(client)
+    catalogue = client.get("/goals/strategies").json()["items"]
+    assert catalogue[-1] == {
+        "id": definition.id, "name": definition.name, "description": definition.description,
+        "parameters": [
+            {"key": "periods", "type": "integer", "label": "Periods", "required": True, "universe": None},
+            {"key": "settlement_date", "type": "date", "label": "Settlement date", "required": False, "universe": None},
+        ],
+    }
+    for invalid in ({}, {"periods": 0}, {"periods": 3, "instrument": ISIN}):
+        response = client.post("/goals/simulate", json=request_body(strategy={"id": definition.id, "parameters": invalid}))
+        assert response.status_code == 422
+    assert not calls
+    selection = {"id": definition.id, "parameters": {"periods": "3"}}
+    response = client.post("/goals/simulate", json=request_body(strategy=selection))
+    assert response.status_code == 200, response.text
+    assert response.json() == {**output, "strategy": {
+        "id": definition.id, "parameters": {"periods": 3, "settlement_date": NOW.date().isoformat()},
+    }}
+    assert len(calls) == 1
+    forbidden.assert_not_called()
+    publish.assert_not_called()

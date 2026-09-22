@@ -1,6 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App.jsx';
 
 const admin = { id: 'user-id', login: 'admin', role: 'admin' };
@@ -18,12 +18,83 @@ function mockServer(initialUser = null) {
     }
     if (url === '/api/auth/logout') { user = null; return response(204); }
     if (!user) return response(401, { detail: 'Authentication required' });
+    if (url === '/api/instruments/budget') return response(200, { month: '2026-09', limit: 10000, used: 125, remaining: 9875 });
     if (url.startsWith('/api/instruments/acquired?')) return response(200, { items: [], total: 0, limit: 20, offset: 0 });
     throw new Error(`Unexpected URL ${url}`);
   });
   vi.stubGlobal('fetch', fetch);
   return { fetch, expire: () => { user = null; } };
 }
+
+describe('logo navigation', () => {
+  afterEach(() => window.history.replaceState(null, '', '/'));
+
+  it('returns to the ETF list when the logo is clicked', async () => {
+    window.history.replaceState(null, '', '/#/goal');
+    mockServer(admin);
+    const user = userEvent.setup();
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: 'Goal planner' })).toBeInTheDocument();
+    const logo = screen.getByRole('link', { name: 'Hedgehoog' });
+    expect(logo).toHaveAttribute('href', '#/');
+    const header = logo.closest('header');
+    const budget = within(header).getByRole('group', { name: 'Quota budget' });
+    await waitFor(() => expect(budget).toHaveTextContent('9,875 / 10,000 calls left'));
+    expect(within(header).getByText('admin')).toBeInTheDocument();
+
+    await user.click(logo);
+
+    expect(await screen.findByText('No acquired ETFs yet')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#/');
+    expect(screen.getByRole('group', { name: 'Quota budget' })).toBe(budget);
+    expect(screen.queryByRole('heading', { name: 'Goal planner' })).not.toBeInTheDocument();
+  });
+});
+
+describe('workspace presentation', () => {
+  afterEach(() => window.history.replaceState(null, '', '/'));
+
+  it('lets keyboard users skip navigation without changing the route', async () => {
+    mockServer(admin);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('No acquired ETFs yet');
+    await user.tab();
+    expect(screen.getByRole('link', { name: 'Skip to content' })).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(document.getElementById('workspace-content')).toHaveFocus();
+    expect(window.location.hash).toBe('');
+  });
+
+  it('shows the ETF table without redundant summary cards', async () => {
+    const server = mockServer(admin);
+    const fallback = server.fetch.getMockImplementation();
+    server.fetch.mockImplementation((url, options) => {
+      if (url.startsWith('/api/instruments/acquired?')) return Promise.resolve(response(200, {
+        total: 42, limit: 20, offset: 0, items: [
+          { instrument_id: 'IE00B4L5Y983', isin: 'IE00B4L5Y983', name: 'World ETF', ticker: 'WORLD', quote_count: 1200 },
+          { instrument_id: 'IE00B3XXRP09', isin: 'IE00B3XXRP09', name: 'Profile-only ETF', quote_count: 0 },
+        ],
+      }));
+      return fallback(url, options);
+    });
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: 'Acquired ETFs (42)' })).toBeInTheDocument();
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Collection overview')).not.toBeInTheDocument();
+    expect(screen.queryByText('With price history')).not.toBeInTheDocument();
+    expect(screen.queryByText('Saved daily quotes')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'World ETF' })).toHaveAttribute('href', '#/instruments/IE00B4L5Y983');
+    expect(server.fetch.mock.calls.every(([, options]) => !options.method || options.method === 'GET')).toBe(true);
+  });
+
+  it('does not show empty summary cards before any ETF has been acquired', async () => {
+    mockServer(admin);
+    render(<App />);
+    await screen.findByText('No acquired ETFs yet');
+    expect(screen.queryByLabelText('Collection overview')).not.toBeInTheDocument();
+  });
+});
 
 describe('authentication', () => {
   it('does not render protected content while checking the session', async () => {
@@ -61,7 +132,8 @@ describe('authentication', () => {
     expect(await screen.findByRole('heading', { name: 'Hedgehoog' })).toBeInTheDocument();
     expect(screen.getByText('admin')).toBeInTheDocument();
     expect(screen.queryByText(/Welcome to your workspace/)).not.toBeInTheDocument();
-    expect(await screen.findByRole('combobox', { name: 'Find an ETF' })).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'Add ETF' })).toHaveAttribute('href', '#/add');
+    expect(screen.queryByRole('combobox', { name: 'Find an ETF' })).not.toBeInTheDocument();
     expect(server.fetch).toHaveBeenCalledWith('/api/auth/login', expect.objectContaining({
       credentials: 'same-origin', method: 'POST', body: JSON.stringify({ login: 'admin', password: 'admin' }),
     }));
@@ -75,7 +147,8 @@ describe('authentication', () => {
     mockServer(admin);
     render(<App />);
     expect(await screen.findByRole('heading', { name: 'Hedgehoog' })).toBeInTheDocument();
-    expect(await screen.findByRole('combobox', { name: 'Find an ETF' })).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'Add ETF' })).toHaveAttribute('href', '#/add');
+    expect(screen.queryByRole('combobox', { name: 'Find an ETF' })).not.toBeInTheDocument();
   });
 
   it.each([admin, { ...admin, login: 'alice', role: 'user' }])('does not render or fetch service status for $role', async (user) => {

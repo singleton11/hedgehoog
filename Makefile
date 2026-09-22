@@ -16,7 +16,7 @@ services-down:
 	docker compose stop celery-worker rabbitmq mongodb
 
 import-etfs: services-up
-	docker compose exec celery-worker celery -A celery_app:app call etfs.import_daily
+	docker compose exec celery-worker python -m celery -A celery_app:app call etfs.import_daily
 
 run: services-up
 	cd frontend && npm ci && npm exec -- concurrently --kill-others --names backend,frontend \

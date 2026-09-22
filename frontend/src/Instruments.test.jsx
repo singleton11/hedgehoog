@@ -57,6 +57,7 @@ function mockServer() {
     if (url === '/api/auth/me') return response(200, user);
     if (url === '/api/') return response(200, { message: 'Hello, World!' });
     if (url === '/api/auth/logout') return response(204);
+    if (url === '/api/instruments/budget') return response(200, server.details[A].budget);
     const parsed = new URL(url, 'http://localhost');
     if (parsed.pathname === '/api/instruments/acquired') return response(200, await server.acquired(parsed.searchParams, options));
     if (parsed.pathname === '/api/instruments/search') return response(200, { items: await server.search(parsed.searchParams.get('q'), options) });
@@ -76,11 +77,14 @@ function mockServer() {
 }
 async function flush() { await act(async () => {}); }
 async function advance(ms) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
-async function open(isin = null) {
-  window.history.replaceState(null, '', isin ? `#/instruments/${isin}` : '#/');
+async function openRoute(hash) {
+  window.history.replaceState(null, '', hash);
   const view = render(<App />);
   await flush();
   return view;
+}
+async function open(isin = null) {
+  return openRoute(isin ? `#/instruments/${isin}` : '#/');
 }
 async function navigate(isin) {
   await act(async () => {
@@ -107,7 +111,37 @@ afterEach(() => { cleanup(); vi.useRealTimers(); window.history.replaceState(nul
 
 const acquiredItem = (isin = A, extra = {}) => ({ ...item(isin), listing: { symbol: 'ETF.DE', exchange: 'XETR' },
   collected_at: '2026-09-17T12:00:00Z', quote_count: 42, first_date: '2020-01-01', last_date: '2026-09-16',
-  annualized_mean_log_return: 0.1008, annualized_volatility: 0.1739, ...extra });
+  annualized_mean_log_return: 0.1008, annualized_volatility: 0.1739,
+  historical_year_return: 0.12, historical_year_start_date: '2025-09-16',
+  historical_year_end_date: '2026-09-16', historical_year_price_basis: 'adj_close', ...extra });
+
+describe('instrument page layout', () => {
+  it('shows return statistics, then price history, then the remaining sections', async () => {
+    const server = mockServer();
+    server.details[A] = withData();
+    server.quotes[A] = [quote(0, { price_currency: 'EUR' })];
+    await open(A);
+
+    const article = screen.getByRole('article', { name: 'Instrument detail' });
+    expect(within(article).getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent)).toEqual([
+      'iShares S&P ETF', 'Return statistics', 'Price history', 'Market data',
+    ]);
+    expect(within(article).queryByRole('region', { name: 'History coverage' })).not.toBeInTheDocument();
+    expect(within(article).queryByText('Coverage status')).not.toBeInTheDocument();
+    expect(article.lastElementChild).toHaveClass('instrument-metadata');
+  });
+
+  it('keeps the chart empty state between statistics and market data when no quotes are saved', async () => {
+    mockServer();
+    await open(A);
+
+    const statistics = screen.getByRole('region', { name: 'Return statistics' });
+    const emptyChart = screen.getByText(/No saved quotes to chart yet/);
+    const acquisition = screen.getByRole('region', { name: 'Market data acquisition' });
+    expect(statistics.compareDocumentPosition(emptyChart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(emptyChart.compareDocumentPosition(acquisition) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
 
 describe('manual price currency', () => {
   it.each(['EUR', 'USD', 'CHF', 'GBP', 'RUB', 'JPY'])('hides the selector when provider prices already have %s currency', async (currency) => {
@@ -293,48 +327,97 @@ describe('manual price currency', () => {
 });
 
 describe('acquired ETF inventory', () => {
-  it('shows annual log return and volatility percentages from one inventory read, without per-ETF requests', async () => {
+  it('shows historical price change separately from annual log statistics in one inventory read', async () => {
     const server = mockServer();
     server.acquiredItems = [acquiredItem(A, { name: 'Growing ETF' }),
-      acquiredItem(B, { name: 'Declining ETF', annualized_mean_log_return: -0.05, annualized_volatility: 0 })];
+      acquiredItem(B, { name: 'Declining ETF', annualized_mean_log_return: -0.05, annualized_volatility: 0,
+        historical_year_return: -0.08, historical_year_price_basis: 'close' })];
     await open();
     expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
-      'ETF', 'Saved listing', 'Annual return', 'Annual volatility', 'Saved quotes', 'Profile collected',
+      'ETF', 'Saved listing', 'Historical', 'Statistical', 'Saved quotes', 'Profile collected', 'Market dataUpdate all',
+      'Annual return', 'Annual return', 'Annual volatility',
     ]);
-    expect(screen.getByRole('columnheader', { name: 'Annual return' })).toHaveAttribute('title', 'Average daily log return × 252 trading days');
+    expect(screen.getByRole('columnheader', { name: 'Historical' })).toHaveAttribute('colspan', '1');
+    expect(screen.getByRole('columnheader', { name: 'Statistical' })).toHaveAttribute('colspan', '2');
+    for (const name of ['ETF', 'Saved listing', 'Saved quotes', 'Profile collected']) {
+      expect(screen.getByRole('columnheader', { name })).toHaveAttribute('rowspan', '2');
+    }
+    const [historical, statistical] = screen.getAllByRole('columnheader', { name: 'Annual return' });
+    expect(historical).toHaveAttribute('headers', 'acquired-historical');
+    expect(historical).toHaveAttribute('title', expect.stringContaining('Actual trailing 12-month price change'));
+    expect(statistical).toHaveAttribute('headers', 'acquired-statistical');
+    expect(statistical).toHaveAttribute('title', 'Average daily log return × 252 trading days');
+    expect(screen.getByRole('columnheader', { name: 'Annual volatility' })).toHaveAttribute('headers', 'acquired-statistical');
     const growing = within(screen.getByRole('link', { name: 'Growing ETF' }).closest('tr'));
-    expect(growing.getByRole('cell', { name: '10.08%' })).toBeInTheDocument();
-    expect(growing.getByRole('cell', { name: '17.39%' })).toBeInTheDocument();
+    expect(growing.getByRole('cell', { name: '+12%' })).toHaveAttribute('title', '2025-09-16 – 2026-09-16. Adjusted closes.');
+    expect(growing.getByRole('cell', { name: '+12%' })).toHaveAttribute('headers', 'acquired-historical acquired-historical-return');
+    expect(growing.getByRole('cell', { name: '+12%' })).toHaveClass('return-positive');
+    expect(growing.getByRole('cell', { name: '+10.08%' })).toHaveAttribute('headers', 'acquired-statistical acquired-statistical-return');
+    expect(growing.getByRole('cell', { name: '+10.08%' })).toHaveClass('return-positive');
+    expect(growing.getByRole('cell', { name: '17.39%' })).toHaveAttribute('headers', 'acquired-statistical acquired-statistical-volatility');
+    expect(growing.getByRole('cell', { name: '17.39%' })).toHaveClass('annual-statistic', { exact: true });
     const declining = within(screen.getByRole('link', { name: 'Declining ETF' }).closest('tr'));
-    expect(declining.getByRole('cell', { name: '-5%' })).toBeInTheDocument();
-    expect(declining.getByRole('cell', { name: '0%' })).toBeInTheDocument();
+    expect(declining.getByRole('cell', { name: '-8%' })).toHaveAttribute('title', '2025-09-16 – 2026-09-16. Unadjusted closes; splits and distributions may affect the return.');
+    expect(declining.getByRole('cell', { name: '-8%' })).toHaveClass('return-negative');
+    expect(declining.getByRole('cell', { name: '-5%' })).toHaveClass('return-negative');
+    expect(declining.getByRole('cell', { name: '0%' })).toHaveClass('annual-statistic', { exact: true });
     expect(server.fetch.mock.calls.filter(([url]) => url.startsWith('/api/instruments/')).map(([url]) => url))
-      .toEqual(['/api/instruments/acquired?limit=20&offset=0']);
+      .toEqual(['/api/instruments/budget', '/api/instruments/acquired?limit=20&offset=0']);
     expect(server.posts()).toHaveLength(0);
   });
 
-  it.each([null, undefined, NaN, Infinity, '0.1'])('shows unavailable annual estimates rather than zero or invalid percentages: %s', async (value) => {
+  it.each([null, undefined, NaN, Infinity, -Infinity, '0.1'])('shows unavailable annual estimates rather than zero or invalid percentages: %s', async (value) => {
     const server = mockServer();
     server.acquiredItems = [acquiredItem(A, { quote_count: 0, first_date: null, last_date: null,
-      annualized_mean_log_return: value, annualized_volatility: value })];
+      annualized_mean_log_return: value, annualized_volatility: value, historical_year_return: value })];
     await open();
     const row = within(screen.getByRole('link', { name: 'iShares S&P ETF' }).closest('tr'));
-    expect(row.getAllByRole('cell', { name: 'Unavailable' })).toHaveLength(2);
+    const unavailable = row.getAllByRole('cell', { name: 'Unavailable' });
+    expect(unavailable).toHaveLength(3);
+    unavailable.forEach((cell) => expect(cell).toHaveClass('annual-statistic', { exact: true }));
     expect(row.getByText('Profile only')).toBeInTheDocument();
     expect(row.queryByText('0%')).not.toBeInTheDocument();
   });
 
-  it('refreshes annual values together with the saved inventory', async () => {
+  it.each([0, -0])('shows zero returns (%s) unsigned and neutral, not unavailable', async (value) => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(A, { historical_year_return: value, annualized_mean_log_return: value })];
+    await open();
+    const cells = screen.getAllByRole('cell', { name: '0%' });
+    expect(cells).toHaveLength(2);
+    expect(cells[0]).toHaveAttribute('title', '2025-09-16 – 2026-09-16. Adjusted closes.');
+    cells.forEach((cell) => expect(cell).toHaveClass('annual-statistic', { exact: true }));
+  });
+
+  it.each([0.05, -0.05])('styles each return independently when historical and statistical directions differ (%s)', async (value) => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(A, { historical_year_return: value, annualized_mean_log_return: -value })];
+    await open();
+    expect(screen.getByRole('cell', { name: '+5%' })).toHaveClass('return-positive');
+    expect(screen.getByRole('cell', { name: '-5%' })).toHaveClass('return-negative');
+  });
+
+  it('keeps statistical estimates visible when a full historical year is unavailable', async () => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(A, { historical_year_return: null })];
+    await open();
+    expect(screen.getByRole('cell', { name: 'Unavailable' })).toHaveAttribute('title', expect.stringContaining('covering a full year'));
+    expect(screen.getByRole('cell', { name: '+10.08%' })).toBeInTheDocument();
+  });
+
+  it('refreshes annual values together with the saved inventory on return from details', async () => {
     const server = mockServer();
     server.acquiredItems = [acquiredItem()];
     await open();
-    expect(screen.getByRole('cell', { name: '10.08%' })).toBeInTheDocument();
-    server.acquiredItems = [acquiredItem(A, { annualized_mean_log_return: -0.02, annualized_volatility: 0.25 })];
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh list' }));
-    await flush();
+    expect(screen.getByRole('cell', { name: '+10.08%' })).toBeInTheDocument();
+    await navigate(A);
+    server.acquiredItems = [acquiredItem(A, { annualized_mean_log_return: -0.02, annualized_volatility: 0.25, historical_year_return: -0.03 })];
+    await navigate(null);
     expect(screen.getByRole('cell', { name: '-2%' })).toBeInTheDocument();
     expect(screen.getByRole('cell', { name: '25%' })).toBeInTheDocument();
-    expect(screen.queryByRole('cell', { name: '10.08%' })).not.toBeInTheDocument();
+    expect(screen.getByRole('cell', { name: '-3%' })).toBeInTheDocument();
+    expect(screen.queryByRole('cell', { name: '+12%' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('cell', { name: '+10.08%' })).not.toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
   });
 
@@ -372,9 +455,10 @@ describe('acquired ETF inventory', () => {
     server.acquired = () => pending.promise;
     await open();
     expect(screen.getByText('Loading acquired ETFs…')).toHaveAttribute('role', 'status');
-    expect(screen.getByRole('button', { name: 'Refresh list' })).toBeDisabled();
-    await act(async () => pending.resolve({ items: [acquiredItem(), acquiredItem(B, { name: 'Profile-only ETF', quote_count: 0, first_date: null, last_date: null, annualized_mean_log_return: null, annualized_volatility: null })], total: 2, limit: ACQUIRED_PAGE_SIZE, offset: 0 }));
+    expect(screen.queryByRole('button', { name: 'Refresh list' })).not.toBeInTheDocument();
+    await act(async () => pending.resolve({ items: [acquiredItem(), acquiredItem(B, { name: 'Profile-only ETF', quote_count: 0, first_date: null, last_date: null, annualized_mean_log_return: null, annualized_volatility: null, historical_year_return: null })], total: 2, limit: ACQUIRED_PAGE_SIZE, offset: 0 }));
     expect(screen.getByRole('heading', { name: 'Acquired ETFs (2)' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Refresh list' })).not.toBeInTheDocument();
     expect(screen.getByText('42 quotes')).toBeInTheDocument();
     expect(screen.getByText('2020-01-01 – 2026-09-16')).toBeInTheDocument();
     expect(screen.getByText('Profile only')).toBeInTheDocument();
@@ -395,12 +479,13 @@ describe('acquired ETF inventory', () => {
     const server = mockServer();
     await open();
     expect(screen.getByRole('heading', { name: 'No acquired ETFs yet' })).toBeInTheDocument();
-    expect(screen.getByText(/choose Request Data/)).toBeInTheDocument();
+    expect(screen.getByText('Choose Add ETF to find a fund and request its data.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Add ETF' })).toHaveAttribute('href', '#/add');
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
   });
 
-  it('paginates saved ETFs and refreshes from the first page', async () => {
+  it('paginates saved ETFs and reads updated data when returning to the first page', async () => {
     const server = mockServer();
     server.acquiredItems = Array.from({ length: ACQUIRED_PAGE_SIZE + 1 }, (_, index) => acquiredItem(`IE${String(index).padStart(10, '0')}`, { name: `Fund ${index + 1}` }));
     await open();
@@ -418,7 +503,7 @@ describe('acquired ETF inventory', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Next ETFs' }));
     await flush();
     server.acquiredItems = [acquiredItem(A, { name: 'Freshly saved fund' })];
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh list' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Previous ETFs' }));
     await flush();
     expect(screen.getByRole('link', { name: 'Freshly saved fund' })).toBeInTheDocument();
     expect(screen.getByText('1–1 of 1 ETFs')).toBeInTheDocument();
@@ -461,10 +546,316 @@ describe('acquired ETF inventory', () => {
   });
 });
 
-describe('ETF autocomplete and routing', () => {
-  it('debounces name/ticker/ISIN queries, supports Arrow/Enter selection and back navigation without acquisition', async () => {
+describe('acquired ETF market-data updates', () => {
+  const staleAcquiredItem = (isin = A, extra = {}) => acquiredItem(isin, { collected_at: '2026-09-16T12:00:00Z', ...extra });
+  const row = (name = 'iShares S&P ETF') => within(screen.getByRole('link', { name }).closest('tr'));
+  async function confirmUpdate(all = false) {
+    fireEvent.click(screen.getByRole('checkbox', { name: /Allow .*updates? to use provider quota/ }));
+    fireEvent.click(screen.getByRole('button', { name: all ? 'Confirm update all' : 'Confirm update' }));
+    await flush();
+  }
+
+  it('places Update all in the action header and requires consent before updating a row', async () => {
     const server = mockServer();
+    server.acquiredItems = [acquiredItem(), acquiredItem(B, { name: 'Second ETF' })];
     await open();
+    const header = screen.getByRole('columnheader', { name: /Market data Update all/ });
+    expect(header).toHaveAttribute('rowspan', '2');
+    expect(within(header).getByRole('button', { name: 'Update all' })).toBeEnabled();
+    expect(row().getByRole('button', { name: 'Update market data for iShares S&P ETF' })).toBeEnabled();
+    expect(row().getByText('0 days ago')).toBeInTheDocument();
+    expect(server.posts()).toHaveLength(0);
+    await review('Update market data for iShares S&P ETF');
+    expect(screen.getByRole('button', { name: 'Confirm update' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(server.posts()).toHaveLength(0);
+    await review('Update market data for iShares S&P ETF');
+    await confirmUpdate();
+    expect(server.posts()).toHaveLength(1);
+    expect(server.posts()[0][0]).toBe(`/api/instruments/${A}/acquisitions`);
+    expect(JSON.parse(server.posts()[0][1].body)).toEqual({ confirmed: true, mode: 'update' });
+    expect(row().getByRole('status')).toHaveTextContent('Queued');
+    expect(row().getByRole('button')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Update all' })).toBeDisabled();
+    expect(row('Second ETF').getByRole('button')).toBeEnabled();
+    server.details[A].acquisition = job('running');
+    await advance(POLL_INTERVAL);
+    expect(row().getByRole('status')).toHaveTextContent('Updating…');
+    server.details[A].acquisition = job('succeeded');
+    server.acquiredItems[0] = acquiredItem(A, { quote_count: 43, annualized_mean_log_return: 0.13 });
+    await advance(POLL_INTERVAL);
+    expect(row().getByRole('status')).toHaveTextContent('Updated');
+    expect(row().getByRole('button')).toBeEnabled();
+    expect(row().getByText('43 quotes')).toBeInTheDocument();
+    expect(row().getByRole('cell', { name: '+13%' })).toBeInTheDocument();
+    expect(server.pages()).toHaveLength(0);
+    expect(server.posts()).toHaveLength(1);
+    const reads = server.reads().length;
+    await advance(POLL_INTERVAL * 3);
+    expect(server.reads()).toHaveLength(reads);
+  });
+
+  it('captures every page before Update all queues any jobs, even when updates reorder the inventory', async () => {
+    const server = mockServer();
+    const original = Array.from({ length: 101 }, (_, index) => acquiredItem(`IE${String(index).padStart(10, '0')}`, {
+      name: `Fund ${index + 1}`, collected_at: index % 3 === 0 ? '2026-09-17T12:00:00Z' : '2026-09-16T12:00:00Z',
+    }));
+    const eligible = original.filter((_, index) => index % 3 !== 0);
+    server.acquiredItems = [...original];
+    server.details = Object.fromEntries(original.map((item) => [item.instrument_id, detail(item.instrument_id)]));
+    const post = server.post;
+    server.post = async (...args) => { server.acquiredItems.reverse(); return post(...args); };
+    await open();
+    fireEvent.click(screen.getByRole('button', { name: 'Next ETFs' }));
+    await flush();
+    await review('Update all');
+    expect(screen.getByRole('heading', { name: 'Update all 101 acquired ETFs?' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirm update all' })).toBeDisabled();
+    expect(server.posts()).toHaveLength(0);
+    await confirmUpdate(true);
+    expect(server.posts().map(([url]) => url)).toEqual(eligible.map((item) => `/api/instruments/${item.instrument_id}/acquisitions`));
+    const urls = server.fetch.mock.calls.map(([url]) => url);
+    expect(urls.indexOf('/api/instruments/acquired?limit=100&offset=100')).toBeLessThan(urls.indexOf(server.posts()[0][0]));
+    expect(screen.getByText('67 market-data updates in progress.')).toBeInTheDocument();
+    expect(screen.getByText('Skipped 34 ETFs collected 0 days ago.')).toBeInTheDocument();
+    for (const item of eligible) server.details[item.instrument_id].acquisition = job('succeeded', { instrument_id: item.instrument_id });
+    await advance(POLL_INTERVAL);
+    expect(screen.getByText('67 ETFs updated.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Update all' })).toBeEnabled();
+    expect(server.posts()).toHaveLength(67);
+  });
+
+  it.each([
+    ['just collected', '2026-09-17T12:00:00Z', true],
+    ['less than 24 hours, previous date', '2026-09-16T12:00:00.001Z', true],
+    ['exactly 24 hours', '2026-09-16T12:00:00Z', false],
+    ['older than 24 hours', '2026-09-16T11:59:59Z', false],
+    ['equivalent offset timestamp', '2026-09-16T14:00:00.001+02:00', true],
+    ['future timestamp displayed as zero days', '2026-09-17T12:01:00Z', true],
+    ['unknown timestamp', null, false],
+    ['missing timestamp', undefined, false],
+    ['invalid timestamp', 'invalid', false],
+  ])('uses displayed collection age for Update all: %s', async (_, collectedAt, skip) => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(A, { collected_at: collectedAt })];
+    await open();
+    if (skip) expect(row().getByText('0 days ago')).toBeInTheDocument();
+    await review('Update all');
+    expect(screen.getByText(/skipping those collected 0 days ago/)).toBeInTheDocument();
+    await confirmUpdate(true);
+    expect(server.posts()).toHaveLength(skip ? 0 : 1);
+    if (skip) {
+      expect(screen.getByText('Skipped 1 ETF collected 0 days ago.')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Update all' })).toBeEnabled();
+      expect(row().getByRole('button')).toBeEnabled();
+      await advance(POLL_INTERVAL * 3);
+      expect(server.posts()).toHaveLength(0);
+      expect(server.reads()).toHaveLength(0);
+    } else {
+      expect(row().getByRole('status')).toHaveTextContent('Queued');
+      expect(screen.queryByText(/Skipped .* collected 0 days ago/)).not.toBeInTheDocument();
+    }
+  });
+
+  it('rechecks saved collection times and does not repeat a completed bulk update', async () => {
+    const server = mockServer();
+    server.acquiredItems = [staleAcquiredItem(), staleAcquiredItem(B, { name: 'Second ETF' })];
+    await open();
+    await review('Update all');
+    // Another client updated B after this table loaded. The bulk read must notice.
+    server.acquiredItems[1].collected_at = '2026-09-17T12:00:00Z';
+    await confirmUpdate(true);
+    expect(server.posts().map(([url]) => url)).toEqual([`/api/instruments/${A}/acquisitions`]);
+    expect(screen.getByText('Skipped 1 ETF collected 0 days ago.')).toBeInTheDocument();
+    server.details[A].acquisition = job('succeeded');
+    server.acquiredItems[0].collected_at = '2026-09-17T12:00:00Z';
+    await advance(POLL_INTERVAL);
+    await review('Update all');
+    await confirmUpdate(true);
+    expect(screen.getByText('Skipped 2 ETFs collected 0 days ago.')).toBeInTheDocument();
+    expect(server.posts()).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Update all' })).toBeEnabled();
+    // An intentional per-row update is still allowed for fresh data.
+    await review('Update market data for iShares S&P ETF');
+    await confirmUpdate();
+    expect(server.posts()).toHaveLength(2);
+    expect(screen.queryByText(/Skipped .* collected 0 days ago/)).not.toBeInTheDocument();
+  });
+
+  it('tracks independent row updates without cancelling an earlier job', async () => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(), acquiredItem(B, { name: 'Second ETF' })];
+    await open();
+    await review('Update market data for iShares S&P ETF');
+    await confirmUpdate();
+    await review('Update market data for Second ETF');
+    await confirmUpdate();
+    expect(server.posts()).toHaveLength(2);
+    server.details[A].acquisition = job('succeeded');
+    server.details[B].acquisition = job('running', { instrument_id: B });
+    await advance(POLL_INTERVAL);
+    expect(row().getByRole('status')).toHaveTextContent('Updated');
+    expect(row('Second ETF').getByRole('status')).toHaveTextContent('Updating…');
+    expect(row('Second ETF').getByRole('button')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Update all' })).toBeDisabled();
+    server.details[B].acquisition = job('succeeded', { instrument_id: B });
+    await advance(POLL_INTERVAL);
+    expect(row('Second ETF').getByRole('status')).toHaveTextContent('Updated');
+    expect(screen.getByRole('button', { name: 'Update all' })).toBeEnabled();
+  });
+
+  it('aborts an Update all inventory read before any job can be submitted', async () => {
+    const server = mockServer();
+    server.acquiredItems = [staleAcquiredItem()];
+    const view = await open();
+    await review('Update all');
+    const pending = deferred();
+    let signal;
+    server.acquired = (_, options) => { signal = options.signal; return pending.promise; };
+    await confirmUpdate(true);
+    view.unmount();
+    expect(signal.aborted).toBe(true);
+    await act(async () => pending.resolve({ items: [staleAcquiredItem()], total: 1, offset: 0, limit: 100 }));
+    await advance(POLL_INTERVAL * 3);
+    expect(server.posts()).toHaveLength(0);
+  });
+
+  it('continues a bulk submission after an instrument-specific validation failure', async () => {
+    const server = mockServer();
+    server.acquiredItems = [staleAcquiredItem(), staleAcquiredItem(B, { name: 'Second ETF' })];
+    const fetch = server.fetch.getMockImplementation();
+    server.fetch.mockImplementation((url, options) => url === `/api/instruments/${A}/acquisitions`
+      ? response(422, { detail: 'This instrument has no valid inception date' }) : fetch(url, options));
+    await open();
+    await review('Update all');
+    await confirmUpdate(true);
+    expect(server.posts()).toHaveLength(2);
+    expect(row().getByRole('alert')).toHaveTextContent('no valid inception date');
+    expect(row('Second ETF').getByRole('status')).toHaveTextContent('Queued');
+    await advance(POLL_INTERVAL);
+    expect(row().getByRole('button')).toBeEnabled();
+    expect(row('Second ETF').getByRole('button')).toBeDisabled();
+  });
+
+  it.each(['empty', 'duplicate', 'changed total'])('does not POST if the complete inventory cannot be captured (%s)', async (failure) => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem()];
+    await open();
+    await review('Update all');
+    server.acquired = async (params) => {
+      const offset = Number(params.get('offset'));
+      if (failure === 'duplicate') return { items: [acquiredItem(), acquiredItem()], total: 2, limit: 100, offset };
+      if (failure === 'changed total') return { items: [acquiredItem()], total: offset === 0 ? 2 : 3, limit: 100, offset };
+      return { items: [], total: 3, limit: 100, offset };
+    };
+    await confirmUpdate(true);
+    expect(screen.getByRole('alert')).toHaveTextContent('list changed or was incomplete');
+    expect(server.posts()).toHaveLength(0);
+    expect(row().getByText('42 quotes')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Update all' })).toBeEnabled();
+  });
+
+  it('retains saved data on a failed update, retries polling errors and rejects stale status', async () => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem()];
+    await open();
+    await review('Update market data for iShares S&P ETF');
+    await confirmUpdate();
+    server.read = async () => { throw new Error('offline'); };
+    await advance(POLL_INTERVAL);
+    expect(row().getByRole('alert')).toHaveTextContent('Status will retry automatically');
+    expect(row().getByRole('button')).toBeDisabled();
+    server.read = async () => withData(); // older successful job cannot replace the acknowledged one
+    await advance(POLL_INTERVAL);
+    expect(row().getByRole('button')).toBeDisabled();
+    expect(row().getByRole('status')).toHaveTextContent('Queued');
+    server.read = async () => withData(A, { acquisition: job('failed', { error: 'Provider unavailable' }) });
+    await advance(POLL_INTERVAL);
+    expect(row().getByRole('alert')).toHaveTextContent('Provider unavailable');
+    expect(row().getByRole('status')).toHaveTextContent('Update failed');
+    expect(row().getByRole('button')).toBeEnabled();
+    expect(row().getByText('42 quotes')).toBeInTheDocument();
+    expect(screen.getByText(/1 update needs attention/)).toBeInTheDocument();
+    expect(server.posts()).toHaveLength(1);
+  });
+
+  it('reconciles an uncertain POST by GET without resubmitting and stops the bulk queue', async () => {
+    const server = mockServer();
+    server.acquiredItems = [staleAcquiredItem(), staleAcquiredItem(B, { name: 'Second ETF' })];
+    const post = server.post;
+    server.post = async (...args) => { await post(...args); throw new Error('lost response'); };
+    await open();
+    await review('Update all');
+    await confirmUpdate(true);
+    expect(server.posts()).toHaveLength(1);
+    expect(screen.getByText(/1 ETFs were not submitted/)).toBeInTheDocument();
+    expect(row().getByRole('button')).toBeDisabled();
+    await advance(POLL_INTERVAL);
+    expect(row().getByRole('status')).toHaveTextContent('Queued');
+    expect(row().getByRole('button')).toBeDisabled();
+    expect(server.posts()).toHaveLength(1);
+    expect(row().getByRole('alert')).toHaveTextContent('Request could not be confirmed');
+  });
+
+  it('prevents duplicate clicks while submitting and cancels pending requests on unmount', async () => {
+    const server = mockServer();
+    server.acquiredItems = [staleAcquiredItem(), staleAcquiredItem(B, { name: 'Second ETF' })];
+    const pending = deferred();
+    let signal;
+    server.post = (_, __, options) => { signal = options.signal; return pending.promise; };
+    const view = await open();
+    await review('Update all');
+    await confirmUpdate(true);
+    expect(screen.getByRole('button', { name: 'Update all' })).toBeDisabled();
+    expect(row().getByRole('button')).toBeDisabled();
+    fireEvent.click(row().getByRole('button'));
+    expect(server.posts()).toHaveLength(1);
+    view.unmount();
+    expect(signal.aborted).toBe(true);
+    await act(async () => pending.resolve({ job: job() }));
+    await advance(POLL_INTERVAL * 3);
+    expect(server.posts()).toHaveLength(1);
+    expect(server.reads()).toHaveLength(0);
+    expect(server.reads(B)).toHaveLength(0);
+  });
+
+  it('aborts an in-flight status read and ignores its late response after remount', async () => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem()];
+    const view = await open();
+    await review('Update market data for iShares S&P ETF');
+    await confirmUpdate();
+    const pending = deferred();
+    let signal;
+    server.read = (_, options) => { signal = options.signal; return pending.promise; };
+    await advance(POLL_INTERVAL);
+    view.unmount();
+    expect(signal.aborted).toBe(true);
+    await open();
+    const workspaceCalls = () => server.fetch.mock.calls.filter(([url]) => url !== '/api/instruments/budget');
+    const calls = workspaceCalls().length;
+    await act(async () => pending.resolve(withData(A, { acquisition: job('succeeded') })));
+    await advance(POLL_INTERVAL * 3);
+    expect(workspaceCalls()).toHaveLength(calls);
+    expect(row().queryByText('Updated')).not.toBeInTheDocument();
+    expect(row().getByRole('button')).toBeEnabled();
+  });
+});
+
+describe('ETF autocomplete and routing', () => {
+  it('opens Add ETF from the table, searches with Arrow/Enter selection and returns without acquisition', async () => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(B, { name: 'Second ETF' })];
+    await open();
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Find an ETF' })).not.toBeInTheDocument();
+    const addLink = screen.getByRole('link', { name: 'Add ETF' });
+    expect(addLink).toHaveAttribute('href', '#/add');
+    fireEvent.click(addLink);
+    await advance(5);
+    expect(window.location.hash).toBe('#/add');
+    expect(screen.getByRole('heading', { name: 'Add ETF' })).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
     const input = screen.getByRole('combobox', { name: 'Find an ETF' });
     expect(screen.getByText('Enter at least 2 characters.')).toHaveClass('sr-only');
     fireEvent.change(input, { target: { value: 'i' } });
@@ -488,12 +879,51 @@ describe('ETF autocomplete and routing', () => {
     await flush();
     expect(window.location.hash).toBe(`#/instruments/${A}`);
     expect(screen.getByRole('heading', { name: 'iShares S&P ETF' })).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Find an ETF' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Request Data' })).toBeEnabled();
     expect(server.posts()).toHaveLength(0);
     fireEvent.click(screen.getByRole('link', { name: '← ETFs' }));
     await advance(5);
-    expect(screen.getByRole('heading', { name: 'Acquired ETFs (0)' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Acquired ETFs (1)' })).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Find an ETF' })).not.toBeInTheDocument();
     await navigate(A);
     expect(screen.getByRole('heading', { name: 'iShares S&P ETF' })).toBeInTheDocument();
+    expect(server.posts()).toHaveLength(0);
+  });
+
+  it('loads Add ETF directly and discards a pending search when returning to the empty list', async () => {
+    const server = mockServer();
+    const pending = deferred();
+    server.search = () => pending.promise;
+    await openRoute('#/add');
+    expect(screen.getByRole('heading', { name: 'Add ETF' })).toBeInTheDocument();
+    expect(server.fetch.mock.calls.some(([url]) => url.includes('/acquired?'))).toBe(false);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Find an ETF' }), { target: { value: 'ETF' } });
+    await advance(SEARCH_DELAY);
+    const signal = server.fetch.mock.calls.find(([url]) => url.includes('/search?'))[1].signal;
+    fireEvent.click(screen.getByRole('link', { name: '← ETFs' }));
+    await advance(5);
+    expect(signal.aborted).toBe(true);
+    expect(screen.getByText('No acquired ETFs yet')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Find an ETF' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('link', { name: 'Add ETF' }));
+    await advance(5);
+    await act(async () => pending.resolve([item(A, 'Stale fund')]));
+    expect(screen.getByRole('combobox', { name: 'Find an ETF' })).toHaveValue('');
+    expect(screen.queryByText('Stale fund')).not.toBeInTheDocument();
+    expect(server.posts()).toHaveLength(0);
+  });
+
+  it('links invalid routes to Add ETF instead of displaying the shared search', async () => {
+    const server = mockServer();
+    await openRoute('#/instruments/invalid');
+    expect(screen.getByRole('alert')).toHaveTextContent('ETF not found.');
+    expect(screen.queryByRole('combobox', { name: 'Find an ETF' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('link', { name: 'Search for an ETF' }));
+    await advance(5);
+    expect(screen.getByRole('heading', { name: 'Add ETF' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Find an ETF' })).toBeInTheDocument();
+    expect(server.reads()).toHaveLength(0);
     expect(server.posts()).toHaveLength(0);
   });
 
@@ -505,7 +935,7 @@ describe('ETF autocomplete and routing', () => {
       if (q === 'old') { oldSignal = options.signal; return stale.promise; }
       return [item(B, 'Selected fund')];
     };
-    await open();
+    await openRoute('#/add');
     const input = screen.getByRole('combobox');
     fireEvent.change(input, { target: { value: 'old' } });
     await advance(SEARCH_DELAY);
@@ -526,7 +956,7 @@ describe('ETF autocomplete and routing', () => {
 
   it('clears selectable results immediately on query edits and Escape cancels pending work', async () => {
     const server = mockServer();
-    await open();
+    await openRoute('#/add');
     const input = screen.getByRole('combobox');
     fireEvent.change(input, { target: { value: 'ETF' } });
     await advance(SEARCH_DELAY);
@@ -553,7 +983,7 @@ describe('ETF autocomplete and routing', () => {
   it('offers keyboard-reachable retry and an empty search state', async () => {
     const server = mockServer();
     server.search = async () => { throw new Error('offline'); };
-    await open();
+    await openRoute('#/add');
     const input = screen.getByRole('combobox');
     fireEvent.change(input, { target: { value: 'ZZ' } });
     await advance(SEARCH_DELAY);
@@ -597,6 +1027,8 @@ describe('explicit acquisition and complete charts', () => {
     expect(screen.queryByText(/Listing selection is not ISIN verification/)).not.toBeInTheDocument();
     expect(estimateText()).toHaveTextContent('About 8. Actual usage may vary.');
     expect(screen.getAllByText('Local budget:')).toHaveLength(1);
+    expect(screen.getByRole('heading', { name: 'Hedgehoog' }).closest('header')).toContainElement(screen.getByText('Local budget:'));
+    expect(within(screen.getByRole('region', { name: 'Market data acquisition' })).queryByText('Local budget:')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('Request details'));
     expect(requestDetails).toHaveAttribute('open');
     expect(screen.getByText(/Ticker lookup may need extra pages/)).toBeVisible();
@@ -806,16 +1238,18 @@ describe('explicit acquisition and complete charts', () => {
     ['partial', null],
     ['partial', 'Provider coverage is limited.'],
     ['available', null],
-  ])('shows %s coverage without warning notices (%s)', async (status, warning) => {
+  ])('retains %s coverage in metadata and acquisition controls without a duplicate block or warning notices (%s)', async (status, warning) => {
     const server = mockServer();
     server.details[A] = withData(A, { acquisition: job('succeeded', { warning: 'Provider job warning.' }) });
     server.details[A].summary = { ...server.details[A].summary, history_status: status, warning };
     await open(A);
-    expect(screen.getByText(status, { exact: true })).toBeVisible();
+    expect(screen.queryByRole('region', { name: 'History coverage' })).not.toBeInTheDocument();
+    expect(screen.queryByText(status, { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByText('Provider job warning.')).not.toBeInTheDocument();
     expect(screen.queryByText('Provider coverage is limited.')).not.toBeInTheDocument();
     expect(screen.queryByText(/Partial history\.|gaps may remain/)).not.toBeInTheDocument();
     const raw = JSON.parse(screen.getByLabelText('Listing, acquisition and coverage metadata').textContent);
+    expect(raw.summary.history_status).toBe(status);
     expect(raw.summary.warning).toBe(warning);
     expect(raw.acquisition.warning).toBe('Provider job warning.');
     await review(status === 'partial' ? 'Retry Older History' : 'Update Data');
@@ -1037,12 +1471,11 @@ describe('polling, navigation races and cleanup', () => {
     expect(screen.queryByText('Acquisition: queued')).not.toBeInTheDocument();
   });
 
-  it('cleans up search requests, scheduled polls and hash listeners on unmount', async () => {
+  it('cleans up search requests and hash listeners on unmount', async () => {
     const server = mockServer();
-    server.details[A] = detail(A, { acquisition: job('queued') });
     const pending = deferred();
     server.search = () => pending.promise;
-    const view = await open(A);
+    const view = await openRoute('#/add');
     fireEvent.change(screen.getByRole('combobox', { name: 'Find an ETF' }), { target: { value: 'ETF' } });
     await advance(SEARCH_DELAY);
     const signal = server.fetch.mock.calls.at(-1)[1].signal;
@@ -1050,6 +1483,18 @@ describe('polling, navigation races and cleanup', () => {
     expect(signal.aborted).toBe(true);
     const count = server.fetch.mock.calls.length;
     await act(async () => pending.resolve([item()]));
+    await navigate(B);
+    await advance(POLL_INTERVAL * 3);
+    expect(server.fetch).toHaveBeenCalledTimes(count);
+  });
+
+  it('cleans up scheduled detail polls and hash listeners on unmount', async () => {
+    const server = mockServer();
+    server.details[A] = detail(A, { acquisition: job('queued') });
+    const view = await open(A);
+    expect(screen.queryByRole('combobox', { name: 'Find an ETF' })).not.toBeInTheDocument();
+    view.unmount();
+    const count = server.fetch.mock.calls.length;
     await navigate(B);
     await advance(POLL_INTERVAL * 3);
     expect(server.fetch).toHaveBeenCalledTimes(count);

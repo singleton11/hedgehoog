@@ -44,10 +44,10 @@ export default function GoalProjectionChart({ trajectory, goal, pathCount }) {
       <span><i className="projection-inner-key" />25th–75th percentiles</span>
       <span><i className="projection-goal-key" />Goal: {formatEuros(goal)}</span>
     </div>
-    <div className="chart-scroll">
+    <div className="chart-scroll" role="region" aria-label="Scrollable portfolio chart" tabIndex={0}>
       <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-labelledby={`${id}-title`} aria-describedby={`${id}-description`} onPointerMove={hover}>
         <title id={`${id}-title`}>Monte Carlo portfolio projection</title>
-        <desc id={`${id}-description`}>Portfolio value in EUR from {first.date} to {last.date}. A solid blue line shows the arithmetic mean of {pathCount.toLocaleString('en')} traces. The light cloud spans the 5th–95th percentiles; the darker cloud spans the 25th–75th percentiles at each date. A dashed line marks the goal. Use the projection date slider for exact values.</desc>
+        <desc id={`${id}-description`}>Portfolio value in EUR from {first.date} to {last.date}. A solid green line shows the arithmetic mean of {pathCount.toLocaleString('en')} traces. The light cloud spans the 5th–95th percentiles; the darker cloud spans the 25th–75th percentiles at each date. A dashed line marks the goal. Use the projection date slider for exact values.</desc>
         {Array.from({ length: 5 }, (_, index) => {
           const value = maximum * (index / 4);
           return <g key={index} className="chart-axis"><line x1={LEFT} x2={WIDTH - RIGHT} y1={y(value)} y2={y(value)} />

@@ -54,7 +54,8 @@ services:
       MARKETSTACK_API_KEY: ${MARKETSTACK_API_KEY:-}
       MARKETSTACK_MONTHLY_BUDGET: ${MARKETSTACK_MONTHLY_BUDGET:-0}
       MARKETSTACK_MAX_CALLS_PER_JOB: ${MARKETSTACK_MAX_CALLS_PER_JOB:-12}
-    command: ["celery", "-A", "celery_app:app", "worker", "--loglevel=info", "--queues=etfs,marketdata", "--concurrency=1", "--hostname=etf-worker@%h"]
+    # Module launch retains /app/backend on sys.path for task-time imports.
+    command: ["python", "-m", "celery", "-A", "celery_app:app", "worker", "--loglevel=info", "--queues=etfs,marketdata", "--concurrency=1", "--hostname=etf-worker@%h"]
     depends_on:
       mongodb:
         condition: service_healthy
@@ -62,7 +63,7 @@ services:
         condition: service_healthy
     stop_grace_period: 2m
     healthcheck:
-      test: ["CMD-SHELL", "celery -A celery_app:app inspect ping --destination etf-worker@$$HOSTNAME --timeout 5"]
+      test: ["CMD-SHELL", "python -m celery -A celery_app:app inspect ping --destination etf-worker@$$HOSTNAME --timeout 5"]
       interval: 30s
       timeout: 10s
       retries: 3

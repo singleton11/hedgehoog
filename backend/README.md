@@ -72,6 +72,12 @@ make services-up                       # Rebuild worker after backend code chang
 docker compose logs -f celery-worker  # Task IDs, skips, retries and failures
 ```
 
+The worker uses `python -m celery`, which keeps the backend directory on Python's
+import path for modules loaded during task execution (including return statistics).
+Use this module launcher rather than the `celery` console script; rebuilding alone
+does not fix an incorrect launcher. Run `make services-up` to rebuild and recreate
+the worker after changes.
+
 The worker runs with concurrency 1 to serialize imports. Do not run extra workers
 on the `etfs` queue without adding distributed locking. RabbitMQ persists queued
 messages; MongoDB's `imports` collection tracks completion (no result backend).

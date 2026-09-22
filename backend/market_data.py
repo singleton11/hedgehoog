@@ -137,6 +137,10 @@ def acquired_instruments(db, limit=20, offset=0):
             "last_date": dates[-1] if dates else None,
             "annualized_mean_log_return": statistics.get("annualized_mean_log_return"),
             "annualized_volatility": statistics.get("annualized_volatility"),
+            "historical_year_return": statistics.get("historical_year_return"),
+            "historical_year_start_date": statistics.get("historical_year_start_date"),
+            "historical_year_end_date": statistics.get("historical_year_end_date"),
+            "historical_year_price_basis": statistics.get("historical_year_price_basis"),
         })
     return public({"items": items, "total": result["count"][0]["total"] if result["count"] else 0, "limit": limit, "offset": offset})
 
@@ -550,7 +554,7 @@ def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
             warning = "Marketstack returned no quotes for this range. No dates were marked as received." + (" " + warning if warning else "")
         if job.get("unindexed_rows", 0):
             warning = f"{job['unindexed_rows']} row(s) without a usable date are retained in raw EOD pages, but cannot be shown in dated quote history." + (" " + warning if warning else "")
-        db.acquisition_jobs.update_one(owned, {"$set": {"status": "succeeded", "active": False, "phase": "complete", "finished_at": utcnow(), "warning": warning}})
+        db.acquisition_jobs.update_one(owned, {"$set": {"status": "succeeded", "active": False, "phase": "complete", "finished_at": utcnow(), "warning": warning, "error": None}, "$unset": {"error_code": ""}})
     except LeaseLost:
         # A replacement/recovery invalidated this worker; it must not finish the job.
         pass

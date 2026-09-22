@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
-import InstrumentSearch from './InstrumentSearch.jsx';
+import AddEtf from './AddEtf.jsx';
 import InstrumentDetail from './InstrumentDetail.jsx';
 import AcquiredEtfs from './AcquiredEtfs.jsx';
 import GoalPlanner from './GoalPlanner.jsx';
+import Icon from './Icon.jsx';
 
 function readRoute() {
   const hash = window.location.hash;
   if (!hash || hash === '#' || hash === '#/') return { isin: null };
   if (hash === '#/goal') return { goal: true, isin: null };
+  if (hash === '#/add') return { add: true, isin: null };
   const match = hash.match(/^#\/(instruments|goal)\/([^/?#]+)$/);
   if (!match) return { invalid: true };
   try {
@@ -27,21 +29,29 @@ export default function InstrumentWorkspace() {
   }, []);
 
   function select(isin) {
-    window.location.hash = `/${route.goal ? 'goal' : 'instruments'}/${encodeURIComponent(isin)}`;
+    window.location.hash = `/instruments/${encodeURIComponent(isin)}`;
     setRoute(readRoute());
   }
 
   return <div className="instrument-workspace">
     <nav aria-label="Workspace navigation" className="workspace-navigation">
-      <a href="#/" aria-current={!route.goal && !route.invalid ? 'page' : undefined}>ETFs</a>
-      <a href="#/goal" aria-current={route.goal ? 'page' : undefined}>Goal planner</a>
+      <p className="nav-label">Workspace</p>
+      <a href="#/" aria-current={!route.goal && !route.invalid ? 'page' : undefined}><Icon name="grid" />ETFs</a>
+      <a href="#/goal" aria-current={route.goal ? 'page' : undefined}><Icon name="target" />Goal planner</a>
+      <div className="sidebar-note"><span className="sidebar-note-icon"><Icon name="chart" /></span>
+        <strong>A little perspective.<br />A longer view.</strong>
+        <p>Your data. Your next move.</p>
+      </div>
+      <p className="sidebar-footer">HEDGEHOOG <span> / </span> INVEST WITH INSIGHT</p>
     </nav>
-    {route.goal ? <GoalPlanner isin={route.isin} onSelect={select} /> : <>
-      <InstrumentSearch key={`search-${route.isin || 'home'}`} onSelect={select} />
-      {(route.isin || route.invalid) && <nav aria-label="Instrument navigation"><a href="#/">← ETFs</a></nav>}
-      {route.invalid ? <p role="alert">ETF not found. Try searching above.</p>
-        : route.isin ? <InstrumentDetail key={route.isin} isin={route.isin} />
-          : <AcquiredEtfs />}
+    <div id="workspace-content" className="workspace-content" tabIndex={-1}>
+    {route.goal ? <GoalPlanner key={route.isin || 'strategy-planner'} isin={route.isin} /> : <>
+      {(route.add || route.isin || route.invalid) && <nav aria-label="Instrument navigation"><a href="#/">← ETFs</a></nav>}
+      {route.invalid ? <p role="alert">ETF not found. <a href="#/add">Search for an ETF</a>.</p>
+        : route.add ? <AddEtf onSelect={select} />
+          : route.isin ? <InstrumentDetail key={route.isin} isin={route.isin} />
+            : <AcquiredEtfs />}
     </>}
+    </div>
   </div>;
 }

@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
-import InstrumentSearch from './InstrumentSearch.jsx';
 import GoalProjectionChart from './GoalProjectionChart.jsx';
 import { formatEuros, parseProjection } from './goalProjection.js';
 export { formatEuros } from './goalProjection.js';
-import { displayText } from './instruments.js';
-import { percent, StatisticsSummary, useReturnStatistics } from './ReturnStatistics.jsx';
+import { percent, StatisticsSummary } from './ReturnStatistics.jsx';
+import StrategyParameters, { supportsParameter } from './StrategyParameters.jsx';
+import { BUY_AND_HOLD_ID, sameStrategy, useGoalStrategies } from './goalStrategies.js';
 
 // UTC calendar anniversaries clamp to the month's final day, rather than rolling over.
 export function monthlyAnniversary(date, months) {
@@ -38,21 +38,27 @@ function validateInputs(inputs, now = new Date()) {
   return null;
 }
 
-function validResult(data, body) {
+function validResult(data, body, strategy) {
   const amounts = [data?.monthly_contribution_eur, data?.total_contributions_eur, data?.total_invested_eur,
     data?.terminal_percentiles_eur?.p05, data?.terminal_percentiles_eur?.p50, data?.terminal_percentiles_eur?.p95];
   const probabilities = [data?.target_probability, data?.success_probability, data?.zero_contribution_success_probability];
   const projection = parseProjection(data?.trajectory, data?.goal_eur);
+  const instrumentParameters = strategy.parameters.filter((parameter) => parameter.type === 'instrument' && body.strategy.parameters[parameter.key]);
   return projection && projection.points[0].date === data.valuation_date && projection.points.at(-1).date === data.goal_date
+    && sameStrategy(data.strategy, body.strategy)
     && data.goal_eur === body.goal_eur && Number.isInteger(data.simulation_paths) && data.simulation_paths > 0
-    && data?.statistics?.instrument_id === body.instrument_id && data.goal_date === body.goal_date
-    && Array.isArray(data.statistics.warnings) && Array.isArray(data.warnings)
+    && data.goal_date === body.goal_date && data.target_probability === body.reliability
+    && data.parameter_statistics && typeof data.parameter_statistics === 'object' && !Array.isArray(data.parameter_statistics)
+    && Object.keys(data.parameter_statistics).length === instrumentParameters.length
+    && instrumentParameters.every(({ key }) => data.parameter_statistics[key]?.instrument_id === body.strategy.parameters[key]
+      && Array.isArray(data.parameter_statistics[key]?.warnings))
+    && Array.isArray(data.warnings)
     && amounts.every((value) => typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value))
     && probabilities.every((value) => typeof value === 'number' && value >= 0 && value <= 1)
     && Number.isInteger(data.contribution_count) && data.contribution_count > 0;
 }
 
-function SimulationResult({ result }) {
+function SimulationResult({ result, strategy }) {
   return <section aria-label="Goal simulation result" className="goal-result">
     <h3>Estimated monthly contribution</h3>
     <div role="status">
@@ -74,61 +80,90 @@ function SimulationResult({ result }) {
     </dl>
     <details className="disclosure"><summary>Calculation details</summary>
       <div className="disclosure-content">
+        <p><strong>Strategy:</strong> {strategy.name}</p>
         <dl className="facts">
           <div><dt>First / last contribution (UTC)</dt><dd>{result.first_contribution_date} / {result.last_contribution_date}</dd></div>
           <div><dt>Valuation / goal date (UTC)</dt><dd>{result.valuation_date} / {result.goal_date}</dd></div>
           <div><dt>Success without contributions</dt><dd>{percent(result.zero_contribution_success_probability)}</dd></div>
         </dl>
-        <StatisticsSummary statistics={result.statistics} />
+        {Object.entries(result.parameter_statistics).map(([key, statistics]) => <div key={key}>
+          <h4>{strategy.parameters.find((parameter) => parameter.key === key)?.label} · {statistics.instrument_id}</h4>
+          <StatisticsSummary statistics={statistics} />
+        </div>)}
       </div>
     </details>
   </section>;
 }
 
-function SelectedGoal({ isin }) {
+export default function GoalPlanner({ isin }) {
   const { request } = useAuth();
-  const { data: statistics, error: statisticsError, loading, retry } = useReturnStatistics(isin);
+  const { strategies, instruments, loading, error: loadError, retry } = useGoalStrategies();
+  // Legacy links prefill the first strategy. Ordinary planner state is a
+  // strategy selection, never an instrument pretending to be a strategy.
+  const [strategyId, setStrategyId] = useState(isin ? BUY_AND_HOLD_ID : null);
+  const [parameters, setParameters] = useState(() => isin ? { instrument: isin } : {});
+  const strategy = strategies.find((item) => item.id === strategyId) || (strategyId === null ? strategies[0] : null);
+  const selection = strategy ? { id: strategy.id, parameters } : null;
+  const [readiness, setReadiness] = useState({});
   const [inputs, setInputs] = useState(() => ({ goal: '100000', capital: '10000', date: monthlyAnniversary(new Date(), 120), reliability: '90' }));
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const sequence = useRef(0);
   const controller = useRef(null);
-  const signature = JSON.stringify([isin, inputs]);
-  const eligible = statistics?.eligible && statistics.price_currency === 'EUR' && statistics.return_count >= 60;
+  const signature = JSON.stringify([selection, inputs]);
+  const eligible = strategy && !loading && !loadError && strategy.parameters.every((parameter) => {
+    const state = readiness[`${strategy.id}:${parameter.key}`];
+    return supportsParameter(parameter) && state?.value === (parameters[parameter.key] || '') && state.ready;
+  });
   const now = new Date();
 
-  useEffect(() => () => { sequence.current += 1; controller.current?.abort(); }, [isin, request]);
+  useEffect(() => () => { sequence.current += 1; controller.current?.abort(); }, [request]);
 
-  function invalidate() {
+  const invalidate = useCallback(() => {
     sequence.current += 1;
     controller.current?.abort();
     setResult(null);
     setBusy(false);
     setError(null);
-  }
+  }, []);
+  const onReadiness = useCallback((key, value, ready) => {
+    setReadiness((previous) => ({ ...previous, [key]: { value, ready } }));
+  }, []);
 
   function change(field, value) {
     invalidate();
     setInputs((previous) => ({ ...previous, [field]: value }));
   }
 
+  function changeStrategy(id) {
+    invalidate();
+    setStrategyId(id);
+    setParameters({});
+    setReadiness({});
+  }
+
+  function changeParameter(key, value) {
+    invalidate();
+    setParameters((previous) => ({ ...previous, [key]: value }));
+  }
+
   async function simulate(event) {
     event.preventDefault();
-    if (busy || !eligible || loading || statisticsError) return;
+    if (busy || !eligible) return;
     invalidate();
     const validationError = validateInputs(inputs);
     if (validationError) { setError(validationError); return; }
     const current = ++sequence.current;
     const abort = new AbortController();
     controller.current = abort;
-    const body = { instrument_id: isin, goal_eur: normalizeEuros(inputs.goal), starting_capital_eur: normalizeEuros(inputs.capital),
+    const body = { strategy: selection, goal_eur: normalizeEuros(inputs.goal), starting_capital_eur: normalizeEuros(inputs.capital),
       goal_date: inputs.date, reliability: Number(inputs.reliability) / 100 };
     setBusy(true);
     try {
       const data = await request('/goals/simulate', { method: 'POST', body, signal: abort.signal });
       if (abort.signal.aborted || sequence.current !== current) return;
-      if (!validResult(data, body)) throw new Error('Simulation returned an unexpected response.');
+      if (!validResult(data, body, strategy)) throw new Error('Simulation returned an unexpected response.');
       setResult({ signature, data });
     } catch (error) {
       if (abort.signal.aborted || sequence.current !== current) return;
@@ -138,30 +173,28 @@ function SelectedGoal({ isin }) {
     }
   }
 
-  return <>
-    <section aria-label="Selected goal instrument" className="goal-instrument">
-      <div className="section-heading">
-        <div>
-          <h3>{displayText(statistics?.name) || 'Selected ETF'}</h3>
-          <p className="muted">{isin}{statistics?.listing && ` · ${statistics.listing.symbol} / ${statistics.listing.exchange}`}</p>
-        </div>
-        <a href={`#/instruments/${encodeURIComponent(isin)}`}>Instrument details</a>
-      </div>
-      {loading && <p role="status">Checking saved data…</p>}
-      {statisticsError && <>
-        <p role="alert">Could not load statistics: {statisticsError}</p>
-        <button className="secondary" onClick={() => { invalidate(); retry(); }}>Retry statistics</button>
+  return <article aria-label="Goal planner" className="goal-planner">
+    <div className="page-heading"><p className="eyebrow">Make room for your future</p>
+      <h2 className="instrument-name">Goal planner</h2>
+      <p className="muted">Choose a strategy. Turn a future goal into a monthly plan.</p>
+    </div>
+    <section aria-label="Strategy configuration" className="goal-strategy">
+      {loading && <p role="status">Loading strategies and acquired instruments…</p>}
+      {loadError && <>
+        <p role="alert">Could not load planner data: {loadError}</p>
+        <button type="button" className="secondary" onClick={() => { invalidate(); setReadiness({}); retry(); }}>Retry planner data</button>
       </>}
-      {statistics && <>
-        {eligible ? <p role="status" className="muted">EUR · {statistics.return_count} daily returns</p>
-          : <div className="empty-state" role="status">
-            <p><strong>Not eligible for goal planning.</strong> {statistics.ineligible_reason || 'EUR prices and at least 60 return observations are required.'}</p>
-            <p>Download history or update the price currency in instrument details.</p>
-          </div>}
-        <details className="disclosure"><summary>Saved return statistics</summary><div className="disclosure-content">
-          <StatisticsSummary statistics={statistics} />
-          <button className="secondary" onClick={() => { invalidate(); retry(); }}>Refresh statistics</button>
-        </div></details>
+      {!loading && !loadError && <>
+        <label htmlFor="goal-strategy">Strategy</label>
+        <select id="goal-strategy" value={strategy?.id || ''} onChange={(event) => changeStrategy(event.target.value)}>
+          {!strategy && <option value="">Choose a strategy</option>}
+          {strategies.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+        </select>
+        {strategy && <>
+          <p className="muted strategy-description">{strategy.description}</p>
+          <StrategyParameters strategy={strategy} parameters={parameters} instruments={instruments}
+            onChange={changeParameter} onReadiness={onReadiness} onInvalidate={invalidate} />
+        </>}
       </>}
     </section>
     <form aria-label="Goal planner inputs" className="goal-form" noValidate onSubmit={simulate}>
@@ -176,17 +209,9 @@ function SelectedGoal({ isin }) {
           onChange={(event) => change('reliability', event.target.value)} /></div>
       </div>
       {error && <p role="alert">{error}</p>}
-      <button type="submit" disabled={!eligible || loading || busy}>{busy ? 'Simulating…' : 'Calculate monthly contribution'}</button>
+      <button type="submit" disabled={!eligible || busy}>{busy ? 'Simulating…' : 'Calculate monthly contribution'}</button>
       {busy && <p role="status" className="sr-only">Simulating…</p>}
     </form>
-    {result?.signature === signature && <SimulationResult result={result.data} />}
-  </>;
-}
-
-export default function GoalPlanner({ isin, onSelect }) {
-  return <article aria-label="Goal planner" className="goal-planner">
-    <h2 className="instrument-name">Goal planner</h2>
-    <InstrumentSearch key={`search-${isin || 'home'}`} onSelect={onSelect} />
-    {isin ? <SelectedGoal key={isin} isin={isin} /> : <p className="muted">Choose an ETF to get started.</p>}
+    {result?.signature === signature && <SimulationResult result={result.data} strategy={strategy} />}
   </article>;
 }

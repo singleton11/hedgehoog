@@ -140,6 +140,8 @@ def test_acquired_list_includes_profile_only_after_failed_download(db, config):
         "ticker": "SXR8", "listing": LISTING, "collected_at": "2026-09-17T12:00:00Z",
         "quote_count": 0, "first_date": None, "last_date": None,
         "annualized_mean_log_return": None, "annualized_volatility": None,
+        "historical_year_return": None, "historical_year_start_date": None,
+        "historical_year_end_date": None, "historical_year_price_basis": None,
     }]
 
 
@@ -165,6 +167,8 @@ def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config
         "listing": LISTING, "collected_at": "2026-09-17T13:00:00Z", "quote_count": 2,
         "first_date": "2026-09-15", "last_date": "2026-09-16",
         "annualized_mean_log_return": 0.0, "annualized_volatility": None,
+        "historical_year_return": None, "historical_year_start_date": None,
+        "historical_year_end_date": None, "historical_year_price_basis": None,
     }]}
     assert md.acquired_instruments(db, limit=1, offset=2) == {"items": [], "total": 2, "limit": 1, "offset": 2}
     # Later failed updates do not remove already acquired observations.
@@ -177,7 +181,7 @@ def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config
 def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(db, config, clock, monkeypatch):
     import return_statistics
 
-    rows = [bar(f"2026-09-{day}", close) for day, close in [(14, "100"), (15, "110"), (16, "99")]]
+    rows = [bar("2025-09-16", "90")] + [bar(f"2026-09-{day}", close) for day, close in [(14, "100"), (15, "110"), (16, "99")]]
     collect(db, config, Provider([page(rows)]))
     db.instruments.insert_one({"instrument_id": "IE00B4L5Y983", **LISTING,
                               "collected_at": NOW - timedelta(hours=1), "job_id": "other-profile"})
@@ -191,6 +195,10 @@ def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(
     logs = [math.log(1.1), math.log(0.9)]
     assert item["annualized_mean_log_return"] == pytest.approx(mean(logs) * 252)
     assert item["annualized_volatility"] == pytest.approx(math.sqrt(variance(logs) * 252))
+    assert item["historical_year_return"] == pytest.approx(0.1)
+    assert item["historical_year_start_date"] == "2025-09-16"
+    assert item["historical_year_end_date"] == "2026-09-16"
+    assert item["historical_year_price_basis"] == "adj_close"
     assert list(db.quotes.find()) == original_quotes
     cached = db.instrument_statistics.find_one({"_id": ISIN})
     clock[0] += timedelta(hours=1)
@@ -200,14 +208,21 @@ def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(
     db.quotes.insert_one({**revised, "_id": "revision", "job_id": "revision", "collected_at": clock[0],
                           "data": {**revised["data"], "adj_close": "121"}})
     updated = md.acquired_instruments(db, limit=1)["items"][0]
-    assert updated["quote_count"] == 3
+    assert updated["quote_count"] == 4
     assert updated["annualized_mean_log_return"] == pytest.approx(math.log(1.1) * 252)
     assert updated["annualized_volatility"] == pytest.approx(0)
+    assert updated["historical_year_return"] == pytest.approx(121 / 90 - 1)
+    # Revising the year-ago endpoint also invalidates the cached actual return.
+    revised = original_quotes[0]
+    db.quotes.insert_one({**revised, "_id": "start-revision", "job_id": "start-revision", "collected_at": clock[0],
+                          "data": {**revised["data"], "adj_close": "100"}})
+    assert md.acquired_instruments(db, limit=1)["items"][0]["historical_year_return"] == pytest.approx(0.21)
 
 
 @pytest.mark.parametrize("missing_state", [True, False])
 def test_acquired_annual_statistics_never_use_a_different_listing(db, config, missing_state):
-    collect(db, config, Provider([page([bar("2026-09-14", "100"), bar("2026-09-15", "110"), bar("2026-09-16", "121")])]))
+    collect(db, config, Provider([page([bar("2025-09-16", "90"), bar("2026-09-14", "100"), bar("2026-09-15", "110"), bar("2026-09-16", "121")])]))
+    assert md.acquired_instruments(db)["items"][0]["historical_year_return"] is not None
     db.instruments.update_many({}, {"$set": {"symbol": "PROFILE.DE"}})
     if missing_state:
         db.instrument_state.delete_one({"_id": ISIN})
@@ -215,6 +230,8 @@ def test_acquired_annual_statistics_never_use_a_different_listing(db, config, mi
     assert item["listing"]["symbol"] == "PROFILE.DE"
     assert item["annualized_mean_log_return"] is None
     assert item["annualized_volatility"] is None
+    for key in ("historical_year_return", "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis"):
+        assert item[key] is None
 
 
 def test_request_queues_only_once_and_does_not_collect(db, config):
@@ -332,6 +349,41 @@ def test_database_retry_resumes_profile_and_idempotent_page_writes(db, config, c
     assert result["calls"] == 2
 
 
+def test_completed_download_can_be_finalized_offline_after_statistics_failure(db, config, monkeypatch):
+    import return_statistics
+
+    job = enqueue(db, config)
+    with monkeypatch.context() as patch:
+        patch.setattr(return_statistics, "refresh_statistics", Mock(side_effect=ModuleNotFoundError("return_statistics")))
+        with pytest.raises(ModuleNotFoundError):
+            md.run_acquisition(db, config, job["id"], Provider().factory)
+    failed = db.acquisition_jobs.find_one({"_id": job["id"]})
+    assert failed["status"] == "failed" and failed["active"] is False
+    assert failed["download_complete"] is True
+    assert db.instrument_state.find_one()["last_complete_quote_date"] is None
+    evidence = {name: list(db[name].find()) for name in ("quotes", "raw_eod_pages", "instruments", "marketstack_usage")}
+
+    # Operator recovery, not a fresh acquisition: explicitly reactivate only the
+    # completed checkpoint. Every provider method is forbidden during finalization.
+    db.acquisition_jobs.update_one({"_id": job["id"]}, {"$set": {"status": "queued", "active": True}})
+    offline = Mock()
+    offline.__enter__ = Mock(return_value=offline)
+    offline.__exit__ = Mock(return_value=False)
+    for name in ("tickerinfo", "eod_page", "tickerslist"):
+        setattr(offline, name, Mock(side_effect=AssertionError("recovery must not request provider data")))
+    result = md.run_acquisition(db, config, job["id"], Mock(return_value=offline))
+    assert result["status"] == "succeeded"
+    assert result["error"] is None
+    assert result["calls"] == failed["calls"]
+    assert db.instrument_state.find_one()["last_complete_quote_date"] == "2026-09-15"
+    assert db.instrument_statistics.find_one()["statistics"]["quote_count"] == 1
+    for name, documents in evidence.items():
+        assert list(db[name].find()) == documents
+    for name in ("tickerinfo", "eod_page", "tickerslist"):
+        getattr(offline, name).assert_not_called()
+    assert md.instrument_detail(db, config, ISIN)["acquisition"]["error"] is None
+
+
 def test_successful_page_checkpoint_resumes_at_next_offset(db, config, clock):
     job = enqueue(db, config)
     provider = Provider([page([bar("2020-01-02")], total=2), ConnectionFailure("database offline")])
@@ -425,7 +477,7 @@ def api(db, config, monkeypatch):
 def test_routes_auth_validation_and_db_only_reads(api, db, config):
     client, publish = api
     base = f"/instruments/{ISIN}"
-    for url in ("/instruments/search?q=SXR8", "/instruments/acquired", base, base + "/quotes"):
+    for url in ("/instruments/search?q=SXR8", "/instruments/acquired", "/instruments/budget", base, base + "/quotes"):
         assert client.get(url).status_code == 401
     assert client.post(base + "/acquisitions", json={**LISTING, "confirmed": True}).status_code == 401
     assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
@@ -450,6 +502,23 @@ def test_routes_auth_validation_and_db_only_reads(api, db, config):
     assert response.json()["job"]["status"] == "queued"
     publish.assert_called_once()
     assert config.marketstack_api_key.get_secret_value() not in response.text
+
+
+def test_budget_route_reads_current_global_usage_without_consuming_quota(api, db, config, clock):
+    client, publish = api
+    assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
+    db.etfs.delete_many({})  # Available without an instrument or acquired data.
+    db.marketstack_usage.insert_one({"_id": "2026-09", "used": 7})
+    for _ in range(2):
+        response = client.get("/instruments/budget")
+        assert response.status_code == 200
+        assert response.json() == {"month": "2026-09", "limit": 30, "used": 7, "remaining": 23}
+    assert db.marketstack_usage.find_one({"_id": "2026-09"})["used"] == 7
+    config.marketstack_monthly_budget = 5
+    assert client.get("/instruments/budget").json()["remaining"] == 0
+    clock[0] = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    assert client.get("/instruments/budget").json() == {"month": "2026-10", "limit": 5, "used": 0, "remaining": 5}
+    publish.assert_not_called()
 
 
 @pytest.mark.parametrize("currency", ["EUR", "USD", "CHF", "GBP", "RUB"])
@@ -622,7 +691,7 @@ def test_price_currency_override_is_shared_between_authenticated_users(api, db):
 
 
 def test_acquired_api_returns_saved_data_without_provider_calls(api, db, config, monkeypatch):
-    collect(db, config, Provider([page([bar("2026-09-14", "100"), bar("2026-09-15", "110"), bar("2026-09-16", "99")])]))
+    collect(db, config, Provider([page([bar("2025-09-16", "90"), bar("2026-09-14", "100"), bar("2026-09-15", "110"), bar("2026-09-16", "99")])]))
     provider = Mock(side_effect=AssertionError("Browsing must not call Marketstack"))
     monkeypatch.setattr(md, "MarketstackClient", provider)
     used = md.budget_status(db, config)["used"]
@@ -631,11 +700,14 @@ def test_acquired_api_returns_saved_data_without_provider_calls(api, db, config,
     response = client.get("/instruments/acquired?limit=1&offset=0")
     assert response.status_code == 200
     item = response.json()["items"][0]
-    assert item["quote_count"] == 3
+    assert item["quote_count"] == 4
     stats = client.get(f"/instruments/{ISIN}/statistics").json()
-    for key in ("annualized_mean_log_return", "annualized_volatility"):
+    for key in ("annualized_mean_log_return", "annualized_volatility", "historical_year_return"):
         assert item[key] == stats[key]
         assert isinstance(item[key], float)
+    assert item["historical_year_return"] == pytest.approx(0.1)
+    for key in ("historical_year_start_date", "historical_year_end_date", "historical_year_price_basis"):
+        assert item[key] == stats[key]
     assert response.json()["total"] == 1
     assert "data" not in response.json()["items"][0]
     assert config.marketstack_api_key.get_secret_value() not in response.text

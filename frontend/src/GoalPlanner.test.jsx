@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import GoalPlanner, { formatEuros, monthlyAnniversary, normalizeEuros } from './GoalPlanner.jsx';
 import ReturnStatistics from './ReturnStatistics.jsx';
 import InstrumentWorkspace from './InstrumentWorkspace.jsx';
-import { SEARCH_DELAY } from './InstrumentSearch.jsx';
+import { BUY_AND_HOLD_ID } from './goalStrategies.js';
 import { POLL_INTERVAL } from './useInstrument.js';
 
 const { request } = vi.hoisted(() => ({ request: vi.fn() }));
@@ -11,6 +11,12 @@ vi.mock('./Auth.jsx', () => ({ useAuth: () => ({ request }) }));
 
 const A = 'IE00B4L5Y983';
 const B = 'IE00B5BMR087';
+const buyAndHold = {
+  id: BUY_AND_HOLD_ID, name: 'Buy and hold single instrument',
+  description: 'Invest starting capital and each monthly contribution in one instrument and hold it.',
+  parameters: [{ key: 'instrument', type: 'instrument', label: 'Instrument', required: true, universe: 'acquired' }],
+};
+const selection = (instrument = A) => ({ id: BUY_AND_HOLD_ID, parameters: { instrument } });
 const statistics = (isin = A, extra = {}) => ({
   instrument_id: isin, name: isin === A ? 'World &amp; Europe ETF' : 'Second ETF', listing: { symbol: 'ETF.DE', exchange: 'XETR' },
   computed_at: '2026-09-17T12:00:00Z', as_of: '2026-09-17T12:00:00Z', price_basis: 'adj_close',
@@ -18,6 +24,8 @@ const statistics = (isin = A, extra = {}) => ({
   daily_mean_log_return: 0.0004,
   daily_log_return_variance: 0.00012, daily_volatility: Math.sqrt(0.00012), annualized_mean_log_return: 0.1008,
   annualized_volatility: Math.sqrt(0.00012 * 252), price_currency: 'EUR', currency_source: 'provider',
+  historical_year_return: 0.12, historical_year_start_date: '2025-09-16',
+  historical_year_end_date: '2026-09-16', historical_year_price_basis: 'adj_close',
   eligible: true, ineligible_reason: null, warnings: [], ...extra,
 });
 const simulation = (body, extra = {}) => ({
@@ -31,7 +39,9 @@ const simulation = (body, extra = {}) => ({
   first_contribution_date: '2026-10-17', last_contribution_date: '2036-09-17',
   total_contributions_eur: '54813.60', total_invested_eur: '64813.60',
   terminal_percentiles_eur: { p05: '90000.25', p50: '132000.45', p95: '230000.99' },
-  statistics: statistics(body.instrument_id), warnings: ['Historical parameters may not persist.'], ...extra,
+  strategy: body.strategy,
+  parameter_statistics: Object.fromEntries(Object.entries(body.strategy.parameters).map(([key, value]) => [key, statistics(value)])),
+  warnings: ['Historical parameters may not persist.'], ...extra,
 });
 function deferred() {
   let resolve, reject;
@@ -42,6 +52,13 @@ function mockServer() {
   const server = {};
   server.stats = async (isin) => statistics(isin);
   server.simulate = async (body) => simulation(body);
+  server.strategies = async () => ({ items: [buyAndHold] });
+  server.acquiredItems = [A, B].map((instrument_id) => ({ instrument_id, name: statistics(instrument_id).name, ticker: 'ETF' }));
+  server.acquired = async (query) => {
+    const offset = Number(query.get('offset'));
+    const limit = Number(query.get('limit'));
+    return { items: server.acquiredItems.slice(offset, offset + limit), total: server.acquiredItems.length, offset, limit };
+  };
   server.detail = {
     instrument_id: A, catalogue: { name: 'World &amp; Europe ETF', currency: 'USD', ticker: 'ETF', inception_date: '2020-01-01' },
     listing: { symbol: 'ETF.DE', exchange: 'XETR' }, profile: null, acquisition: null, price_currency_override: null,
@@ -50,7 +67,8 @@ function mockServer() {
   };
   request.mockImplementation(async (path, options = {}) => {
     if (path.startsWith('/instruments/search?')) return { items: [{ instrument_id: A, isin: A, name: 'World &amp; Europe ETF', ticker: 'ETF' }] };
-    if (path.startsWith('/instruments/acquired?')) return { items: [], total: 0, offset: 0, limit: 20 };
+    if (path.startsWith('/instruments/acquired?')) return server.acquired(new URL(path, 'http://localhost').searchParams, options);
+    if (path === '/goals/strategies') return server.strategies(options);
     if (path === '/goals/simulate') return server.simulate(options.body, options);
     const match = path.match(/^\/instruments\/([^/]+)(?:\/(statistics|quotes|price-currency))?(?:\?.*)?$/);
     if (match?.[2] === 'statistics') return server.stats(match[1], options);
@@ -70,7 +88,7 @@ const calculate = () => screen.getByRole('button', { name: 'Calculate monthly co
 const result = () => screen.queryByRole('region', { name: 'Goal simulation result' });
 async function flush() { await act(async () => {}); }
 async function advance(ms) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
-async function openGoal(isin = A) { const view = render(<GoalPlanner isin={isin} onSelect={vi.fn()} />); await flush(); return view; }
+async function openGoal(isin = A) { const view = render(<GoalPlanner isin={isin} />); await flush(); return view; }
 async function openWorkspace(hash = `#/goal/${A}`) {
   window.history.replaceState(null, '', hash);
   const view = render(<InstrumentWorkspace />);
@@ -91,22 +109,115 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); window.history.replaceState(null, '', '#/'); });
 
 describe('planner routes and eligibility', () => {
-  it('selects a planner ISIN via catalogue search without detail reads, acquisition or automatic simulation', async () => {
+  it('selects a strategy and its acquired instrument parameter without catalogue search, acquisition or automatic simulation', async () => {
     mockServer();
     await openWorkspace('#/goal');
-    expect(screen.getByText('Choose an ETF to get started.')).toBeInTheDocument();
+    const strategy = screen.getByRole('combobox', { name: 'Strategy' });
+    expect(strategy).toHaveValue(BUY_AND_HOLD_ID);
+    expect(within(strategy).getAllByRole('option')).toHaveLength(1);
+    expect(screen.getByRole('option', { name: 'Buy and hold single instrument' })).toBeInTheDocument();
+    expect(screen.getByText('Instrument parameter · acquired universe only')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Find an ETF' })).not.toBeInTheDocument();
     expect(screen.queryByText('Model assumptions and limitations')).not.toBeInTheDocument();
-    expect(request).not.toHaveBeenCalled();
+    expect(calculate()).toBeDisabled();
     expect(screen.getByRole('link', { name: 'Goal planner' })).toHaveAttribute('aria-current', 'page');
-    fireEvent.change(screen.getByRole('combobox', { name: 'Find an ETF' }), { target: { value: 'World' } });
-    await advance(SEARCH_DELAY);
-    fireEvent.click(screen.getByRole('option', { name: /World & Europe ETF/ }));
+    fireEvent.change(screen.getByRole('combobox', { name: 'Instrument' }), { target: { value: A } });
     await flush();
-    expect(window.location.hash).toBe(`#/goal/${A}`);
+    expect(window.location.hash).toBe('#/goal');
     expect(screen.getByRole('heading', { name: 'World & Europe ETF' })).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('EUR · 299 daily returns');
     expect(calculate()).toBeEnabled();
-    expect(request.mock.calls.map(([path]) => path)).toEqual([expect.stringContaining('/instruments/search?'), `/instruments/${A}/statistics`]);
+    expect(request.mock.calls.map(([path]) => path)).toEqual(['/goals/strategies', '/instruments/acquired?limit=100&offset=0', `/instruments/${A}/statistics`]);
+    expect(posts()).toHaveLength(0);
+  });
+
+  it('shows an empty acquired universe and links to explicit acquisition without searching the catalogue', async () => {
+    const server = mockServer();
+    server.acquiredItems = [];
+    await openWorkspace('#/goal');
+    expect(screen.getByText(/No acquired instruments yet/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Add an ETF' })).toHaveAttribute('href', '#/add');
+    expect(within(screen.getByLabelText('Instrument')).getAllByRole('option')).toHaveLength(1);
+    expect(calculate()).toBeDisabled();
+    fireEvent.submit(screen.getByRole('form', { name: 'Goal planner inputs' }));
+    expect(posts()).toHaveLength(0);
+    expect(reads()).toHaveLength(0);
+    expect(request.mock.calls.some(([path]) => path.includes('/search'))).toBe(false);
+  });
+
+  it('does not trust a legacy shortcut to an unacquired instrument, even if its statistics would be eligible', async () => {
+    const server = mockServer();
+    server.acquiredItems = server.acquiredItems.filter((item) => item.instrument_id !== A);
+    await openGoal();
+    expect(screen.getByRole('alert')).toHaveTextContent('not in the acquired universe');
+    expect(screen.getByRole('link', { name: 'acquire its data first' })).toHaveAttribute('href', `#/instruments/${A}`);
+    expect(calculate()).toBeDisabled();
+    expect(reads()).toHaveLength(0);
+    fireEvent.change(screen.getByLabelText('Instrument'), { target: { value: B } });
+    await flush();
+    expect(calculate()).toBeEnabled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await submit();
+    expect(posts()[0][1].body.strategy).toEqual(selection(B));
+  });
+
+  it('loads all acquired pages so an instrument beyond the first 100 can be selected', async () => {
+    const server = mockServer();
+    server.acquiredItems = Array.from({ length: 101 }, (_, index) => ({ instrument_id: `IE${String(index).padStart(10, '0')}`, name: `Fund ${index}` }));
+    await openWorkspace('#/goal');
+    const instrument = screen.getByLabelText('Instrument');
+    expect(within(instrument).getAllByRole('option')).toHaveLength(102);
+    expect(request.mock.calls.map(([path]) => path)).toContain('/instruments/acquired?limit=100&offset=100');
+    fireEvent.change(instrument, { target: { value: server.acquiredItems[100].instrument_id } });
+    await flush();
+    await submit();
+    expect(posts()[0][1].body.strategy.parameters.instrument).toBe(server.acquiredItems[100].instrument_id);
+    expect(result()).toBeInTheDocument();
+  });
+
+  it('loads planner resources, reports failures and retries reads without any acquisition', async () => {
+    const server = mockServer();
+    const pending = deferred();
+    server.strategies = () => pending.promise;
+    await openGoal();
+    expect(screen.getByRole('status')).toHaveTextContent('Loading strategies and acquired instruments');
+    expect(calculate()).toBeDisabled();
+    await act(async () => pending.reject(new Error('offline')));
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load planner data: offline');
+    server.strategies = async () => ({ items: [buyAndHold] });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry planner data' }));
+    await flush();
+    expect(calculate()).toBeEnabled();
+    expect(posts()).toHaveLength(0);
+  });
+
+  it.each(['empty', 'duplicate', 'changed total', 'network'])('rejects an incomplete acquired universe (%s) and allows an explicit retry', async (failure) => {
+    const server = mockServer();
+    const acquired = server.acquired;
+    server.acquired = async (query) => {
+      if (failure === 'network') throw new Error('offline');
+      const offset = Number(query.get('offset'));
+      if (failure === 'duplicate') return { items: [server.acquiredItems[0], server.acquiredItems[0]], total: 2, limit: 100, offset };
+      if (failure === 'changed total') return { items: [server.acquiredItems[0]], total: offset === 0 ? 2 : 3, limit: 100, offset };
+      return { items: [], total: 1, limit: 100, offset };
+    };
+    await openGoal();
+    expect(screen.getByRole('alert')).toHaveTextContent(failure === 'network' ? 'offline' : 'list changed or was incomplete');
+    expect(calculate()).toBeDisabled();
+    expect(reads()).toHaveLength(0);
+    server.acquired = acquired;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry planner data' }));
+    await flush();
+    expect(calculate()).toBeEnabled();
+    expect(posts()).toHaveLength(0);
+  });
+
+  it.each([null, [], [{ ...buyAndHold, parameters: [{}] }], [buyAndHold, buyAndHold]])('rejects a malformed strategy catalogue: %j', async (items) => {
+    const server = mockServer();
+    server.strategies = async () => ({ items });
+    await openGoal();
+    expect(screen.getByRole('alert')).toHaveTextContent('unexpected strategy catalogue');
+    expect(calculate()).toBeDisabled();
     expect(posts()).toHaveLength(0);
   });
 
@@ -196,6 +307,69 @@ describe('planner routes and eligibility', () => {
   });
 });
 
+describe('metadata-driven strategy configuration', () => {
+  const pair = {
+    id: 'test_pair', name: 'Test-only pair', description: 'Two acquired instruments.',
+    parameters: ['primary', 'secondary'].map((key) => ({ key, type: 'instrument', label: key === 'primary' ? 'Primary instrument' : 'Secondary instrument', required: true, universe: 'acquired' })),
+  };
+
+  it('renders and submits multiple instrument parameters for a different strategy without strategy-specific form code', async () => {
+    const server = mockServer();
+    server.strategies = async () => ({ items: [buyAndHold, pair] });
+    await openGoal();
+    fireEvent.change(screen.getByLabelText('Target (EUR)'), { target: { value: '250000' } });
+    await submit();
+    expect(result()).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Strategy'), { target: { value: pair.id } });
+    expect(result()).not.toBeInTheDocument();
+    expect(calculate()).toBeDisabled();
+    expect(screen.getByLabelText('Target (EUR)')).toHaveValue('250000');
+    expect(screen.queryByLabelText('Instrument')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Primary instrument'), { target: { value: A } });
+    await flush();
+    expect(calculate()).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Secondary instrument'), { target: { value: B } });
+    await flush();
+    expect(calculate()).toBeEnabled();
+    await submit();
+    expect(posts().at(-1)[1].body.strategy).toEqual({ id: pair.id, parameters: { primary: A, secondary: B } });
+    expect(result()).toBeInTheDocument();
+    fireEvent.click(within(result()).getByText('Calculation details'));
+    expect(within(result()).getByText(`Primary instrument · ${A}`)).toBeVisible();
+    expect(within(result()).getByText(`Secondary instrument · ${B}`)).toBeVisible();
+    fireEvent.change(screen.getByLabelText('Strategy'), { target: { value: BUY_AND_HOLD_ID } });
+    expect(result()).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Instrument')).toHaveValue('');
+    expect(calculate()).toBeDisabled();
+  });
+
+  it.each([{ type: 'number' }, { type: 'instrument', universe: 'catalogue' }])('fails closed for unsupported parameter definitions: %j', async (extra) => {
+    const server = mockServer();
+    server.strategies = async () => ({ items: [{ ...buyAndHold, parameters: [{ ...buyAndHold.parameters[0], ...extra }] }] });
+    await openGoal();
+    expect(screen.getByRole('alert')).toHaveTextContent('not supported');
+    expect(calculate()).toBeDisabled();
+    expect(posts()).toHaveLength(0);
+  });
+
+  it('aborts in-flight simulations and statistics when the strategy changes', async () => {
+    const server = mockServer();
+    server.strategies = async () => ({ items: [buyAndHold, pair] });
+    await openGoal();
+    const pending = deferred();
+    server.simulate = () => pending.promise;
+    await submit();
+    const options = posts()[0][1];
+    const statsSignal = reads()[0][1].signal;
+    fireEvent.change(screen.getByLabelText('Strategy'), { target: { value: pair.id } });
+    expect(options.signal.aborted).toBe(true);
+    expect(statsSignal.aborted).toBe(true);
+    await act(async () => pending.resolve(simulation(options.body)));
+    expect(result()).not.toBeInTheDocument();
+    expect(calculate()).toBeDisabled();
+  });
+});
+
 describe('explicit monthly simulation', () => {
   it('sends exact euro strings and a probability, then displays the returned schedule and outcomes', async () => {
     mockServer();
@@ -205,7 +379,7 @@ describe('explicit monthly simulation', () => {
     expect(posts()).toHaveLength(0);
     await submit();
     expect(posts()).toEqual([['/goals/simulate', expect.objectContaining({ method: 'POST', signal: expect.any(AbortSignal), body: {
-      instrument_id: A, goal_eur: '100000.00', starting_capital_eur: '10000.00', goal_date: '2036-09-17', reliability: 0.9,
+      strategy: selection(), goal_eur: '100000.00', starting_capital_eur: '10000.00', goal_date: '2036-09-17', reliability: 0.9,
     } })]]);
     expect(result()).toBeInTheDocument();
     const view = within(result());
@@ -242,7 +416,7 @@ describe('explicit monthly simulation', () => {
   it('keeps data-quality warnings in calculation details without model caveats', async () => {
     const server = mockServer();
     server.simulate = async (body) => simulation(body, {
-      statistics: statistics(A, { warnings: ['Some rows were unusable.'] }),
+      parameter_statistics: { instrument: statistics(A, { warnings: ['Some rows were unusable.'] }) },
       warnings: ['Some rows were unusable.', 'Historical parameters may not persist.'],
     });
     await openGoal();
@@ -294,6 +468,10 @@ describe('explicit monthly simulation', () => {
   });
 
   it.each([
+    { strategy: selection(B) }, { strategy: { id: 'wrong', parameters: { instrument: A } } },
+    { strategy: { ...selection(), parameters: { instrument: A, extra: true } } },
+    { parameter_statistics: { instrument: statistics(B) } }, { parameter_statistics: {} },
+    { target_probability: 0.7 },
     { trajectory: [] }, { goal_eur: '1.00' }, { simulation_paths: 0 },
     { trajectory: [{ date: '2026-09-17', mean_eur: 'NaN' }] },
   ])('rejects missing or inconsistent projection data: %j', async (extra) => {
@@ -350,6 +528,53 @@ describe('explicit monthly simulation', () => {
 });
 
 describe('stale reads and results', () => {
+  it('clears results when an instrument parameter changes and preserves goal inputs', async () => {
+    mockServer();
+    await openGoal();
+    fireEvent.change(screen.getByLabelText('Target (EUR)'), { target: { value: '123456' } });
+    await submit();
+    expect(result()).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Instrument'), { target: { value: B } });
+    expect(result()).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Target (EUR)')).toHaveValue('123456');
+    await flush();
+    await submit();
+    expect(posts().at(-1)[1].body.strategy).toEqual(selection(B));
+    fireEvent.change(screen.getByLabelText('Instrument'), { target: { value: '' } });
+    expect(result()).not.toBeInTheDocument();
+    expect(calculate()).toBeDisabled();
+  });
+
+  it('aborts an in-flight simulation when its parameter changes and ignores a late result', async () => {
+    const server = mockServer();
+    await openGoal();
+    const pending = deferred();
+    server.simulate = () => pending.promise;
+    await submit();
+    const options = posts()[0][1];
+    fireEvent.change(screen.getByLabelText('Instrument'), { target: { value: B } });
+    expect(options.signal.aborted).toBe(true);
+    await flush();
+    server.simulate = async (body) => simulation(body, { monthly_contribution_eur: '987.65' });
+    await submit();
+    await act(async () => pending.resolve(simulation(options.body)));
+    expect(within(result()).getByRole('status')).toHaveTextContent('€987.65');
+    expect(posts()).toHaveLength(2);
+  });
+
+  it('aborts planner-resource requests on unmount and ignores late acquired data', async () => {
+    const server = mockServer();
+    const pending = deferred();
+    server.acquired = () => pending.promise;
+    const view = await openGoal();
+    const options = request.mock.calls.find(([path]) => path.includes('/acquired?'))[1];
+    view.unmount();
+    expect(options.signal.aborted).toBe(true);
+    await act(async () => pending.resolve({ items: server.acquiredItems, total: 2, limit: 100, offset: 0 }));
+    expect(reads()).toHaveLength(0);
+    expect(posts()).toHaveLength(0);
+  });
+
   it.each([
     ['Target (EUR)', '200000'], ['Starting capital (EUR)', '20000'],
     ['Reliability target (%)', '95'], ['Goal date (UTC)', '2037-09-17'],
@@ -450,25 +675,110 @@ describe('stale reads and results', () => {
 });
 
 describe('detail statistics refresh', () => {
-  it.each([[null, 'Unavailable'], [-0.0004, '-0.04%'], [0, '0%']])('renders log mean %s without falling back to legacy simple returns', async (mean, display) => {
+  it.each([1, 89])('hides the %s missing-weekday interval warning on the instrument page but retains other warnings', async (count) => {
     const server = mockServer();
-    server.stats = async () => statistics(A, { daily_mean_log_return: mean, daily_mean_return: 0.1 });
+    const gapWarning = `${count} interval(s) spanning missing weekdays excluded from daily returns. Exchange holidays may also be excluded; no exchange calendar is assumed.`;
+    server.stats = async () => statistics(A, { warnings: [gapWarning, 'Some rows were unusable.'] });
+    await openWorkspace(`#/instruments/${A}`);
+    expect(screen.queryByText(gapWarning)).not.toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Statistics warnings' })).toHaveTextContent('Some rows were unusable.');
+    expect(screen.getByText('301 / 300 / 299')).toBeInTheDocument();
+    expect(screen.getByText('2025-07-01 – 2026-09-16')).toBeInTheDocument();
+
+    await navigate(`#/goal/${A}`);
+    fireEvent.click(screen.getByText('Saved return statistics'));
+    expect(screen.getByText(gapWarning)).toBeVisible();
+  });
+
+  it('does not render an empty warnings list when only the missing-weekday warning exists', async () => {
+    const server = mockServer();
+    server.stats = async () => statistics(A, { warnings: [
+      '89 interval(s) spanning missing weekdays excluded from daily returns. Exchange holidays may also be excluded; no exchange calendar is assumed.',
+    ] });
     render(<ReturnStatistics isin={A} />);
     await flush();
-    const meanRow = screen.getByText('Daily return').closest('div');
+    expect(screen.queryByRole('list', { name: 'Statistics warnings' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/spanning missing weekdays/)).not.toBeInTheDocument();
+  });
+
+  it('replaces daily metrics with historical annual return on the instrument page', async () => {
+    mockServer();
+    await openWorkspace(`#/instruments/${A}`);
+    const view = within(screen.getByRole('region', { name: 'Return statistics' }));
+    expect(view.getAllByRole('term').slice(0, 3).map((term) => term.textContent)).toEqual([
+      'Historical annual return', 'Annual return', 'Annual volatility',
+    ]);
+    expect(view.queryByText('Daily return')).not.toBeInTheDocument();
+    expect(view.queryByText('Daily volatility')).not.toBeInTheDocument();
+    expect(view.getByText('Historical annual return')).toHaveAttribute('title',
+      'Actual trailing-12-month price change ending at the latest saved quote');
+    expect(view.getByText('+12%')).toHaveAttribute('title', '2025-09-16 – 2026-09-16. Adjusted closes.');
+    expect(view.getByText('+12%')).toHaveClass('return-positive');
+    expect(view.getByText('Annual return')).toHaveAttribute('title', 'Average daily log return × 252 trading days');
+    expect(view.getByText('+10.08%')).toHaveClass('return-positive');
+    expect(view.getByText('17.39%')).toBeInTheDocument();
+    expect(reads()).toHaveLength(1);
+    expect(posts()).toHaveLength(0);
+  });
+
+  it.each([
+    [0.05, '+5%', 'return-positive'], [-0.05, '-5%', 'return-negative'], [0, '0%', ''], [-0, '0%', ''],
+  ])('signs and colors both instrument returns %s while leaving volatility neutral', async (value, text, className) => {
+    const server = mockServer();
+    server.stats = async () => statistics(A, { historical_year_return: value, annualized_mean_log_return: value });
+    render(<ReturnStatistics isin={A} />);
+    await flush();
+    for (const label of ['Historical annual return', 'Annual return']) {
+      const display = within(screen.getByText(label).closest('div')).getByRole('definition');
+      expect(display.textContent).toBe(text);
+      expect(display.className).toBe(className);
+    }
+    const volatility = within(screen.getByText('Annual volatility').closest('div')).getByRole('definition');
+    expect(volatility.textContent).toBe('17.39%');
+    expect(volatility.className).toBe('');
+  });
+
+  it.each([[0.12, '+12%'], [-0.08, '-8%'], [0, '0%']])('uses the observed historical return %s without annualizing or compounding it', async (value, display) => {
+    const server = mockServer();
+    server.stats = async () => statistics(A, { historical_year_return: value, historical_year_price_basis: 'close' });
+    render(<ReturnStatistics isin={A} />);
+    await flush();
+    const historicalRow = screen.getByText('Historical annual return').closest('div');
+    expect(within(historicalRow).getByText(display)).toHaveAttribute('title',
+      '2025-09-16 – 2026-09-16. Unadjusted closes; splits and distributions may affect the return.');
+  });
+
+  it('does not substitute annualized statistics when historical annual return is unavailable', async () => {
+    const server = mockServer();
+    server.stats = async () => statistics(A, { historical_year_return: null });
+    render(<ReturnStatistics isin={A} />);
+    await flush();
+    expect(within(screen.getByText('Historical annual return').closest('div')).getByText('Unavailable'))
+      .toHaveAttribute('title', expect.stringContaining('covering a full year'));
+    expect(within(screen.getByText('Annual return').closest('div')).getByText('+10.08%')).toBeInTheDocument();
+  });
+
+  it.each([[null, 'Unavailable'], [-0.1008, '-10.08%'], [0, '0%']])('renders annual log mean %s without falling back to legacy simple returns', async (mean, display) => {
+    const server = mockServer();
+    server.stats = async () => statistics(A, { annualized_mean_log_return: mean, annualized_mean_return: 0.1 });
+    render(<ReturnStatistics isin={A} />);
+    await flush();
+    const meanRow = screen.getByText('Annual return').closest('div');
     expect(within(meanRow).getByText(display)).toBeInTheDocument();
     expect(screen.queryByText('10%')).not.toBeInTheDocument();
   });
 
-  it.each([[null, 'Unavailable'], [undefined, 'Unavailable'], [NaN, 'Unavailable'], [Infinity, 'Unavailable'], [0, '0%']])('renders unavailable or zero return/volatility values correctly: %s', async (value, display) => {
+  it.each([[null, 'Unavailable'], [undefined, 'Unavailable'], [NaN, 'Unavailable'], [Infinity, 'Unavailable'], [-Infinity, 'Unavailable'], [0, '0%']])('renders unavailable or zero return/volatility values correctly: %s', async (value, display) => {
     const server = mockServer();
     server.stats = async () => statistics(A, {
-      daily_mean_log_return: value, daily_volatility: value, annualized_mean_log_return: value, annualized_volatility: value,
+      historical_year_return: value, annualized_mean_log_return: value, annualized_volatility: value,
     });
     render(<ReturnStatistics isin={A} />);
     await flush();
-    for (const label of ['Daily return', 'Daily volatility', 'Annual return', 'Annual volatility']) {
-      expect(within(screen.getByText(label).closest('div')).getByText(display)).toBeInTheDocument();
+    for (const label of ['Historical annual return', 'Annual return', 'Annual volatility']) {
+      const metric = within(screen.getByText(label).closest('div')).getByRole('definition');
+      expect(metric.textContent).toBe(display);
+      expect(metric.className).toBe('');
     }
   });
 
@@ -477,8 +787,9 @@ describe('detail statistics refresh', () => {
     server.stats = async () => statistics(A, { daily_mean_log_return: -0.0004, annualized_mean_log_return: -0.1008 });
     render(<ReturnStatistics isin={A} />);
     await flush();
-    expect(within(screen.getByText('Daily return').closest('div')).getByText('-0.04%')).toBeInTheDocument();
-    expect(within(screen.getByText('Annual return').closest('div')).getByText('-10.08%')).toBeInTheDocument();
+    expect(screen.queryByText('Daily return')).not.toBeInTheDocument();
+    expect(within(screen.getByText('Historical annual return').closest('div')).getByText('+12%')).toHaveClass('return-positive');
+    expect(within(screen.getByText('Annual return').closest('div')).getByText('-10.08%')).toHaveClass('return-negative');
   });
 
   it('updates statistics after acquisition completion and a saved manual currency without an acquisition POST', async () => {
@@ -503,13 +814,15 @@ describe('detail statistics refresh', () => {
     const view = render(<ReturnStatistics isin={A} refreshKey="running" />);
     await flush();
     const signal = reads()[0][1].signal;
-    server.stats = async () => statistics(A, { return_count: 600 });
+    server.stats = async () => statistics(A, { return_count: 600, historical_year_return: 0.15 });
     view.rerender(<ReturnStatistics isin={A} refreshKey="succeeded" />);
     await flush();
     expect(signal.aborted).toBe(true);
     await act(async () => pending.resolve(statistics()));
     expect(screen.getByText('301 / 300 / 600')).toBeInTheDocument();
     expect(screen.queryByText('301 / 300 / 299')).not.toBeInTheDocument();
+    expect(screen.getByText('+15%')).toBeInTheDocument();
+    expect(screen.queryByText('+12%')).not.toBeInTheDocument();
   });
 
   it('keeps detail usable when the statistics endpoint is unavailable and offers retry', async () => {
@@ -521,12 +834,12 @@ describe('detail statistics refresh', () => {
     server.stats = async () => statistics();
     fireEvent.click(screen.getByRole('button', { name: 'Retry statistics' }));
     await flush();
-    expect(screen.getByText('Daily return')).toBeInTheDocument();
-    expect(screen.getByText('0.04%')).toBeInTheDocument();
-    expect(screen.getByText('Daily volatility')).toBeInTheDocument();
-    expect(screen.getByText('1.1%')).toBeInTheDocument();
+    expect(screen.queryByText('Daily return')).not.toBeInTheDocument();
+    expect(screen.queryByText('Daily volatility')).not.toBeInTheDocument();
+    expect(screen.getByText('Historical annual return')).toBeInTheDocument();
+    expect(screen.getByText('+12%')).toBeInTheDocument();
     expect(screen.getByText('Annual return')).toBeInTheDocument();
-    expect(screen.getByText('10.08%')).toBeInTheDocument();
+    expect(screen.getByText('+10.08%')).toBeInTheDocument();
     expect(screen.getByText('Annual volatility')).toBeInTheDocument();
     expect(screen.getByText('17.39%')).toBeInTheDocument();
     expect(posts()).toHaveLength(0);

@@ -72,7 +72,7 @@ export default function CandlestickChart({ quotes, priceCurrencyOverride = null 
     <p className="muted">Unadjusted OHLC · Listing price currency: {currency}{priceCurrencyOverride && ' (manual)'}</p>
     <p>{candles.length} {candles.length === 1 ? 'candle' : 'candles'} · {visible.length} of {quotes.length} quotes</p>
     {!candles.length ? <p role="status">No plottable OHLC candles available.</p> : <>
-      <div className="chart-scroll">
+      <div className="chart-scroll" role="region" aria-label="Scrollable price chart" tabIndex={0}>
         <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby={`${id}-title ${id}-description`} onMouseLeave={() => setHover(null)}>
           <title id={`${id}-title`}>Unadjusted OHLC candlestick chart</title>
           <desc id={`${id}-description`}>{candles.length} candles from {candles[0].quote.date} to {candles.at(-1).quote.date}. Green hollow candles close at or above open; red filled candles close below open. Exact values are available in the expandable quote observations below.</desc>

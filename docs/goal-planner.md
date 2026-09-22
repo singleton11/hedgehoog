@@ -1,10 +1,17 @@
 # Return statistics and EUR goal planner
 
-Open **Goal planner** in the signed-in workspace (`#/goal`), choose an instrument,
-then enter a goal amount, starting capital, goal date and target reliability
-(50–99%). The result is a **fixed monthly contribution**, not a lump sum. The
-instrument page also shows daily return statistics and links to its planner at
-`#/goal/{isin}`.
+Open **Goal planner** in the signed-in workspace (`#/goal`), choose a strategy,
+configure its parameters, then enter a goal amount, starting capital, goal date
+and target reliability (50–99%). The result is a **fixed monthly contribution**,
+not a lump sum. The only strategy currently offered is **Buy and hold single
+instrument**, with one required parameter of type **instrument**. Choose its
+value from the acquired universe, not the full ETF catalogue.
+
+The instrument page still links to `#/goal/{isin}` as a shortcut that prefills
+this strategy's instrument parameter; it does not bypass acquired membership or
+eligibility. Configuration changes stay local to the planner, preserve monetary
+and date inputs, and invalidate previous results. Leaving the planner resets the
+configuration; these are not saved plans.
 
 The planner keeps the inputs, monthly estimate and chart prominent. Payment dates
 and supporting statistics are under **Calculation details**; refresh is under
@@ -17,6 +24,68 @@ A saved manual price-currency setting can fill unknown prices; it cannot convert
 explicit USD (or mixed-currency) observations to EUR. Underlying FX exposure may
 still exist in a EUR-traded fund. Download history and, when needed, confirm its
 price currency on the instrument page before planning.
+
+## Strategies and typed parameters
+
+The planner separates a **strategy definition** (stable ID, display name,
+description and typed parameter schema) from a **strategy selection** (ID plus
+parameter values) and the common goal inputs. `GET /goals/strategies` currently
+returns one definition:
+
+```json
+{
+  "items": [{
+    "id": "buy_and_hold_single_instrument",
+    "name": "Buy and hold single instrument",
+    "description": "Invest starting capital and each monthly contribution in one instrument and hold it.",
+    "parameters": [{
+      "key": "instrument",
+      "type": "instrument",
+      "label": "Instrument",
+      "required": true,
+      "universe": "acquired"
+    }]
+  }]
+}
+```
+
+An acquired instrument has a saved provider profile in `instruments`, the same
+membership rule as the Acquired ETFs inventory. Profile-only or partially failed
+acquisitions belong to this universe, but may lack eligible history. Catalogue
+entries, cached listings, queued requests and quotes without a saved profile do
+not qualify. The UI reads every acquired-inventory page, rejects incomplete or
+changed pagination, and never automatically acquires anything. The backend
+rechecks membership and current data eligibility on every simulation, even if a
+client supplies a forged parameter or an old shortcut.
+
+Extension points:
+
+- `backend/goal_strategies.py`: register each strategy with its typed Pydantic
+  parameter model and execution callback. Reuse `AcquiredInstrument` for any
+  instrument-valued field; registry parameter resolution enforces acquired
+  membership for every such field before invoking the strategy. Public parameter
+  definitions are derived from the model's field metadata. Unknown strategy IDs, unknown/missing
+  parameters and invalid types are rejected; no strategy silently falls back to
+  buy-and-hold.
+- `backend/goal_planner.py`: common request validation, authenticated catalogue
+  and dispatch. There is no instrument field in the goal contract itself.
+- `backend/goal_simulation.py`: the existing buy-and-hold Monte Carlo solver and
+  common goal inputs. Its linear contribution formula is **not** a universal
+  strategy engine. A future strategy with different trading/cash-flow behavior
+  supplies a suitable simulator behind the same result contract.
+- `frontend/src/StrategyParameters.jsx`: editors are keyed by parameter **type**,
+  not strategy ID. Currently only acquired-universe `instrument` parameters are
+  supported; new types require an editor and validation. Unsupported definitions
+  disable calculation rather than guessing. Instrument controls show saved
+  statistics and existing EUR/history eligibility checks.
+- `frontend/src/GoalPlanner.jsx`: common goal inputs, selected strategy and
+  generic result presentation. Requests/results carry the whole selection;
+  statistics are keyed by instrument-parameter name rather than a single global
+  instrument. Changing strategy, any parameter/input, refreshing statistics or
+  navigating away aborts/discards obsolete simulations.
+
+No speculative additional strategies, parameter types, portfolio correlations,
+backtesting engine or strategy persistence are introduced here.
 
 ## Derived statistics
 
@@ -37,7 +106,7 @@ History selection:
   collection-time ties by descending MongoDB `_id`. Ignore future quote dates and
   future collection times. This is current-history analytics, not an `as_of`
   historical model or backtest.
-- Exclude weekend quote dates from return estimation, preserving the raw rows.
+- Exclude weekend quote dates from daily-return estimation, preserving the raw rows.
   Use adjusted closes **only when every selected weekday row has a positive finite adjusted
   close**. Otherwise use unadjusted closes consistently across the entire series,
   with a corporate-action/distribution warning. Never splice the two bases.
@@ -62,8 +131,8 @@ m = sum(x) / n                # arithmetic average of daily log returns
 v = sum((x[t] - m)^2) / (n-1) # sample log-return variance
 ```
 
-All return statistics and model parameters use **log returns, not simple returns
-or price levels**. The UI displays four percentages:
+All daily-return estimates and model parameters use **log returns, not simple
+returns or price levels**. The statistics UI displays four percentages:
 
 | Label | Formula | API/cache field |
 | --- | --- | --- |
@@ -87,9 +156,42 @@ warning uses the equivalent log thresholds `ln(1.5)` and `ln(0.5)`. Finite log
 returns remain usable even when the direct price ratio would overflow; unstable
 simulations are still rejected rather than clipped.
 
+## Historical yearly return (inventory)
+
+The Acquired ETFs table groups **Annual return** under **Historical**, separately
+from **Annual return** and **Annual volatility** under **Statistical**. Both return
+columns show green `+` values for growth and red negative values for decline;
+zero, unavailable values and volatility stay neutral. The historical return is the
+actual simple price change
+`P[end] / P[start] - 1`, displayed as a percentage, not a mean, CAGR, forecast or
+an input to the Monte Carlo model.
+
+- End at the latest saved quote date in the same latest-observation, listing and
+  knowledge-time selection above (not today's date or an earlier valid price).
+- Start at the most recent saved quote on or before the calendar anniversary one
+  year earlier, allowing at most **7 calendar days** for weekends/holidays. February
+  29 clamps to February 28. Never annualize shorter coverage or use a much older
+  price as if it were a year ago. Actual endpoint dates are available on hover.
+- Use adjusted closes if **both endpoints** have positive finite adjusted prices;
+  otherwise use raw closes at **both** endpoints. Never splice the two bases.
+  The tooltip identifies the basis and warns that unadjusted splits/distributions
+  can distort the price change. Provider adjustments are used as saved; this is
+  not an independently verified dividend-reinvestment total return.
+- Endpoint prices must be positive and finite. Invalid endpoints are not silently
+  replaced with earlier valid ones. Sparse or invalid intermediate prices do not
+  prevent calculating an endpoint ratio; this does not imply continuous coverage.
+  Known conflicting price currencies anywhere in the interval make it unavailable;
+  unknown currencies remain unverified. No FX conversion or fund-currency assumption
+  is applied. Non-finite results are unavailable too.
+- API/cache fields are `historical_year_return` (nullable numeric fraction),
+  `historical_year_start_date`, `historical_year_end_date` (ISO dates), and
+  `historical_year_price_basis` (`adj_close` or `close`). All four are null when
+  unavailable. They share the existing cache invalidation; older cache versions
+  refresh from saved data without provider requests or changes to raw observations.
+
 ## Monte Carlo model and monthly amount
 
-`backend/goal_planner.py` simulates 10,000 paths using NumPy's generator and fixed
+For buy-and-hold, `backend/goal_simulation.py` simulates 10,000 paths using NumPy's generator and fixed
 seed `20260919`. Repeated requests with the same date, inputs and history are
 repeatable. Path count/seed are server-controlled, not request parameters.
 
@@ -174,15 +276,34 @@ This is an educational planning estimate, not a guaranteed investment plan.
 
 ## API and operation
 
-Both endpoints require the existing authenticated session. POST uses the same
-Origin protections as other commands. Neither calls Marketstack or spends quota.
+All endpoints require the existing authenticated session. POST uses the same
+Origin protections as other commands. None calls Marketstack or spends quota.
 
 - `GET /instruments/{isin}/statistics`: estimates, basis, history window/count,
   currency source, eligibility/reason and warnings. An empty history returns an
   ineligible result; an unknown catalogue instrument returns 404.
-- `POST /goals/simulate`: `{instrument_id, goal_eur, starting_capital_eur,
-  goal_date, reliability}` where money may be decimal strings and probability is
-  a fraction (e.g. `0.90`). Invalid inputs/ineligible instruments return 422.
+- `GET /goals/strategies`: the strategy catalogue described above.
+- `POST /goals/simulate`: common goal inputs plus a strategy selection:
+
+  ```json
+  {
+    "strategy": {
+      "id": "buy_and_hold_single_instrument",
+      "parameters": {"instrument": "IE00B4L5Y983"}
+    },
+    "goal_eur": "100000.00",
+    "starting_capital_eur": "10000.00",
+    "goal_date": "2036-09-17",
+    "reliability": 0.9
+  }
+  ```
+
+  Money may be decimal strings and probability is a fraction. Invalid inputs,
+  unknown strategies, invalid/extra parameters, unacquired instruments and
+  ineligible history return 422. The legacy top-level `instrument_id` request
+  field is no longer accepted. The response echoes `strategy` and replaces the
+  old single `statistics` object with `parameter_statistics: {"instrument": ...}`.
+  Monetary, schedule, probability, trajectory and warning fields are unchanged.
 
 Rebuild the Celery image after updating code/dependencies (`make services-up`)
 and restart the backend. Existing history is processed on demand; no re-download

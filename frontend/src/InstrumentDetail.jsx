@@ -47,7 +47,6 @@ function AcquisitionForm({ detail, mode, busy, onCancel, onConfirm }) {
     </>}
     <p><strong>Range:</strong> {estimate.range}.</p>
     <p><strong>Estimated provider calls:</strong> {estimate.calls === null ? `At least ${estimate.minimumCalls}` : `About ${estimate.calls}`}. Actual usage may vary.</p>
-    <Budget budget={detail.budget} />
     {insufficientBudget && <p className="muted">This request needs at least {estimate.minimumCalls} calls. Not enough local budget.</p>}
     <details className="disclosure"><summary>Request details</summary>
       <div className="disclosure-content">
@@ -66,13 +65,6 @@ function AcquisitionForm({ detail, mode, busy, onCancel, onConfirm }) {
     <div className="button-group"><button type="submit" disabled={blocked || !confirmed}>{busy ? 'Submitting…' : title}</button>
       <button type="button" className="secondary" onClick={onCancel} disabled={busy}>Cancel</button></div>
   </form>;
-}
-
-function Budget({ budget }) {
-  return <div className="budget">
-    {budget ? <p title={`${budget.month} · ${budget.used} used. Excludes requests outside Hedgehoog.`}><strong>Local budget:</strong> {budget.remaining.toLocaleString()} / {budget.limit.toLocaleString()} calls left</p>
-      : <p>Local budget unavailable.</p>}
-  </div>;
 }
 
 function JobStatus({ job }) {
@@ -121,9 +113,15 @@ export default function InstrumentDetail({ isin }) {
         {listing && <> · {listing.symbol} / {listing.exchange}</>}</p>
       <p><a href={`#/goal/${encodeURIComponent(isin)}`}>Plan a goal with this ETF</a></p>
     </section>
+    <ReturnStatistics isin={isin} refreshKey={JSON.stringify([acquisition?.id, acquisition?.status, detail.price_currency_override])} />
+    {!priceCurrency && !quotesLoading && !quotesError && <PriceCurrencyForm busy={savingCurrency || submitting}
+      saving={savingCurrency} error={currencyError} onSave={saveCurrency} />}
+    {!quotes.length && priceCurrency && <p className="muted">Price currency: {priceCurrency}</p>}
+    {quotesLoading && <p role="status">Loading all quote pages…{quotes.length ? ' Showing previously loaded quotes meanwhile.' : ''}</p>}
+    {quotesError && <div><p role="alert">Could not load the complete chart: {quotesError} Previously loaded quotes are retained.</p><button className="secondary" onClick={retryQuotes}>Retry chart</button></div>}
+    {quotes.length > 0 ? <CandlestickChart quotes={quotes} priceCurrencyOverride={detail.price_currency_override} /> : !quotesLoading && <p className="empty-state">No saved quotes to chart yet. {pending ? 'Acquisition is in progress.' : 'Choose Request Data to begin.'}</p>}
     <section aria-label="Market data acquisition">
       <h2>Market data</h2>
-      {!reviewMode && <Budget budget={budget} />}
       {!detail.provider_configured && <p className="muted">Marketstack is not configured.</p>}
       {!reviewMode && budget && budget.remaining < minimumCalls && <p className="muted">Insufficient local budget. Requires {minimumCalls} calls{!listing ? ' with automatic lookup' : ''}.</p>}
       <JobStatus job={acquisition} />
@@ -137,23 +135,6 @@ export default function InstrumentDetail({ isin }) {
       {reviewMode && !pending && <AcquisitionForm key={reviewMode} detail={detail} mode={reviewMode} busy={submitting || savingCurrency}
         onCancel={() => setReviewMode(null)} onConfirm={confirm} />}
     </section>
-    <section aria-label="History coverage">
-      <h2>Coverage</h2>
-      <dl className="facts">
-        <div><dt>Coverage status</dt><dd>{summary.history_status}</dd></div>
-        <div><dt>Saved quotes</dt><dd>{summary.quote_count}</dd></div>
-        <div><dt>Requested from</dt><dd>{summary.requested_from || 'Not requested'}</dd></div>
-        <div><dt>Returned range</dt><dd>{summary.first_date && summary.last_date ? `${summary.first_date} – ${summary.last_date}` : 'No quotes returned'}</dd></div>
-      </dl>
-      {summary.history_status === 'empty' && <p>No quotes returned. Check the listing and plan access.</p>}
-    </section>
-    {!priceCurrency && !quotesLoading && !quotesError && <PriceCurrencyForm busy={savingCurrency || submitting}
-      saving={savingCurrency} error={currencyError} onSave={saveCurrency} />}
-    {!quotes.length && priceCurrency && <p className="muted">Price currency: {priceCurrency}</p>}
-    {quotesLoading && <p role="status">Loading all quote pages…{quotes.length ? ' Showing previously loaded quotes meanwhile.' : ''}</p>}
-    {quotesError && <div><p role="alert">Could not load the complete chart: {quotesError} Previously loaded quotes are retained.</p><button className="secondary" onClick={retryQuotes}>Retry chart</button></div>}
-    {quotes.length > 0 ? <CandlestickChart quotes={quotes} priceCurrencyOverride={detail.price_currency_override} /> : !quotesLoading && <p className="empty-state">No saved quotes to chart yet. {pending ? 'Acquisition is in progress.' : 'Choose Request Data to begin.'}</p>}
-    <ReturnStatistics isin={isin} refreshKey={JSON.stringify([acquisition?.id, acquisition?.status, detail.price_currency_override])} />
     <details className="disclosure instrument-metadata"><summary>Data details</summary>
       <div className="disclosure-content">
         {listing && listing_resolution?.source === 'tickerslist' && <p>Auto-selected listing: {displayText(listing_resolution.name) || listing.symbol}.</p>}

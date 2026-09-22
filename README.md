@@ -75,7 +75,7 @@ and worker logs show task IDs, retries and failures.
 ```sh
 make import-etfs                           # Prints the queued task ID
 # Equivalent, with services already running:
-docker compose exec celery-worker celery -A celery_app:app call etfs.import_daily
+docker compose exec celery-worker python -m celery -A celery_app:app call etfs.import_daily
 docker compose logs -f celery-worker      # Watch imports/retries/failures
 ```
 
@@ -83,9 +83,9 @@ Startup and explicit manual dispatch are the only catalogue-import triggers. The
 
 ## On-demand instrument data
 
-After sign-in, the workspace shows **Acquired ETFs** beneath catalogue search: one entry per ETF with a saved provider profile, newest profile collection first, with the saved listing, **Annual return**, **Annual volatility**, distinct quote count and date range. Annual values use the same log-based statistics as instrument details and are shown as percentages; missing estimates show **Unavailable**. Statistics are refreshed from saved prices for the current page only, without provider requests. Profile-only and partial/failed downloads remain visible; catalogue-only entries and requests that have not saved data are excluded. Open any ETF from the list, page through results, or use **Refresh list** to reload saved data. Returning from instrument details also refreshes the list.
+After sign-in, the workspace shows **Acquired ETFs** with an **Add ETF** button above the table: one entry per ETF with a saved provider profile, newest profile collection first, with the saved listing, grouped **Historical → Annual return** and **Statistical → Annual return / Annual volatility** columns, distinct quote count and date range. Historical yearly return is the actual trailing 12-month price change ending at the latest saved quote (`latest / year-ago − 1`), not an annualized estimate. Hover over it for the endpoint dates and adjusted/unadjusted price basis. A year-ago quote may be up to seven days before the calendar anniversary; insufficient or incomparable endpoints show **Unavailable**. Annual return/volatility retain the same log-based statistics as instrument details. All values are percentages; positive returns have a green **+** sign and negative returns are red with a **−** sign. Zero returns and volatility remain neutral; missing estimates show **Unavailable**. Statistics are refreshed from saved prices for the current page only, without provider requests. Profile-only and partial/failed downloads remain visible; catalogue-only entries and requests that have not saved data are excluded. Open any ETF from the list or page through results. Returning from instrument details refreshes the list.
 
-Search the local ETF catalogue by name, ticker or ISIN to find additional ETFs. Search, acquired-list reads, page reads, polling and charts use MongoDB only: browsing never spends Marketstack quota.
+Choose **Add ETF** to open the dedicated search page (`#/add`), then search the local ETF catalogue by name, ticker or ISIN. Selecting a result opens its details, where you can explicitly request data. Catalogue search is no longer displayed above the list or instrument details; the goal planner selects instrument parameters from the acquired universe only. Search, acquired-list reads, page reads, polling and charts use MongoDB only: browsing never spends Marketstack quota.
 
 1. Configure `MARKETSTACK_API_KEY` in the gitignored root `.env`, and set `MARKETSTACK_MONTHLY_BUDGET` to the local monthly cap (`10000` for the current paid plan; reduce it if the key is shared with other applications). The default **0 disables acquisition**. Rebuild/restart the worker with `make services-up`; restart the API when its settings change. Both processes must use the same key, budget and database. Never use a `VITE_` variable for this key.
 2. Authorize acquisition without entering a provider symbol or MIC. If no mapping is saved, the worker searches `/v2/tickerslist?search=<catalogue ticker>` and picks the first named, EOD-enabled exact `TICKER.exchange` match in provider order with a valid `stock_exchange.mic`. For example, `WEBN` skips `WEBNF` and unnamed listings, selecting `WEBN.DE` / `XETR`. The suffix is **not** the MIC. The mapping and lookup evidence are persisted per instrument and reused without searching again. This heuristic is not an independently verified ISIN match; provider identifiers are retained as supplied without identity-validation blockers. Manual symbol/MIC override remains available before quotes exist; thereafter the listing cannot change or mix with another listing.
@@ -112,7 +112,7 @@ Authenticated endpoints (browser prefix `/api`):
 | Route | Purpose |
 | --- | --- |
 | `GET /instruments/search?q=...` | Latest-snapshot autocomplete, no provider calls |
-| `GET /instruments/acquired?limit=20&offset=0` | Paginated acquired ETFs with annual return/volatility, saved profile and quote coverage, no provider calls |
+| `GET /instruments/acquired?limit=20&offset=0` | Paginated acquired ETFs with historical yearly return, annual return/volatility, saved profile and quote coverage, no provider calls |
 | `GET /instruments/{isin}[?as_of=...Z]` | Catalogue, collected profile, coverage, job and local budget |
 | `GET /instruments/{isin}/quotes?limit=1000&offset=0[&as_of=...Z]` | Latest-observation candles, ascending and paginated |
 | `PATCH /instruments/{isin}/price-currency` | `{price_currency: "EUR" \| "USD" \| "CHF" \| "GBP" \| "RUB"}`; saves a manual chart currency override |
@@ -130,8 +130,11 @@ The instrument page shows **Daily return**, **Daily volatility**, **Annual retur
 and **Annual volatility** as percentages. Returns remain log-based; volatility
 is the square root of variance, with annualization using 252 trading days.
 
-Open **Goal planner** to choose one EUR-priced instrument and enter your goal in
-EUR, starting capital, goal date and target reliability (50–99%). A repeatable
+Open **Goal planner** to choose a strategy and configure its typed parameters.
+The first strategy, **Buy and hold single instrument**, has one required
+**Instrument** parameter selected from your acquired universe (not the full ETF
+catalogue). Its saved history must be EUR-priced. Enter your goal in EUR,
+starting capital, goal date and target reliability (50–99%). A repeatable
 10,000-path Monte Carlo simulation estimates the fixed monthly contribution
 needed, plus model success probability and terminal-value percentiles. A projection
 graph shows average portfolio value as a line, shaded 5th–95th and 25th–75th
@@ -144,10 +147,16 @@ and transaction fees. Unknown or conflicting currencies must be resolved; a EUR
 label does not convert non-EUR history. See [model, data rules and API details](docs/goal-planner.md).
 Rebuild the worker with `make services-up` after updating backend dependencies.
 
-Authenticated endpoints: `GET /instruments/{isin}/statistics` and
-`POST /goals/simulate` with `{instrument_id, goal_eur, starting_capital_eur,
-goal_date, reliability}`. Reliability is a fraction, e.g. `0.90`; money outputs
-are decimal strings. Neither endpoint calls the provider.
+Authenticated endpoints: `GET /instruments/{isin}/statistics`,
+`GET /goals/strategies` (strategy catalogue and typed parameter definitions), and
+`POST /goals/simulate` with `{strategy, goal_eur, starting_capital_eur,
+goal_date, reliability}`. A strategy selection is
+`{id: "buy_and_hold_single_instrument", parameters: {instrument: "IE00B4L5Y983"}}`.
+The response echoes `strategy` and returns `parameter_statistics` keyed by
+parameter name. Reliability is a fraction, e.g. `0.90`; money outputs are decimal
+strings. These endpoints never call the provider or acquire missing instruments.
+Existing `#/goal/{isin}` links prefill this strategy, subject to acquired-universe
+membership. See [extension points and API details](docs/goal-planner.md#strategies-and-typed-parameters).
 
 ## Authentication and authorization
 

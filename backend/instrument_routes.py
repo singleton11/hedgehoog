@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from auth import CurrentUser
 from return_statistics import instrument_statistics
 from celery_app import enqueue_acquisition
-from market_data import acquired_instruments, instrument_detail, read_quotes, request_acquisition, search_catalogue, set_price_currency
+from market_data import acquired_instruments, budget_status, instrument_detail, read_quotes, request_acquisition, search_catalogue, set_price_currency
 
 router = APIRouter(prefix="/instruments", tags=["instruments"])
 InstrumentId = Annotated[str, Path(pattern=r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")]
@@ -90,6 +90,11 @@ def search(request: Request, user: CurrentUser, q: Annotated[str, Query(min_leng
 @router.get("/acquired")
 def acquired(request: Request, user: CurrentUser, limit: Annotated[int, Query(ge=1, le=100)] = 20, offset: Annotated[int, Query(ge=0)] = 0):
     return acquired_instruments(request.app.state.database, limit, offset)
+
+
+@router.get("/budget")
+def budget(request: Request, user: CurrentUser):
+    return budget_status(request.app.state.database, request.app.state.settings)
 
 
 @router.get("/{isin}")
