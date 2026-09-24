@@ -10,12 +10,14 @@ import Icon from './Icon.jsx';
 function readRoute() {
   const hash = window.location.hash;
   if (!hash || hash === '#' || hash === '#/') return { isin: null };
-  const portfolios = hash.match(/^#\/goal\/customers\/([^/?#]+)\/portfolios(?:\/([^/?#]+))?$/);
+  const portfolios = hash.match(/^#\/goal\/customers\/([^/?#]+)\/portfolios(?:\/([^/?#]+))?(?:\?(.*))?$/);
   if (portfolios) {
     try {
-      const [customerId, portfolioId] = portfolios.slice(1).map((value) => value ? decodeURIComponent(value) : null);
+      const [customerId, portfolioId] = portfolios.slice(1, 3).map((value) => value ? decodeURIComponent(value) : null);
       if (![customerId, portfolioId].every((value) => value === null || /^[a-zA-Z0-9_-]+$/.test(value))) return { invalid: true };
-      return { goal: true, portfolios: true, customerId, portfolioId };
+      const instrument = new URLSearchParams(portfolios[3]).get('instrument');
+      if (instrument && !/^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(instrument)) return { invalid: true };
+      return { goal: true, portfolios: true, customerId, portfolioId, isin: instrument };
     } catch { return { invalid: true }; }
   }
   const planner = hash.match(/^#\/goal(?:\/customers\/([^/?#]+)(?:\/goals\/([^/?#]+)(?:\/(new|simulations\/([^/?#]+)))?)?)?(?:\?(.*))?$/);
@@ -78,7 +80,7 @@ export default function InstrumentWorkspace() {
       <p className="sidebar-footer">HEDGEHOOG <span> / </span> INVEST WITH INSIGHT</p>
     </nav>
     <div id="workspace-content" className="workspace-content" tabIndex={-1}>
-    {route.portfolios ? <PortfolioTracker customerId={route.customerId} portfolioId={route.portfolioId} /> : route.calibration ? <StrategyCalibration newRun={route.newRun} runId={route.runId} sourceId={route.sourceId} strategyId={route.strategyId} /> : route.goal ? <CustomerPlanner customerId={route.customerId} goalId={route.goalId} simulationId={route.simulationId} newSimulation={route.newSimulation} isin={route.isin} /> : <>
+    {route.portfolios ? <PortfolioTracker customerId={route.customerId} portfolioId={route.portfolioId} isin={route.isin} /> : route.calibration ? <StrategyCalibration newRun={route.newRun} runId={route.runId} sourceId={route.sourceId} strategyId={route.strategyId} /> : route.goal ? <CustomerPlanner customerId={route.customerId} goalId={route.goalId} simulationId={route.simulationId} newSimulation={route.newSimulation} isin={route.isin} /> : <>
       {(route.add || route.isin || route.invalid) && <nav aria-label="Instrument navigation"><a href="#/">← ETFs</a></nav>}
       {route.invalid ? <p role="alert">ETF not found. <a href="#/add">Search for an ETF</a>.</p>
         : route.add ? <AddEtf onSelect={select} />

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
+import CustomerTabs from './CustomerTabs.jsx';
 import GoalPlanner, { monthlyAnniversary, normalizeEuros, SimulationResult, validSimulationRecord } from './GoalPlanner.jsx';
 import { formatEuros } from './goalProjection.js';
 import { percent } from './ReturnStatistics.jsx';
@@ -131,8 +132,7 @@ function Customers({ request, isin }) {
 function CustomerGoals({ request, customer, isin }) {
   const [revision, setRevision] = useState(0);
   return <>
-    <div className="section-heading"><h2 className="instrument-name">{customer.name}</h2>
-      <a className="button-link" href={`${customerRoute(customer.id)}/portfolios`}>Portfolios</a></div>
+    <CustomerTabs customer={customer} active="goals" isin={isin} />
     <p className="muted">Each goal has a fixed target and date. Explore different ways to fund it with separate simulations.</p>
     <PagedList key={revision} request={request} path={`${customerPath(customer.id)}/goals`} label="Goals" validate={(item) => validGoal(item, customer.id)} empty="No goals yet. Create a goal below.">
       {(items) => <ul className="planner-cards">{items.map((goal) => <li key={goal.id}>

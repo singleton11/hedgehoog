@@ -79,7 +79,7 @@ describe('portfolio routes, creation and optional goals', () => {
     expect(screen.getByRole('link', { name: 'Portfolios', exact: true })).toHaveAttribute('href', listRoute);
     expect(screen.getByRole('link', { name: /Retirement/ })).toBeInTheDocument();
     await follow('Portfolios');
-    expect(within(screen.getByRole('navigation', { name: 'Portfolio navigation' })).getByRole('link', { name: 'Alice · Goals' })).toHaveAttribute('href', customerRoute);
+    expect(within(screen.getByRole('navigation', { name: 'Customer sections' })).getByRole('link', { name: 'Goals' })).toHaveAttribute('href', customerRoute);
     expect(screen.getByRole('link', { name: 'Customers', exact: true })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByText(/No portfolios yet/)).toBeInTheDocument(); expect(writes()).toHaveLength(0);
     change('Portfolio name', '  Emergency fund  '); await submit(screen.getByRole('form', { name: 'New portfolio' }));
@@ -105,7 +105,50 @@ describe('portfolio routes, creation and optional goals', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it.each([`${listRoute}/bad%2Fid`, '#/goal/customers/%ZZ/portfolios', `${detailRoute}/extra`])('rejects malformed routes without requests: %s', async (route) => {
+  it.each(['', `?instrument=${A}`])('switches customer tabs using bookmarkable routes and preserves planning context: %s', async (query) => {
+    mockServer(); const view = await open(`${customerRoute}${query}`);
+    const tabs = () => within(screen.getByRole('navigation', { name: 'Customer sections' }));
+    expect(tabs().getAllByRole('link').map((link) => link.textContent)).toEqual(['Portfolios', 'Goals']);
+    expect(tabs().getByRole('link', { name: 'Goals' })).toHaveAttribute('aria-current', 'page');
+    expect(tabs().getByRole('link', { name: 'Portfolios' })).not.toHaveAttribute('aria-current');
+    expect(screen.getByRole('heading', { name: 'Alice', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('form', { name: 'New goal' })).toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'New portfolio' })).not.toBeInTheDocument();
+    await follow('Portfolios');
+    expect(window.location.hash).toBe(`${listRoute}${query}`);
+    expect(tabs().getByRole('link', { name: 'Portfolios' })).toHaveAttribute('aria-current', 'page');
+    expect(tabs().getByRole('link', { name: 'Goals' })).not.toHaveAttribute('aria-current');
+    expect(screen.getByRole('heading', { name: 'Alice', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('form', { name: 'New portfolio' })).toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'New goal' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Retirement/ })).not.toBeInTheDocument();
+    // A reload opens the same tab without relying on local component state.
+    view.unmount(); await open(`${listRoute}${query}`);
+    expect(tabs().getByRole('link', { name: 'Portfolios' })).toHaveAttribute('aria-current', 'page');
+    await follow('Goals');
+    expect(window.location.hash).toBe(`${customerRoute}${query}`);
+    expect(tabs().getByRole('link', { name: 'Goals' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: /Retirement/ })).toHaveAttribute('href', `${customerRoute}/goals/${goal.id}${query}`);
+    expect(screen.queryByRole('form', { name: 'New portfolio' })).not.toBeInTheDocument();
+    expect(writes()).toHaveLength(0);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('aborts the previous tab read and ignores its late response after switching to goals', async () => {
+    const server = mockServer(), pending = deferred();
+    server.portfolioList = () => pending.promise;
+    await open(listRoute);
+    const signal = request.mock.calls.find(([path]) => path === pagePath(base))[1].signal;
+    expect(screen.getByText('Loading portfolios…')).toBeInTheDocument();
+    await follow('Goals');
+    expect(signal.aborted).toBe(true);
+    await act(async () => pending.resolve(page([metadata()], new URLSearchParams('limit=20&offset=0'))));
+    expect(screen.getByRole('form', { name: 'New goal' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Long term/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it.each([`${listRoute}/bad%2Fid`, '#/goal/customers/%ZZ/portfolios', `${detailRoute}/extra`, `${listRoute}?instrument=invalid`])('rejects malformed routes without requests: %s', async (route) => {
     mockServer(); await open(route); expect(screen.getByRole('alert')).toHaveTextContent('ETF not found'); expect(request).not.toHaveBeenCalled();
   });
 

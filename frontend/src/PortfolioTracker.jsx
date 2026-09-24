@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
+import CustomerTabs from './CustomerTabs.jsx';
 import { formatEuros as formatExactEuros } from './goalProjection.js';
 
 const PAGE_SIZE = 20;
@@ -178,7 +179,7 @@ function PortfolioList({ request, customerId, goals }) {
   const resource = useRead(request, `${portfoliosPath(customerId)}?limit=${PAGE_SIZE}&offset=${offset}`, { revision });
   const valid = validPage(resource.data, offset, PAGE_SIZE, (item) => validPortfolio(item, customerId));
   return <>
-    <div className="page-heading"><h2 className="instrument-name">Portfolios</h2><p className="muted">Track separate EUR portfolios with manual cash movements and trades. Goals can be linked whenever you are ready.</p></div>
+    <p className="muted">Track separate EUR portfolios with manual cash movements and trades. Goals can be linked whenever you are ready.</p>
     <section className="planner-list" aria-label="Portfolios">
       <div className="section-heading"><h3>Portfolios</h3><button className="secondary" type="button" onClick={resource.retry}>Refresh portfolios</button></div>
       <ReadStatus resource={resource} label="portfolios" invalid={!valid} />
@@ -328,26 +329,29 @@ function PortfolioDetail({ request, customerId, portfolioId, goals }) {
     </>}
   </>;
 }
-function PortfolioPage({ request, customerId, portfolioId }) {
+function PortfolioPage({ request, customerId, portfolioId, isin }) {
   const customer = useRead(request, customerPath(customerId));
   const goals = useRead(request, `${customerPath(customerId)}/goals`, { all: true, validate: validGoal });
   const validCustomer = customer.data?.id === customerId && text(customer.data?.name);
   return <article className="customer-planner portfolio-tracker" aria-label="Portfolio tracker">
     <nav className="planner-breadcrumbs" aria-label="Portfolio navigation"><a href="#/goal">← Customers</a>
-      <a href={customerRoute(customerId)}>{validCustomer ? `${customer.data.name} · Goals` : 'Customer goals'}</a>
-      {portfolioId && <a href={portfoliosRoute(customerId)}>Portfolios</a>}
+      {portfolioId && <><a href={customerRoute(customerId)}>{validCustomer ? `${customer.data.name} · Goals` : 'Customer goals'}</a>
+        <a href={portfoliosRoute(customerId)}>Portfolios</a></>}
     </nav>
     <ReadStatus resource={customer} label="customer" invalid={!validCustomer} />
-    {validCustomer && (portfolioId ? <PortfolioDetail request={request} customerId={customerId} portfolioId={portfolioId} goals={goals} /> : <PortfolioList request={request} customerId={customerId} goals={goals} />)}
+    {validCustomer && (portfolioId ? <PortfolioDetail request={request} customerId={customerId} portfolioId={portfolioId} goals={goals} /> : <>
+      <CustomerTabs customer={customer.data} active="portfolios" isin={isin} />
+      <PortfolioList request={request} customerId={customerId} goals={goals} />
+    </>)}
   </article>;
 }
-export default function PortfolioTracker({ customerId, portfolioId }) {
+export default function PortfolioTracker({ customerId, portfolioId, isin }) {
   const { request, user, status } = useAuth();
   const [identity, setIdentity] = useState({ request, version: 0 });
   if (identity.request !== request) setIdentity({ request, version: identity.version + 1 });
-  const key = JSON.stringify([customerId, portfolioId, user?.id, status, identity.version]);
+  const key = JSON.stringify([customerId, portfolioId, isin, user?.id, status, identity.version]);
   // Remount the entire route on auth/request changes; cleanup aborts reads and writes.
   if (status !== 'authenticated') return <p role="status">Sign in to view portfolios.</p>;
   if (!identifier(customerId) || (portfolioId && !identifier(portfolioId))) return <p role="alert">Portfolio not found.</p>;
-  return <PortfolioPage key={key} request={request} customerId={customerId} portfolioId={portfolioId} />;
+  return <PortfolioPage key={key} request={request} customerId={customerId} portfolioId={portfolioId} isin={isin} />;
 }

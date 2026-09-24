@@ -247,6 +247,10 @@ summary::marker { color: #839a8b; }
 
 /* Saved-data goal planning. */
 .goal-planner, .customer-planner { max-width: 1200px; }
+.customer-tabs { display: flex; gap: 0.5rem; margin-top: 1.5rem; border-bottom: 1px solid var(--line); }
+.customer-tabs a { display: inline-flex; justify-content: center; align-items: center; min-height: 44px; margin-bottom: -1px; padding: 0.75rem 1.15rem; border-bottom: 3px solid transparent; color: var(--muted); font-size: 0.9rem; font-weight: 600; text-decoration: none; }
+.customer-tabs a:hover { color: var(--green-hover); background: var(--mint); }
+.customer-tabs a[aria-current='page'] { border-bottom-color: var(--green); color: var(--green); }
 .planner-controls, .planner-create fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .planner-controls > .goal-strategy { padding: 1.5rem; margin-bottom: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius); background: white; box-shadow: var(--shadow); }
 .planner-controls input[readonly] { background: var(--surface, #f5f7f4); color: var(--muted); }
