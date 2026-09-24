@@ -2,14 +2,37 @@ import { useEffect, useState } from 'react';
 import AddEtf from './AddEtf.jsx';
 import InstrumentDetail from './InstrumentDetail.jsx';
 import AcquiredEtfs from './AcquiredEtfs.jsx';
-import GoalPlanner from './GoalPlanner.jsx';
+import CustomerPlanner from './CustomerPlanner.jsx';
+import StrategyCalibration from './StrategyCalibration.jsx';
 import Icon from './Icon.jsx';
 
 function readRoute() {
   const hash = window.location.hash;
   if (!hash || hash === '#' || hash === '#/') return { isin: null };
-  if (hash === '#/goal') return { goal: true, isin: null };
+  const planner = hash.match(/^#\/goal(?:\/customers\/([^/?#]+)(?:\/goals\/([^/?#]+)(?:\/(new|simulations\/([^/?#]+)))?)?)?(?:\?(.*))?$/);
+  if (planner) {
+    try {
+      const ids = [planner[1], planner[2], planner[4]].map((value) => value ? decodeURIComponent(value) : null);
+      if (ids.some((value) => value && !/^[a-zA-Z0-9_-]+$/.test(value))) return { invalid: true };
+      const instrument = new URLSearchParams(planner[5]).get('instrument');
+      if (instrument && !/^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(instrument)) return { invalid: true };
+      return { goal: true, customerId: ids[0], goalId: ids[1], simulationId: ids[2], newSimulation: planner[3] === 'new', isin: instrument };
+    } catch { return { invalid: true }; }
+  }
+  if (hash === '#/calibration' || hash === '#/strategies') return { calibration: true, isin: null };
+  const newRun = hash.match(/^#\/calibration\/new(?:\?(.*))?$/);
+  if (newRun) return { calibration: true, newRun: true, sourceId: new URLSearchParams(newRun[1]).get('from'), isin: null };
+  const runMatch = hash.match(/^#\/calibration\/([^/?#]+)$/);
+  if (runMatch) {
+    try { return { calibration: true, runId: decodeURIComponent(runMatch[1]), isin: null }; }
+    catch { return { invalid: true }; }
+  }
   if (hash === '#/add') return { add: true, isin: null };
+  const strategyMatch = hash.match(/^#\/strategies\/([^/?#]+)$/);
+  if (strategyMatch) {
+    try { return { calibration: true, newRun: true, strategyId: decodeURIComponent(strategyMatch[1]), isin: null }; }
+    catch { return { invalid: true }; }
+  }
   const match = hash.match(/^#\/(instruments|goal)\/([^/?#]+)$/);
   if (!match) return { invalid: true };
   try {
@@ -36,8 +59,9 @@ export default function InstrumentWorkspace() {
   return <div className="instrument-workspace">
     <nav aria-label="Workspace navigation" className="workspace-navigation">
       <p className="nav-label">Workspace</p>
-      <a href="#/" aria-current={!route.goal && !route.invalid ? 'page' : undefined}><Icon name="grid" />ETFs</a>
+      <a href="#/" aria-current={!route.goal && !route.calibration && !route.invalid ? 'page' : undefined}><Icon name="grid" />ETFs</a>
       <a href="#/goal" aria-current={route.goal ? 'page' : undefined}><Icon name="target" />Goal planner</a>
+      <a href="#/calibration" aria-current={route.calibration ? 'page' : undefined}><Icon name="chart" />Calibration</a>
       <div className="sidebar-note"><span className="sidebar-note-icon"><Icon name="chart" /></span>
         <strong>A little perspective.<br />A longer view.</strong>
         <p>Your data. Your next move.</p>
@@ -45,7 +69,7 @@ export default function InstrumentWorkspace() {
       <p className="sidebar-footer">HEDGEHOOG <span> / </span> INVEST WITH INSIGHT</p>
     </nav>
     <div id="workspace-content" className="workspace-content" tabIndex={-1}>
-    {route.goal ? <GoalPlanner key={route.isin || 'strategy-planner'} isin={route.isin} /> : <>
+    {route.calibration ? <StrategyCalibration newRun={route.newRun} runId={route.runId} sourceId={route.sourceId} strategyId={route.strategyId} /> : route.goal ? <CustomerPlanner customerId={route.customerId} goalId={route.goalId} simulationId={route.simulationId} newSimulation={route.newSimulation} isin={route.isin} /> : <>
       {(route.add || route.isin || route.invalid) && <nav aria-label="Instrument navigation"><a href="#/">← ETFs</a></nav>}
       {route.invalid ? <p role="alert">ETF not found. <a href="#/add">Search for an ETF</a>.</p>
         : route.add ? <AddEtf onSelect={select} />

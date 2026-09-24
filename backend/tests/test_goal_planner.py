@@ -513,6 +513,7 @@ def test_strategy_catalogue_auth_field_metadata_and_no_provider_calls(api, db, c
         "id": "buy_and_hold_single_instrument",
         "name": "Buy and hold single instrument",
         "description": "Invest starting capital and each monthly contribution in one instrument and hold it.",
+        "supports_calibration": True, "latest_calibration": None,
         "parameters": [{"key": "instrument", "type": "instrument", "label": "Instrument",
                         "required": True, "universe": "acquired"}],
     }]}
@@ -709,6 +710,7 @@ def test_registry_dispatches_another_typed_strategy_without_buy_and_hold_assumpt
     catalogue = client.get("/goals/strategies").json()["items"]
     assert catalogue[-1] == {
         "id": definition.id, "name": definition.name, "description": definition.description,
+        "supports_calibration": False, "latest_calibration": None,
         "parameters": [
             {"key": "periods", "type": "integer", "label": "Periods", "required": True, "universe": None},
             {"key": "settlement_date", "type": "date", "label": "Settlement date", "required": False, "universe": None},

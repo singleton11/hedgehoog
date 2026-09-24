@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pymongo.database import Database
 
 from goal_simulation import GoalInputs, simulate_buy_and_hold
+from goal_calibration import RandomCalibrationInputs, calibrate_instrument
+from random_calibration import evaluate_random_history
 import market_data as md
 from return_statistics import instrument_statistics
 
@@ -34,6 +36,7 @@ class StrategyDefinition(Generic[Parameters]):
     description: str
     parameters_model: type[Parameters]
     simulate: Callable[[Parameters, GoalInputs, Database, date], dict[str, Any]]
+    calibrate: Callable[[Parameters, RandomCalibrationInputs, Database], dict[str, Any]] | None = None
 
     def resolve_parameters(self, values: dict[str, Any], db: Database) -> Parameters:
         parameters = self.parameters_model.model_validate(values)
@@ -57,7 +60,7 @@ class StrategyDefinition(Generic[Parameters]):
             })
         return {
             "id": self.id, "name": self.name, "description": self.description,
-            "parameters": parameters,
+            "parameters": parameters, "supports_calibration": self.calibrate is not None,
         }
 
 
@@ -71,6 +74,10 @@ def buy_and_hold_single_instrument(parameters: BuyAndHoldParameters, goals: Goal
     }
 
 
+def calibrate_buy_and_hold(parameters: BuyAndHoldParameters, inputs: RandomCalibrationInputs, db: Database):
+    return calibrate_instrument(db, parameters.instrument, inputs, evaluate=evaluate_random_history)
+
+
 STRATEGIES = {
     "buy_and_hold_single_instrument": StrategyDefinition(
         id="buy_and_hold_single_instrument",
@@ -78,6 +85,7 @@ STRATEGIES = {
         description="Invest starting capital and each monthly contribution in one instrument and hold it.",
         parameters_model=BuyAndHoldParameters,
         simulate=buy_and_hold_single_instrument,
+        calibrate=calibrate_buy_and_hold,
     ),
 }
 

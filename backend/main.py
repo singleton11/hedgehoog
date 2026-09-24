@@ -18,8 +18,10 @@ from auth import (
     seed_admin,
     set_session,
 )
+from calibration_results import ensure_indexes as ensure_calibration_indexes
 from celery_app import enqueue_etf_import
 from config import Settings
+from customer_planner import ensure_indexes as ensure_customer_planner_indexes, router as customer_planner_router
 from instrument_routes import router as instrument_router
 from goal_planner import router as goal_router
 from market_data import DataError
@@ -35,6 +37,8 @@ def create_app(settings: Settings | None = None, client_factory=MongoClient) -> 
         try:
             await run_in_threadpool(client.admin.command, "ping")
             await run_in_threadpool(seed_admin, app.state.database, config)
+            await run_in_threadpool(ensure_calibration_indexes, app.state.database)
+            await run_in_threadpool(ensure_customer_planner_indexes, app.state.database)
             await run_in_threadpool(enqueue_etf_import, config)
             yield
         finally:
@@ -43,6 +47,7 @@ def create_app(settings: Settings | None = None, client_factory=MongoClient) -> 
     app = FastAPI(lifespan=lifespan)
     app.include_router(instrument_router)
     app.include_router(goal_router)
+    app.include_router(customer_planner_router)
 
     @app.exception_handler(DataError)
     async def acquisition_error(request: Request, exc: DataError):

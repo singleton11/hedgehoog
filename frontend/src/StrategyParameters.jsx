@@ -2,11 +2,11 @@ import { useEffect, useId } from 'react';
 import { displayText } from './instruments.js';
 import { StatisticsSummary, useReturnStatistics } from './ReturnStatistics.jsx';
 
-function InstrumentParameter({ parameter, value = '', instruments, onChange, onReadiness, onInvalidate, fieldKey }) {
+function InstrumentParameter({ parameter, value = '', instruments, onChange, onReadiness, onInvalidate, fieldKey, requireStatistics, compact }) {
   const id = useId();
   const acquired = instruments.some((item) => item.instrument_id === value);
-  const { data: statistics, error, loading, retry } = useReturnStatistics(acquired ? value : null);
-  const ready = acquired ? Boolean(statistics?.eligible && !loading && !error) : !value && !parameter.required;
+  const { data: statistics, error, loading, retry } = useReturnStatistics(acquired && requireStatistics ? value : null);
+  const ready = acquired ? !requireStatistics || Boolean(statistics?.eligible && !loading && !error) : !value && !parameter.required;
   useEffect(() => { onReadiness(fieldKey, value, ready); }, [fieldKey, value, ready, onReadiness]);
 
   function refresh() {
@@ -17,8 +17,8 @@ function InstrumentParameter({ parameter, value = '', instruments, onChange, onR
 
   return <div className="strategy-parameter">
     <label htmlFor={id}>{parameter.label}</label>
-    <p className="parameter-hint" id={`${id}-help`}>Instrument parameter · acquired universe only</p>
-    <select id={id} value={acquired ? value : ''} aria-describedby={`${id}-help`} required={parameter.required}
+    {!compact && <p className="parameter-hint" id={`${id}-help`}>Instrument parameter · acquired universe only</p>}
+    <select id={id} value={acquired ? value : ''} aria-describedby={compact ? undefined : `${id}-help`} required={parameter.required}
       onChange={(event) => onChange(parameter.key, event.target.value)}>
       <option value="">Choose an acquired instrument</option>
       {instruments.map((item) => <option key={item.instrument_id} value={item.instrument_id}>
@@ -27,7 +27,7 @@ function InstrumentParameter({ parameter, value = '', instruments, onChange, onR
     </select>
     {!instruments.length && <p className="empty-state">No acquired instruments yet. <a href="#/add">Add an ETF</a> and request its data first.</p>}
     {value && !acquired && <p role="alert">This instrument is not in the acquired universe. Choose an acquired instrument or <a href={`#/instruments/${encodeURIComponent(value)}`}>acquire its data first</a>.</p>}
-    {acquired && <section aria-label={`Selected ${parameter.label.toLowerCase()}`} className="goal-instrument">
+    {acquired && !compact && <section aria-label={`Selected ${parameter.label.toLowerCase()}`} className="goal-instrument">
       <div className="section-heading">
         <div>
           <h3>{displayText(statistics?.name) || displayText(instruments.find((item) => item.instrument_id === value)?.name) || 'Selected instrument'}</h3>
@@ -35,6 +35,7 @@ function InstrumentParameter({ parameter, value = '', instruments, onChange, onR
         </div>
         <a href={`#/instruments/${encodeURIComponent(value)}`}>Instrument details</a>
       </div>
+      {!requireStatistics && <p className="muted">Eligibility is checked separately for each historical forecast window.</p>}
       {loading && <p role="status">Checking saved data…</p>}
       {error && <>
         <p role="alert">Could not load statistics: {error}</p>
@@ -60,13 +61,13 @@ const editors = { instrument: InstrumentParameter };
 export const supportsParameter = (parameter) => Object.hasOwn(editors, parameter.type)
   && (parameter.type !== 'instrument' || parameter.universe === 'acquired');
 
-export default function StrategyParameters({ strategy, parameters, ...props }) {
-  return <div className="strategy-parameters">
+export default function StrategyParameters({ strategy, parameters, requireStatistics = true, compact = false, ...props }) {
+  return <div className={`strategy-parameters${compact ? ' strategy-parameters-compact' : ''}`}>
     {strategy.parameters.map((parameter) => {
       const Editor = editors[parameter.type];
       return supportsParameter(parameter)
         ? <Editor key={`${strategy.id}:${parameter.key}`} fieldKey={`${strategy.id}:${parameter.key}`}
-          parameter={parameter} value={parameters[parameter.key]} {...props} />
+          parameter={parameter} value={parameters[parameter.key]} requireStatistics={requireStatistics} compact={compact} {...props} />
         : <p role="alert" key={parameter.key}>The parameter type “{parameter.type}” is not supported by this planner.</p>;
     })}
   </div>;

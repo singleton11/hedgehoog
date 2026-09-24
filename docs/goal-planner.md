@@ -1,17 +1,33 @@
 # Return statistics and EUR goal planner
 
-Open **Goal planner** in the signed-in workspace (`#/goal`), choose a strategy,
-configure its parameters, then enter a goal amount, starting capital, goal date
-and target reliability (50–99%). The result is a **fixed monthly contribution**,
-not a lump sum. The only strategy currently offered is **Buy and hold single
-instrument**, with one required parameter of type **instrument**. Choose its
-value from the acquired universe, not the full ETF catalogue.
+Open **Goal planner** in the signed-in workspace (`#/goal`) to see your
+**customers**. Create a customer with a name, then create one or more named
+**goals**, each with a fixed EUR target and goal date. Open a goal to see its
+saved simulations and choose **New simulation**. Starting capital, target
+reliability (50–99%), strategy and strategy parameters vary per simulation;
+the goal's target and date are read-only.
 
-The instrument page still links to `#/goal/{isin}` as a shortcut that prefills
-this strategy's instrument parameter; it does not bypass acquired membership or
-eligibility. Configuration changes stay local to the planner, preserve monetary
-and date inputs, and invalidate previous results. Leaving the planner resets the
-configuration; these are not saved plans.
+**Calculate monthly contribution** previews the result and chart without adding
+a saved simulation. Click **Save simulation** to retain that exact calculation.
+You can save multiple simulations per goal and reopen any read-only report,
+including its inputs, statistics and chart. Saving never recalculates, and
+retrying the same save cannot create duplicates. Changing inputs or refreshing
+statistics discards the current preview; leaving the form discards local inputs.
+Unsaved previews are saveable for 24 hours and stored server-side so that saving
+uses a trusted result rather than a client-supplied report. They are excluded from
+history and cannot be opened as saved reports. Customer names and goal settings
+are creation-only in this version; editing and deletion are not offered.
+
+The result is a **fixed monthly contribution**, not a lump sum. The only strategy
+currently offered is **Buy and hold single instrument**, with one required
+parameter of type **instrument**, chosen from acquired instruments rather than
+the full ETF catalogue. The instrument shortcut `#/goal/{isin}` first asks you
+to choose a customer and goal, then prefills that instrument in the new simulation;
+it never bypasses acquired membership or eligibility.
+
+All customers, goals and simulation records are private to the authenticated
+user. Saved reports preserve the strategy definition and calculated data and
+remain readable if the strategy is retired or its instrument data is removed.
 
 The planner keeps the inputs, monthly estimate and chart prominent. Payment dates
 and supporting statistics are under **Calculation details**; refresh is under
@@ -38,6 +54,8 @@ returns one definition:
     "id": "buy_and_hold_single_instrument",
     "name": "Buy and hold single instrument",
     "description": "Invest starting capital and each monthly contribution in one instrument and hold it.",
+    "supports_calibration": true,
+    "latest_calibration": null,
     "parameters": [{
       "key": "instrument",
       "type": "instrument",
@@ -67,8 +85,10 @@ Extension points:
   definitions are derived from the model's field metadata. Unknown strategy IDs, unknown/missing
   parameters and invalid types are rejected; no strategy silently falls back to
   buy-and-hold.
+- `backend/customer_planner.py`: owner-scoped customers, fixed goals, preview
+  calculation, explicit saving, paginated history and immutable report reads.
 - `backend/goal_planner.py`: common request validation, authenticated catalogue
-  and dispatch. There is no instrument field in the goal contract itself.
+  and standalone simulation dispatch. There is no instrument field in the goal contract itself.
 - `backend/goal_simulation.py`: the existing buy-and-hold Monte Carlo solver and
   common goal inputs. Its linear contribution formula is **not** a universal
   strategy engine. A future strategy with different trading/cash-flow behavior
@@ -84,8 +104,19 @@ Extension points:
   instrument. Changing strategy, any parameter/input, refreshing statistics or
   navigating away aborts/discards obsolete simulations.
 
-No speculative additional strategies, parameter types, portfolio correlations,
-backtesting engine or strategy persistence are introduced here.
+No speculative additional strategies, parameter types, portfolio correlations
+or general-purpose backtesting engine are introduced here. Strategy selections
+and definition snapshots are stored with saved simulations, not as editable
+strategy definitions.
+The separate **Calibration** page records runs evaluating fixed-funded goal
+probabilities on historical data; see [walk-forward calibration](strategy-calibration.md).
+Each strategy registers an optional generated-scenario `calibrate` callback;
+the catalogue exposes `supports_calibration` and the current user's latest score
+summary for compatibility. **New run** selects a strategy and parameters; every
+successful calculation gets its own saved report. **Run again** copies a report's
+settings into a new form without overwriting it. Calibration uses automatic
+seeded scenarios only; the original goal-planner simulation contract remains
+unchanged.
 
 ## Derived statistics
 
@@ -279,6 +310,39 @@ This is an educational planning estimate, not a guaranteed investment plan.
 All endpoints require the existing authenticated session. POST uses the same
 Origin protections as other commands. None calls Marketstack or spends quota.
 
+### Customers, goals and saved simulations
+
+- `GET /customers`, `POST /customers` (`{name}`), `GET /customers/{customerId}`.
+- `GET /customers/{customerId}/goals`, `POST /customers/{customerId}/goals`
+  (`{name, goal_eur, goal_date}`), and `GET /customers/{customerId}/goals/{goalId}`.
+- Under `/customers/{customerId}/goals/{goalId}`:
+  - `POST /simulate` accepts `{strategy, starting_capital_eur, reliability}`.
+    Target/date are loaded from the saved goal, never overridden by the client.
+    Returns a temporary preview envelope with `id`, `customer_id`, `goal_id`,
+    `calculated_at`, `saved_at: null`, full `inputs`, `strategy_definition` and
+    `result` (the existing simulation payload).
+  - `POST /simulations/{simulationId}/save` takes no report body. It atomically
+    saves the unexpired server preview and returns its envelope with `saved_at`.
+    Repeated saves return the same record and timestamp, without recalculating.
+  - `GET /simulations` lists only saved compact summaries: ID, calculation/save
+    times, inputs, strategy name, monthly contribution and success probability.
+  - `GET /simulations/{simulationId}` loads the full saved envelope without
+    fetching current statistics, strategy definitions or provider data.
+
+All three lists accept `limit` (default 20, maximum 100) and `offset`, returning
+`{items, total, limit, offset}` in deterministic newest-first order (creation
+for customers/goals, calculation for simulations, with an ID tie breaker). Unknown or
+foreign customer/goal/simulation IDs are not accessible, including mismatched
+parents. Money uses decimal strings. Expired unsaved previews cannot be saved;
+MongoDB TTL cleanup eventually removes them. A saved record has no expiry.
+
+The workspace routes mirror this hierarchy:
+`#/goal/customers/{customerId}`, then `/goals/{goalId}`, `/new` for a new
+simulation and `/simulations/{simulationId}` for a saved report. No existing
+planner data migration is needed: the previous planner did not persist plans.
+
+### Statistics and standalone calculation compatibility
+
 - `GET /instruments/{isin}/statistics`: estimates, basis, history window/count,
   currency source, eligibility/reason and warnings. An empty history returns an
   ineligible result; an unknown catalogue instrument returns 404.
@@ -312,5 +376,8 @@ is necessary. There is no scheduled analytics or provider refresh.
 Tests: `cd backend && uv run pytest tests/test_goal_planner.py`; real-Mongo
 acquisition-to-planner checks are in `tests/test_goal_planner_integration.py` and
 use `TEST_MONGODB_URI` with a disposable database and synthetic provider responses.
-Frontend coverage is in `frontend/src/GoalPlanner.test.jsx` and
-`frontend/src/GoalProjectionChart.test.jsx`.
+Customer/goal persistence coverage is in `backend/tests/test_customer_planner.py`;
+`backend/tests/test_customer_planner_integration.py` checks real MongoDB atomic
+saves, expiry and durable reports using `TEST_MONGODB_URI`.
+Frontend coverage is in `frontend/src/CustomerPlanner.test.jsx`,
+`frontend/src/GoalPlanner.test.jsx` and `frontend/src/GoalProjectionChart.test.jsx`.

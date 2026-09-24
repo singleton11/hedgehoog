@@ -232,7 +232,28 @@ summary::marker { color: #839a8b; }
 .price-history > p { font-size: 0.78rem; }
 
 /* Saved-data goal planning. */
-.goal-planner { max-width: 1200px; }
+.goal-planner, .customer-planner { max-width: 1200px; }
+.planner-controls, .planner-create fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.planner-controls > .goal-strategy { padding: 1.5rem; margin-bottom: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius); background: white; box-shadow: var(--shadow); }
+.planner-controls input[readonly] { background: var(--surface, #f5f7f4); color: var(--muted); }
+.planner-create { margin-top: 1.5rem; }
+.planner-create h3 { margin: 0; }
+.planner-create fieldset > button { margin-top: 1rem; }
+.planner-breadcrumbs { margin-bottom: 1rem; font-size: 0.85rem; }
+.planner-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 1rem; padding: 0; list-style: none; }
+.planner-cards a { display: flex; flex-direction: column; gap: 0.6rem; padding: 1.2rem; border: 1px solid var(--line); border-radius: var(--radius); font-weight: 650; overflow-wrap: anywhere; }
+.planner-cards a:hover { background: #f4f8f3; }
+.planner-cards span { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
+.planner-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin-top: 1rem; font-size: 0.8rem; }
+.planner-table-scroll { overflow-x: auto; }
+.planner-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.planner-table caption { text-align: left; margin-bottom: 1rem; color: var(--muted); }
+.planner-table th, .planner-table td { padding: 0.85rem; text-align: left; border-bottom: 1px solid var(--line); min-width: 8rem; }
+.planner-table thead { color: var(--muted); font-size: 0.75rem; }
+.simulation-parameter { display: block; color: var(--muted); font-size: 0.8rem; overflow-wrap: anywhere; }
+.simulation-save { margin: 1.5rem 0; padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius); background: #f4f8f3; }
+.simulation-save .muted, .planner-prefill { font-size: 0.8rem; }
+.planner-list { margin-top: 1.5rem; }
 .goal-strategy > label, .strategy-parameter > label { display: block; margin-bottom: 0.5rem; }
 .goal-strategy select { margin: 0; }
 .strategy-description, .parameter-hint { font-size: 0.8rem; }
@@ -273,6 +294,42 @@ summary::marker { color: #839a8b; }
 .projection-marker { fill: #2d8261; stroke: white; stroke-width: 2; }
 .goal-projection input[type='range'] { padding: 0; margin: 0.75rem 0; }
 .projection-readout { padding: 1rem; border: 1px solid #e4ece1; border-radius: 9px; background: #f5f8f2; font-size: 0.8rem; }
+
+/* Walk-forward strategy calibration. */
+.strategy-calibration { max-width: 1200px; }
+.strategy-calibration .goal-form h3 { margin: 0 0 0.5rem; }
+.calibration-seed { display: flex; flex-wrap: wrap; align-items: center; gap: 0.65rem; }
+.calibration-seed input { flex: 1 1 10rem; width: auto; }
+.calibration-seed button { flex: 0 0 auto; }
+.calibration-result > p, .calibration-chart > p { font-size: 0.83rem; }
+.strategy-parameters-compact { margin-top: 0; }
+.strategy-parameters-compact .strategy-parameter { padding-top: 0; border-top: 0; }
+.calibration-actions { display: flex; flex-wrap: wrap; gap: 0.65rem; }
+.calibration-history td:nth-child(2), .calibration-history td:nth-child(3) { min-width: 12rem; }
+.calibration-result .facts dd, .calibration-result > p { overflow-wrap: anywhere; }
+.calibration-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.calibration-form fieldset > .strategy-parameters { margin-top: 1rem; }
+.calibration-result .section-heading { margin-bottom: 0.75rem; }
+.calibration-result .section-heading h3 { margin: 0; }
+.strategy-calibration .calibration-form { padding: 1rem; }
+.calibration-form > .disclosure { margin-top: 0; }
+.calibration-form .goal-fields { margin-top: 1rem; }
+.calibration-metrics dd { font-size: 1.35rem; font-weight: 600; }
+.calibration-chart { margin-top: 1rem; }
+.calibration-chart svg { display: block; width: 100%; max-width: 560px; margin: 0.5rem auto; }
+.calibration-ideal { stroke: #9a753d; stroke-width: 2; }
+.calibration-curve { fill: none; stroke: var(--green); stroke-width: 2; }
+.calibration-point { fill: var(--green); stroke: white; stroke-width: 2; }
+.calibration-axis-label { fill: var(--ink); font-size: 12px; }
+.calibration-count { fill: var(--ink); font-size: 11px; font-weight: 600; }
+.calibration-table-scroll { max-width: 100%; overflow-x: auto; margin: 1rem 0; }
+.calibration-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+.calibration-table caption { padding: 0.65rem; text-align: left; font-weight: 600; }
+.calibration-table th, .calibration-table td { padding: 0.7rem; border-bottom: 1px solid var(--line); }
+.calibration-table thead { color: var(--muted); background: var(--canvas); }
+.calibration-table th { font-weight: 500; }
+.calibration-table th[scope='row'], .calibration-audit td { white-space: nowrap; }
+.calibration-chart .parameter-hint { margin-top: 0.65rem; }
 
 /* A welcoming sign-in, without changing the authentication flow. */
 main.login-page { display: grid; grid-template-columns: 1fr 1fr; width: min(calc(100% - 4rem), 1040px); min-height: 650px; margin: 2rem; padding: 0; overflow: hidden; border: 0; border-radius: 24px; box-shadow: 0 20px 80px #193a2b0c; }
@@ -322,7 +379,7 @@ main.login-page { display: grid; grid-template-columns: 1fr 1fr; width: min(calc
   .app-header .budget { order: 1; width: 100%; display: flex; align-items: center; gap: 1rem; }
   .budget-track { flex: 1; max-width: 160px; margin: 0 0 0 auto; }
   .account-controls { border: 0; padding: 0; }
-  .workspace-navigation { position: static; flex-direction: row; gap: 0.4rem; width: auto; padding: 0.65rem 1.5rem; border-bottom: 1px solid var(--line); background: white; }
+  .workspace-navigation { position: static; flex-direction: row; flex-wrap: wrap; gap: 0.4rem; width: auto; padding: 0.65rem 1.5rem; border-bottom: 1px solid var(--line); background: white; }
   .workspace-navigation > a { gap: 0.6rem; padding: 0.6rem 0.9rem; color: var(--muted); font-size: 0.8rem; }
   .workspace-navigation > a:hover { color: var(--green); background: #f4f7f4; }
   .workspace-navigation > a[aria-current='page'] { color: var(--green); background: #eaf2e9; border-color: #e0ebdf; }

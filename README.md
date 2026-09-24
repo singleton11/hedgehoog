@@ -130,11 +130,16 @@ The instrument page shows **Daily return**, **Daily volatility**, **Annual retur
 and **Annual volatility** as percentages. Returns remain log-based; volatility
 is the square root of variance, with annualization using 252 trading days.
 
-Open **Goal planner** to choose a strategy and configure its typed parameters.
+Open **Goal planner** for your customer list. Create a customer (name only),
+then add named goals with fixed EUR targets and dates. Each goal can hold
+multiple saved simulations. Choose **New simulation**, configure starting
+capital, reliability (50–99%) and a strategy, then calculate. Click **Save
+simulation** to keep that exact result; calculation alone does not add it to
+history. Saved reports are read-only and private to your account.
+
 The first strategy, **Buy and hold single instrument**, has one required
 **Instrument** parameter selected from your acquired universe (not the full ETF
-catalogue). Its saved history must be EUR-priced. Enter your goal in EUR,
-starting capital, goal date and target reliability (50–99%). A repeatable
+catalogue). Its saved history must be EUR-priced. A repeatable
 10,000-path Monte Carlo simulation estimates the fixed monthly contribution
 needed, plus model success probability and terminal-value percentiles. A projection
 graph shows average portfolio value as a line, shaded 5th–95th and 25th–75th
@@ -147,7 +152,14 @@ and transaction fees. Unknown or conflicting currencies must be resolved; a EUR
 label does not convert non-EUR history. See [model, data rules and API details](docs/goal-planner.md).
 Rebuild the worker with `make services-up` after updating backend dependencies.
 
-Authenticated endpoints: `GET /instruments/{isin}/statistics`,
+Customer persistence uses authenticated `/customers` and
+`/customers/{customerId}/goals` list/create APIs. A goal's `/simulate` endpoint
+previews a calculation; `/simulations/{simulationId}/save` explicitly retains
+it without recalculating. Goal `/simulations` lists saved summaries, and
+`/simulations/{simulationId}` reads a full report. Unsaved previews expire after
+24 hours. See [customer, goal and simulation API details](docs/goal-planner.md#customers-goals-and-saved-simulations).
+
+Standalone compatibility endpoints: `GET /instruments/{isin}/statistics`,
 `GET /goals/strategies` (strategy catalogue and typed parameter definitions), and
 `POST /goals/simulate` with `{strategy, goal_eur, starting_capital_eur,
 goal_date, reliability}`. A strategy selection is
@@ -155,8 +167,36 @@ goal_date, reliability}`. A strategy selection is
 The response echoes `strategy` and returns `parameter_statistics` keyed by
 parameter name. Reliability is a fraction, e.g. `0.90`; money outputs are decimal
 strings. These endpoints never call the provider or acquire missing instruments.
-Existing `#/goal/{isin}` links prefill this strategy, subject to acquired-universe
-membership. See [extension points and API details](docs/goal-planner.md#strategies-and-typed-parameters).
+Existing `#/goal/{isin}` links ask you to select a customer and goal before
+prefilling this instrument, subject to acquired-universe membership. See [extension points and API details](docs/goal-planner.md#strategies-and-typed-parameters).
+
+## Calibration
+
+Open **Calibration** (`#/calibration`) for your saved calculation history, with
+**Brier score** and **calibration error** (weighted average gap from ideal
+calibration, shown in percentage points). **New run** lets you choose a strategy,
+set its parameters and run the calculation. Each successful run keeps its own
+report, settings, instrument and seed. Open any report and choose **Run again**
+to prefill a new calculation without overwriting the original. Existing saved
+latest results are preserved in the history.
+
+Each run generates 1,000 varied financial goals (10–5,000 configurable). Targets
+use training-only simulations; independent draws estimate probabilities before
+historical outcomes are read. Details include the calibration curve, origin
+count and paginated audit. Provided or generated seeds support replay.
+
+Each monthly forecast fits only its trailing historical window; later prices
+are used only to score the outcome. This is walk-forward fitting on downloaded
+history, **not** strict point-in-time vintages: later adjustments, present-day
+instrument selection and overlapping holding periods remain limitations.
+Calculations use saved data only and do not spend provider quota.
+
+The authenticated `POST /goals/calibrate` accepts generated batches only, with
+`mode: "random"`, count, horizon range and optional date bounds/uint32 seed.
+`GET /goals/calibrations` lists paginated run summaries;
+`GET /goals/calibrations/{runId}` retrieves an immutable saved report. The strategy
+catalogue and latest-result endpoints remain available for compatibility. See
+[methodology, historical execution rules, API and limitations](docs/strategy-calibration.md).
 
 ## Authentication and authorization
 

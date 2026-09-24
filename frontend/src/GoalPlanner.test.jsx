@@ -11,6 +11,11 @@ vi.mock('./Auth.jsx', () => ({ useAuth: () => ({ request }) }));
 
 const A = 'IE00B4L5Y983';
 const B = 'IE00B5BMR087';
+const customer = { id: 'customer-1', name: 'Alice' };
+const goal = { id: 'goal-1', customer_id: customer.id, name: 'Retirement', goal_eur: '100000.00', goal_date: '2036-09-17' };
+const customerRoute = '#/goal/customers/customer-1';
+const goalRoute = `${customerRoute}/goals/goal-1`;
+const newRoute = (isin = A) => `${goalRoute}/new?instrument=${isin}`;
 const buyAndHold = {
   id: BUY_AND_HOLD_ID, name: 'Buy and hold single instrument',
   description: 'Invest starting capital and each monthly contribution in one instrument and hold it.',
@@ -70,6 +75,16 @@ function mockServer() {
     if (path.startsWith('/instruments/acquired?')) return server.acquired(new URL(path, 'http://localhost').searchParams, options);
     if (path === '/goals/strategies') return server.strategies(options);
     if (path === '/goals/simulate') return server.simulate(options.body, options);
+    if (path.startsWith('/customers?')) return { items: [customer], total: 1, limit: 20, offset: 0 };
+    if (path === '/customers/customer-1') return structuredClone(customer);
+    if (path.startsWith('/customers/customer-1/goals?')) return { items: [structuredClone(goal)], total: 1, limit: 20, offset: 0 };
+    if (path === '/customers/customer-1/goals/goal-1') return structuredClone(goal);
+    if (path.startsWith('/customers/customer-1/goals/goal-1/simulations?')) return { items: [], total: 0, limit: 20, offset: 0 };
+    if (path === '/customers/customer-1/goals/goal-1/simulate') {
+      const inputs = { goal_eur: goal.goal_eur, goal_date: goal.goal_date, ...options.body };
+      return { id: 'preview-1', customer_id: customer.id, goal_id: goal.id, calculated_at: '2026-09-17T12:00:00Z', saved_at: null,
+        inputs, strategy_definition: buyAndHold, result: await server.simulate(inputs, options) };
+    }
     const match = path.match(/^\/instruments\/([^/]+)(?:\/(statistics|quotes|price-currency))?(?:\?.*)?$/);
     if (match?.[2] === 'statistics') return server.stats(match[1], options);
     if (match?.[2] === 'quotes') return { items: [], total: 0, offset: 0, limit: 1000, as_of: '2026-09-17T12:00:00Z' };
@@ -89,7 +104,7 @@ const result = () => screen.queryByRole('region', { name: 'Goal simulation resul
 async function flush() { await act(async () => {}); }
 async function advance(ms) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
 async function openGoal(isin = A) { const view = render(<GoalPlanner isin={isin} />); await flush(); return view; }
-async function openWorkspace(hash = `#/goal/${A}`) {
+async function openWorkspace(hash = newRoute()) {
   window.history.replaceState(null, '', hash);
   const view = render(<InstrumentWorkspace />);
   await flush();
@@ -111,7 +126,7 @@ afterEach(() => { cleanup(); vi.useRealTimers(); window.history.replaceState(nul
 describe('planner routes and eligibility', () => {
   it('selects a strategy and its acquired instrument parameter without catalogue search, acquisition or automatic simulation', async () => {
     mockServer();
-    await openWorkspace('#/goal');
+    await openGoal(null);
     const strategy = screen.getByRole('combobox', { name: 'Strategy' });
     expect(strategy).toHaveValue(BUY_AND_HOLD_ID);
     expect(within(strategy).getAllByRole('option')).toHaveLength(1);
@@ -120,10 +135,9 @@ describe('planner routes and eligibility', () => {
     expect(screen.queryByRole('combobox', { name: 'Find an ETF' })).not.toBeInTheDocument();
     expect(screen.queryByText('Model assumptions and limitations')).not.toBeInTheDocument();
     expect(calculate()).toBeDisabled();
-    expect(screen.getByRole('link', { name: 'Goal planner' })).toHaveAttribute('aria-current', 'page');
     fireEvent.change(screen.getByRole('combobox', { name: 'Instrument' }), { target: { value: A } });
     await flush();
-    expect(window.location.hash).toBe('#/goal');
+    expect(window.location.hash).toBe('#/');
     expect(screen.getByRole('heading', { name: 'World & Europe ETF' })).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('EUR · 299 daily returns');
     expect(calculate()).toBeEnabled();
@@ -134,7 +148,7 @@ describe('planner routes and eligibility', () => {
   it('shows an empty acquired universe and links to explicit acquisition without searching the catalogue', async () => {
     const server = mockServer();
     server.acquiredItems = [];
-    await openWorkspace('#/goal');
+    await openGoal(null);
     expect(screen.getByText(/No acquired instruments yet/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Add an ETF' })).toHaveAttribute('href', '#/add');
     expect(within(screen.getByLabelText('Instrument')).getAllByRole('option')).toHaveLength(1);
@@ -164,7 +178,7 @@ describe('planner routes and eligibility', () => {
   it('loads all acquired pages so an instrument beyond the first 100 can be selected', async () => {
     const server = mockServer();
     server.acquiredItems = Array.from({ length: 101 }, (_, index) => ({ instrument_id: `IE${String(index).padStart(10, '0')}`, name: `Fund ${index}` }));
-    await openWorkspace('#/goal');
+    await openGoal(null);
     const instrument = screen.getByLabelText('Instrument');
     expect(within(instrument).getAllByRole('option')).toHaveLength(102);
     expect(request.mock.calls.map(([path]) => path)).toContain('/instruments/acquired?limit=100&offset=100');
@@ -231,6 +245,18 @@ describe('planner routes and eligibility', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Plan a goal with this ETF' }));
     await advance(5);
     expect(window.location.hash).toBe(`#/goal/${A}`);
+    expect(screen.getByRole('link', { name: 'Goal planner' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('button', { name: 'Calculate monthly contribution' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('link', { name: /Alice/ }));
+    await advance(5);
+    expect(window.location.hash).toBe(`${customerRoute}?instrument=${A}`);
+    fireEvent.click(screen.getByRole('link', { name: /Retirement/ }));
+    await advance(5);
+    expect(window.location.hash).toBe(`${goalRoute}?instrument=${A}`);
+    fireEvent.click(screen.getByRole('link', { name: 'New simulation' }));
+    await advance(5);
+    expect(window.location.hash).toBe(newRoute());
+    expect(screen.getByLabelText('Instrument')).toHaveValue(A);
     expect(calculate()).toBeEnabled();
     fireEvent.click(screen.getByRole('link', { name: 'ETFs' }));
     await advance(5);
@@ -628,7 +654,7 @@ describe('stale reads and results', () => {
     server.stats = (isin) => isin === A ? pending.promise : Promise.resolve(statistics(B, { eligible: false, price_currency: 'USD' }));
     await openWorkspace();
     const signal = reads()[0][1].signal;
-    await navigate(`#/goal/${B}`);
+    await navigate(newRoute(B));
     expect(signal.aborted).toBe(true);
     await act(async () => pending.resolve(statistics()));
     expect(screen.getByRole('heading', { name: 'Second ETF' })).toBeInTheDocument();
@@ -636,7 +662,7 @@ describe('stale reads and results', () => {
     expect(calculate()).toBeDisabled();
   });
 
-  it.each([`#/goal/${B}`, '#/goal', '#/'])('aborts pending simulations when navigating to %s and discards late results', async (hash) => {
+  it.each([newRoute(B), goalRoute, customerRoute, '#/goal', '#/'])('aborts pending simulations when navigating to %s and discards late results', async (hash) => {
     const server = mockServer();
     const pending = deferred();
     server.simulate = () => pending.promise;
@@ -647,7 +673,7 @@ describe('stale reads and results', () => {
     expect(options.signal.aborted).toBe(true);
     await act(async () => pending.resolve(simulation(options.body)));
     expect(result()).not.toBeInTheDocument();
-    await navigate(`#/goal/${A}`);
+    await navigate(newRoute());
     expect(result()).not.toBeInTheDocument();
     expect(posts()).toHaveLength(1);
   });
@@ -685,7 +711,7 @@ describe('detail statistics refresh', () => {
     expect(screen.getByText('301 / 300 / 299')).toBeInTheDocument();
     expect(screen.getByText('2025-07-01 – 2026-09-16')).toBeInTheDocument();
 
-    await navigate(`#/goal/${A}`);
+    await navigate(newRoute());
     fireEvent.click(screen.getByText('Saved return statistics'));
     expect(screen.getByText(gapWarning)).toBeVisible();
   });

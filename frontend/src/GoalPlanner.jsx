@@ -38,7 +38,9 @@ function validateInputs(inputs, now = new Date()) {
   return null;
 }
 
-function validResult(data, body, strategy) {
+export function validResult(data, body, strategy) {
+  if (!data || !body?.strategy || !body.strategy.parameters || typeof body.strategy.parameters !== 'object'
+    || !Array.isArray(strategy?.parameters) || strategy.parameters.some((parameter) => !parameter || typeof parameter.key !== 'string')) return false;
   const amounts = [data?.monthly_contribution_eur, data?.total_contributions_eur, data?.total_invested_eur,
     data?.terminal_percentiles_eur?.p05, data?.terminal_percentiles_eur?.p50, data?.terminal_percentiles_eur?.p95];
   const probabilities = [data?.target_probability, data?.success_probability, data?.zero_contribution_success_probability];
@@ -58,7 +60,18 @@ function validResult(data, body, strategy) {
     && Number.isInteger(data.contribution_count) && data.contribution_count > 0;
 }
 
-function SimulationResult({ result, strategy }) {
+export function validSimulationRecord(data, goal, { saved = false, id } = {}) {
+  return Boolean(goal) && typeof data?.id === 'string' && /^[a-zA-Z0-9_-]+$/.test(data.id) && (!id || data.id === id)
+    && data.customer_id === goal.customer_id && data.goal_id === goal.id
+    && typeof data.calculated_at === 'string' && Number.isFinite(Date.parse(data.calculated_at))
+    && (saved ? typeof data.saved_at === 'string' && Number.isFinite(Date.parse(data.saved_at)) : data.saved_at === null)
+    && data.inputs?.goal_eur === goal.goal_eur && data.inputs?.goal_date === goal.goal_date
+    && typeof data.inputs?.starting_capital_eur === 'string' && /^\d+\.\d{2}$/.test(data.inputs.starting_capital_eur)
+    && data.strategy_definition?.id === data.inputs?.strategy?.id && typeof data.strategy_definition?.name === 'string'
+    && validResult(data.result, data.inputs, data.strategy_definition);
+}
+
+export function SimulationResult({ result, strategy }) {
   return <section aria-label="Goal simulation result" className="goal-result">
     <h3>Estimated monthly contribution</h3>
     <div role="status">
@@ -95,7 +108,7 @@ function SimulationResult({ result, strategy }) {
   </section>;
 }
 
-export default function GoalPlanner({ isin }) {
+export default function GoalPlanner({ isin, goal, apiBase, reportHref }) {
   const { request } = useAuth();
   const { strategies, instruments, loading, error: loadError, retry } = useGoalStrategies();
   // Legacy links prefill the first strategy. Ordinary planner state is a
@@ -105,10 +118,13 @@ export default function GoalPlanner({ isin }) {
   const strategy = strategies.find((item) => item.id === strategyId) || (strategyId === null ? strategies[0] : null);
   const selection = strategy ? { id: strategy.id, parameters } : null;
   const [readiness, setReadiness] = useState({});
-  const [inputs, setInputs] = useState(() => ({ goal: '100000', capital: '10000', date: monthlyAnniversary(new Date(), 120), reliability: '90' }));
+  const [inputs, setInputs] = useState(() => ({ goal: goal?.goal_eur || '100000', capital: '10000', date: goal?.goal_date || monthlyAnniversary(new Date(), 120), reliability: '90' }));
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const saveLock = useRef(false);
   const sequence = useRef(0);
   const controller = useRef(null);
   const signature = JSON.stringify([selection, inputs]);
@@ -125,6 +141,9 @@ export default function GoalPlanner({ isin }) {
     controller.current?.abort();
     setResult(null);
     setBusy(false);
+    setSaving(false);
+    saveLock.current = false;
+    setSaveError(null);
     setError(null);
   }, []);
   const onReadiness = useCallback((key, value, ready) => {
@@ -132,6 +151,7 @@ export default function GoalPlanner({ isin }) {
   }, []);
 
   function change(field, value) {
+    if (goal && (field === 'goal' || field === 'date')) return;
     invalidate();
     setInputs((previous) => ({ ...previous, [field]: value }));
   }
@@ -150,7 +170,7 @@ export default function GoalPlanner({ isin }) {
 
   async function simulate(event) {
     event.preventDefault();
-    if (busy || !eligible) return;
+    if (busy || saveLock.current || !eligible) return;
     invalidate();
     const validationError = validateInputs(inputs);
     if (validationError) { setError(validationError); return; }
@@ -161,10 +181,13 @@ export default function GoalPlanner({ isin }) {
       goal_date: inputs.date, reliability: Number(inputs.reliability) / 100 };
     setBusy(true);
     try {
-      const data = await request('/goals/simulate', { method: 'POST', body, signal: abort.signal });
+      const payload = goal ? { strategy: body.strategy, starting_capital_eur: body.starting_capital_eur, reliability: body.reliability } : body;
+      const response = await request(goal ? `${apiBase}/simulate` : '/goals/simulate', { method: 'POST', body: payload, signal: abort.signal });
       if (abort.signal.aborted || sequence.current !== current) return;
-      if (!validResult(data, body, strategy)) throw new Error('Simulation returned an unexpected response.');
-      setResult({ signature, data });
+      const data = goal ? response?.result : response;
+      if (!validResult(data, body, strategy) || (goal && (!validSimulationRecord(response, goal)
+        || response.inputs.starting_capital_eur !== body.starting_capital_eur))) throw new Error('Simulation returned an unexpected response.');
+      setResult({ signature, data, preview: goal ? response : null });
     } catch (error) {
       if (abort.signal.aborted || sequence.current !== current) return;
       setError(error.message || 'Simulation failed. Please try again.');
@@ -173,11 +196,35 @@ export default function GoalPlanner({ isin }) {
     }
   }
 
+  async function saveSimulation() {
+    if (!result?.preview || result.saved || result.signature !== signature || saveLock.current) return;
+    saveLock.current = true;
+    setSaving(true);
+    setSaveError(null);
+    const current = ++sequence.current;
+    const abort = new AbortController();
+    controller.current = abort;
+    try {
+      const saved = await request(`${apiBase}/simulations/${encodeURIComponent(result.preview.id)}/save`, { method: 'POST', signal: abort.signal });
+      if (abort.signal.aborted || sequence.current !== current) return;
+      if (!validSimulationRecord(saved, goal, { saved: true, id: result.preview.id })) {
+        throw new Error('Unexpected save response. Check saved simulations or retry saving this result.');
+      }
+      window.location.hash = reportHref(saved.id);
+      setResult((previous) => ({ ...previous, saved: true }));
+    } catch (error) {
+      if (!abort.signal.aborted && sequence.current === current) setSaveError(error.message || 'Could not save simulation. Please retry.');
+    } finally {
+      if (!abort.signal.aborted && sequence.current === current) { saveLock.current = false; setSaving(false); }
+    }
+  }
+
   return <article aria-label="Goal planner" className="goal-planner">
     <div className="page-heading"><p className="eyebrow">Make room for your future</p>
-      <h2 className="instrument-name">Goal planner</h2>
-      <p className="muted">Choose a strategy. Turn a future goal into a monthly plan.</p>
+      <h2 className="instrument-name">{goal ? 'New simulation' : 'Goal planner'}</h2>
+      <p className="muted">{goal ? `${goal.name} · Calculate first, then save the simulations you want to keep.` : 'Choose a strategy. Turn a future goal into a monthly plan.'}</p>
     </div>
+    <fieldset className="planner-controls" disabled={saving || result?.saved}>
     <section aria-label="Strategy configuration" className="goal-strategy">
       {loading && <p role="status">Loading strategies and acquired instruments…</p>}
       {loadError && <>
@@ -199,11 +246,11 @@ export default function GoalPlanner({ isin }) {
     </section>
     <form aria-label="Goal planner inputs" className="goal-form" noValidate onSubmit={simulate}>
       <div className="goal-fields">
-        <div><label htmlFor="goal-eur">Target (EUR)</label><input id="goal-eur" inputMode="decimal" value={inputs.goal} required maxLength={100}
+        <div><label htmlFor="goal-eur">Target (EUR)</label><input id="goal-eur" inputMode="decimal" value={inputs.goal} required maxLength={100} readOnly={Boolean(goal)}
           onChange={(event) => change('goal', event.target.value)} /></div>
         <div><label htmlFor="starting-capital-eur">Starting capital (EUR)</label><input id="starting-capital-eur" inputMode="decimal" value={inputs.capital} required maxLength={100}
           onChange={(event) => change('capital', event.target.value)} /></div>
-        <div><label htmlFor="goal-date">Goal date (UTC)</label><input id="goal-date" type="date" value={inputs.date} required
+        <div><label htmlFor="goal-date">Goal date (UTC)</label><input id="goal-date" type="date" value={inputs.date} required readOnly={Boolean(goal)}
           min={monthlyAnniversary(now, 1)} max={monthlyAnniversary(now, 600)} onChange={(event) => change('date', event.target.value)} /></div>
         <div><label htmlFor="goal-reliability">Reliability target (%)</label><input id="goal-reliability" type="number" min="50" max="99" step="any" value={inputs.reliability} required
           onChange={(event) => change('reliability', event.target.value)} /></div>
@@ -212,6 +259,15 @@ export default function GoalPlanner({ isin }) {
       <button type="submit" disabled={!eligible || busy}>{busy ? 'Simulating…' : 'Calculate monthly contribution'}</button>
       {busy && <p role="status" className="sr-only">Simulating…</p>}
     </form>
-    {result?.signature === signature && <SimulationResult result={result.data} strategy={strategy} />}
+    </fieldset>
+    {result?.signature === signature && <>
+      {goal && <section className="simulation-save" aria-label="Save calculated simulation">
+        <p>{result.saved ? 'Simulation saved.' : 'Not saved yet. Save this exact result to this goal, or change the settings to try another simulation.'}</p>
+        {!result.saved && <button type="button" disabled={saving} onClick={saveSimulation}>{saving ? 'Saving…' : 'Save simulation'}</button>}
+        {saveError && <p role="alert">{saveError}</p>}
+        <p className="muted">Unsaved results expire after 24 hours.</p>
+      </section>}
+      <SimulationResult result={result.data} strategy={result.preview?.strategy_definition || strategy} />
+    </>}
   </article>;
 }
