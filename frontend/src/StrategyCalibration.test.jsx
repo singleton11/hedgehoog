@@ -174,12 +174,12 @@ describe('immutable calibration history and routes', () => {
     expect(posts()).toHaveLength(0);
   });
 
-  it('offers an explicit first run from empty history and preserves goal planner routing', async () => {
+  it('offers an explicit first run from empty history and preserves customer routing', async () => {
     mockServer(); await open({ route: '#/calibration' });
     expect(screen.getByText(/No calibration runs yet/)).toBeInTheDocument(); expect(screen.queryByRole('table')).not.toBeInTheDocument();
     await follow('New run'); expect(screen.getByRole('heading', { name: 'New calibration run' })).toBeInTheDocument();
     expect(screen.getByLabelText('Strategy')).toHaveValue(BUY_AND_HOLD_ID); expect(button()).toBeDisabled();
-    await navigate('#/goal'); expect(screen.getByRole('article', { name: 'Goal planner' })).toBeInTheDocument();
+    await navigate('#/goal'); expect(screen.getByRole('article', { name: 'Customers' })).toBeInTheDocument();
     expect(screen.getByLabelText('Customer name')).toBeInTheDocument();
     expect(screen.getByText(/No customers yet/)).toBeInTheDocument();
     await follow('Calibration'); expect(screen.getByText(/No calibration runs yet/)).toBeInTheDocument(); expect(posts()).toHaveLength(0);

@@ -130,7 +130,7 @@ The instrument page shows **Daily return**, **Daily volatility**, **Annual retur
 and **Annual volatility** as percentages. Returns remain log-based; volatility
 is the square root of variance, with annualization using 252 trading days.
 
-Open **Goal planner** for your customer list. Create a customer (name only),
+Open **Customers** for your customer list. Create a customer (name only),
 then add named goals with fixed EUR targets and dates. Each goal can hold
 multiple saved simulations. Choose **New simulation**, configure starting
 capital, reliability (50–99%) and a strategy, then calculate. Click **Save

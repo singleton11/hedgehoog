@@ -60,7 +60,7 @@ export default function InstrumentWorkspace() {
     <nav aria-label="Workspace navigation" className="workspace-navigation">
       <p className="nav-label">Workspace</p>
       <a href="#/" aria-current={!route.goal && !route.calibration && !route.invalid ? 'page' : undefined}><Icon name="grid" />ETFs</a>
-      <a href="#/goal" aria-current={route.goal ? 'page' : undefined}><Icon name="target" />Goal planner</a>
+      <a href="#/goal" aria-current={route.goal ? 'page' : undefined}><Icon name="users" />Customers</a>
       <a href="#/calibration" aria-current={route.calibration ? 'page' : undefined}><Icon name="chart" />Calibration</a>
       <div className="sidebar-note"><span className="sidebar-note-icon"><Icon name="chart" /></span>
         <strong>A little perspective.<br />A longer view.</strong>

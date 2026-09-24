@@ -118,7 +118,7 @@ function CreateForm({ request, customerId, onCreated }) {
 function Customers({ request, isin }) {
   const [revision, setRevision] = useState(0);
   return <>
-    <div className="page-heading"><h2 className="instrument-name">Goal planner</h2><p className="muted">Choose a customer, create a goal and save the simulations you want to keep.</p></div>
+    <div className="page-heading"><h2 className="instrument-name">Customers</h2><p className="muted">Choose a customer, create a goal and save the simulations you want to keep.</p></div>
     {isin && <p className="planner-prefill">Planning with {isin}. Choose a customer and goal first; this instrument will be preselected for the new simulation.</p>}
     <PagedList key={revision} request={request} path="/customers" label="Customers" validate={validCustomer} empty="No customers yet. Create your first customer below.">
       {(items) => <ul className="planner-cards">{items.map((customer) => <li key={customer.id}>
@@ -224,7 +224,7 @@ export default function CustomerPlanner(props) {
   if (identity.request !== request) setIdentity({ request, version: identity.version + 1 });
   // Reset forms, loaded data and in-flight operations on every route/session change.
   const key = JSON.stringify([props, user?.id, status, identity.version]);
-  return <article key={key} className="customer-planner" aria-label="Goal planner">
+  return <article key={key} className="customer-planner" aria-label="Customers">
     {props.customerId && <nav className="planner-breadcrumbs" aria-label="Planner navigation"><a href={`#/goal${prefill(props.isin)}`}>← Customers</a></nav>}
     {props.customerId ? <CustomerPage request={request} {...props} /> : <Customers request={request} isin={props.isin} />}
   </article>;

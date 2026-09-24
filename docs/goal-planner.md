@@ -1,6 +1,6 @@
-# Return statistics and EUR goal planner
+# Customers, goals and return statistics
 
-Open **Goal planner** in the signed-in workspace (`#/goal`) to see your
+Open **Customers** in the signed-in workspace (`#/goal`) to see your
 **customers**. Create a customer with a name, then create one or more named
 **goals**, each with a fixed EUR target and goal date. Open a goal to see its
 saved simulations and choose **New simulation**. Starting capital, target

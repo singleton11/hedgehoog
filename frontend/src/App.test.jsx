@@ -34,7 +34,7 @@ describe('logo navigation', () => {
     mockServer(admin);
     const user = userEvent.setup();
     render(<App />);
-    expect(await screen.findByRole('heading', { name: 'Goal planner' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Customers', level: 2 })).toBeInTheDocument();
     const logo = screen.getByRole('link', { name: 'Hedgehoog' });
     expect(logo).toHaveAttribute('href', '#/');
     const header = logo.closest('header');
@@ -47,7 +47,7 @@ describe('logo navigation', () => {
     expect(await screen.findByText('No acquired ETFs yet')).toBeInTheDocument();
     expect(window.location.hash).toBe('#/');
     expect(screen.getByRole('group', { name: 'Quota budget' })).toBe(budget);
-    expect(screen.queryByRole('heading', { name: 'Goal planner' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Customers', level: 2 })).not.toBeInTheDocument();
   });
 });
 

@@ -245,7 +245,7 @@ describe('planner routes and eligibility', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Plan a goal with this ETF' }));
     await advance(5);
     expect(window.location.hash).toBe(`#/goal/${A}`);
-    expect(screen.getByRole('link', { name: 'Goal planner' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Customers' })).toHaveAttribute('aria-current', 'page');
     expect(screen.queryByRole('button', { name: 'Calculate monthly contribution' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('link', { name: /Alice/ }));
     await advance(5);
@@ -261,7 +261,7 @@ describe('planner routes and eligibility', () => {
     fireEvent.click(screen.getByRole('link', { name: 'ETFs' }));
     await advance(5);
     expect(window.location.hash).toBe('#/');
-    expect(screen.queryByRole('article', { name: 'Goal planner' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('article', { name: 'Customers' })).not.toBeInTheDocument();
     await navigate('#/goal/%ZZ');
     expect(screen.getByRole('alert')).toHaveTextContent('ETF not found');
     expect(posts()).toHaveLength(0);

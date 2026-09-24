@@ -169,7 +169,7 @@ describe('customers, fixed goals and instrument shortcuts', () => {
   it('creates a name-only customer and multiple named goals without calculating or saving', async () => {
     const server = mockServer({ seed: false }); await open();
     expect(screen.getByText(/No customers yet/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Goal planner' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Customers', exact: true })).toHaveAttribute('aria-current', 'page');
     expect(within(screen.getByRole('form', { name: 'New customer' })).getAllByRole('textbox')).toHaveLength(1);
     expect(screen.queryByLabelText('Target (EUR)')).not.toBeInTheDocument();
     change('Customer name', '  Ada Lovelace  '); fireEvent.click(screen.getByRole('button', { name: 'Create customer' })); await flush();
@@ -207,7 +207,7 @@ describe('customers, fixed goals and instrument shortcuts', () => {
     expect(screen.queryByLabelText('Instrument')).not.toBeInTheDocument(); expectNoPlannerReads();
     expect(screen.getByRole('link', { name: /Alice/ })).toHaveAttribute('href', `${customerRoute()}?instrument=${A}`);
     await follow(/Alice/);
-    expect(screen.getByRole('link', { name: /Customers/ })).toHaveAttribute('href', `#/goal?instrument=${A}`);
+    expect(screen.getByRole('link', { name: '← Customers', exact: true })).toHaveAttribute('href', `#/goal?instrument=${A}`);
     expect(screen.getByRole('link', { name: /Retirement/ })).toHaveAttribute('href', `${goalRoute()}?instrument=${A}`);
     await follow(/Retirement/);
     expect(screen.getByRole('link', { name: /Alice.*Goals/ })).toHaveAttribute('href', `${customerRoute()}?instrument=${A}`);
