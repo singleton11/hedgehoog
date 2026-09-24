@@ -35,7 +35,7 @@ def test_real_mongo_preview_atomic_save_expiration_and_durable_snapshots(environ
     goal_date = add_months(now.date(), 120).isoformat()
     with TestClient(create_app(settings)) as client:
         login(client)
-        _, _, url = target(client, goal_date=goal_date)
+        _, goal, url = target(client, goal_date=goal_date)
         preview = calculate(client, url)
         expected = client.post("/goals/simulate", json={**selection(), "goal_eur": "100000", "goal_date": goal_date})
         assert expected.status_code == 200, expected.text
@@ -59,12 +59,22 @@ def test_real_mongo_preview_atomic_save_expiration_and_durable_snapshots(environ
         assert "expired" in response.json()["detail"]
         assert client.get(url + "/simulations").json()["total"] == 2
         assert db.planner_simulations.find_one({"_id": saved["id"]}) == original
+        changes = {"name": "Updated goal", "goal_eur": "250000.50", "goal_date": add_months(now.date(), 60).isoformat()}
+        response = client.patch(url, json=changes)
+        assert response.status_code == 200, response.text
+        updated_goal = {**goal, **changes}
+        assert response.json() == updated_goal
+        assert db.planner_simulations.find_one({"_id": saved["id"]}) == original
+        current = calculate(client, url)
+        assert current["inputs"]["goal_eur"] == changes["goal_eur"]
+        assert current["inputs"]["goal_date"] == changes["goal_date"]
     # Reopen with another MongoClient, no current source or registry definition.
     for name in ("quotes", "instruments", "instrument_statistics", "instrument_state"):
         db[name].delete_many({})
     monkeypatch.delitem(gs.STRATEGIES, selection()["strategy"]["id"])
     with TestClient(create_app(settings)) as reopened:
         login(reopened)
+        assert reopened.get(url).json() == updated_goal
         for report in (saved, saved_second):
             assert reopened.get(url + f"/simulations/{report['id']}").json() == report
             assert save(reopened, url, report) == report

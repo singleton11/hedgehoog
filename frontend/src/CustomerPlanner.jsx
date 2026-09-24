@@ -34,7 +34,8 @@ function useRead(request, path) {
   }, [request, path, attempt]);
   const current = state?.request === request && state.path === path && state.attempt === attempt;
   return { data: current ? state.data : null, error: current ? state.error : null, loading: !current,
-    retry: () => setAttempt((value) => value + 1) };
+    retry: () => setAttempt((value) => value + 1),
+    update: (data) => setState({ request, path, attempt, data }) };
 }
 function LoadState({ resource, valid = true, children }) {
   if (resource.loading) return <p role="status">Loading…</p>;
@@ -116,6 +117,66 @@ function CreateForm({ request, customerId, onCreated }) {
     {error && <p role="alert">{error}</p>}
   </form>;
 }
+function EditGoalForm({ request, goal, onSaved, onCancel }) {
+  const [name, setName] = useState(goal.name);
+  const [amount, setAmount] = useState(goal.goal_eur);
+  const [date, setDate] = useState(goal.goal_date);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const pending = useRef(null);
+  useEffect(() => () => pending.current?.abort(), []);
+  async function save(event) {
+    event.preventDefault();
+    if (pending.current) return;
+    setError(null);
+    if (!name.trim()) { setError('Enter a goal name.'); return; }
+    const goalAmount = normalizeEuros(amount);
+    if (!goalAmount || goalAmount === '0.00' || !date) { setError('Enter a positive target amount and a goal date.'); return; }
+    // Send only changed fields: renaming must not overwrite another edit or
+    // force an unchanged, older goal date into today's simulation horizon.
+    const body = {};
+    if (name.trim() !== goal.name) body.name = name.trim();
+    if (goalAmount !== goal.goal_eur) body.goal_eur = goalAmount;
+    if (date !== goal.goal_date) body.goal_date = date;
+    if (!Object.keys(body).length) { onCancel(); return; }
+    const abort = new AbortController();
+    pending.current = abort;
+    setBusy(true);
+    try {
+      const data = await request(goalPath(goal.customer_id, goal.id), { method: 'PATCH', signal: abort.signal, body });
+      if (abort.signal.aborted) return;
+      if (!validGoal(data, goal.customer_id) || data.id !== goal.id
+        || Object.entries(body).some(([key, value]) => data[key] !== value)) {
+        throw new Error('Unexpected update response. Reload the goal to check whether your changes were saved.');
+      }
+      onSaved(data);
+    } catch (error) {
+      if (!abort.signal.aborted) setError(error.message || 'Could not update goal. Please retry.');
+    } finally {
+      if (!abort.signal.aborted) { pending.current = null; setBusy(false); }
+    }
+  }
+  return <form className="goal-form planner-create" aria-label="Edit goal" onSubmit={save}>
+    <h3>Edit goal</h3>
+    <p className="muted">Changes apply to new simulations. Saved simulations keep their original target and date.</p>
+    <fieldset disabled={busy}>
+      <div className="goal-fields">
+        <div><label htmlFor="edit-goal-name">Goal name</label><input id="edit-goal-name" value={name} maxLength={200} required
+          onChange={(event) => setName(event.target.value)} autoComplete="off" autoFocus /></div>
+        <div><label htmlFor="edit-goal-amount">Target (EUR)</label><input id="edit-goal-amount" inputMode="decimal" value={amount} required maxLength={100}
+          onChange={(event) => setAmount(event.target.value)} /></div>
+        <div><label htmlFor="edit-goal-date">Goal date (UTC)</label><input id="edit-goal-date" type="date" required value={date}
+          min={date === goal.goal_date ? undefined : monthlyAnniversary(new Date(), 1)} max={monthlyAnniversary(new Date(), 600)}
+          onChange={(event) => setDate(event.target.value)} /></div>
+      </div>
+      <div className="button-group">
+        <button type="submit">{busy ? 'Saving changes…' : 'Save changes'}</button>
+        <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
+      </div>
+    </fieldset>
+    {error && <p role="alert">{error}</p>}
+  </form>;
+}
 function Customers({ request, isin }) {
   const [revision, setRevision] = useState(0);
   return <>
@@ -133,7 +194,7 @@ function CustomerGoals({ request, customer, isin }) {
   const [revision, setRevision] = useState(0);
   return <>
     <CustomerTabs customer={customer} active="goals" isin={isin} />
-    <p className="muted">Each goal has a fixed target and date. Explore different ways to fund it with separate simulations.</p>
+    <p className="muted">Each goal has a target and date you can edit. Explore different ways to fund it with separate simulations.</p>
     <PagedList key={revision} request={request} path={`${customerPath(customer.id)}/goals`} label="Goals" validate={(item) => validGoal(item, customer.id)} empty="No goals yet. Create a goal below.">
       {(items) => <ul className="planner-cards">{items.map((goal) => <li key={goal.id}>
         <a href={`${goalRoute(customer.id, goal.id)}${prefill(isin)}`}>{goal.name}<span>{formatEuros(goal.goal_eur)} · {goal.goal_date}</span></a>
@@ -148,24 +209,34 @@ function Time({ value }) {
 function Parameters({ strategy }) {
   return Object.entries(strategy.parameters).map(([key, value]) => <span key={key} className="simulation-parameter">{key.replaceAll('_', ' ')}: {String(value)}</span>);
 }
-function SimulationHistory({ request, goal, isin }) {
+function SimulationHistory({ request, goal, isin, onUpdated }) {
+  const [editing, setEditing] = useState(false);
+  const [updated, setUpdated] = useState(false);
   const route = goalRoute(goal.customer_id, goal.id);
   const validSummary = (item) => id(item?.id) && text(item.strategy_name) && money(item.monthly_contribution_eur)
     && Number.isFinite(Date.parse(item.saved_at)) && Number.isFinite(Date.parse(item.calculated_at))
+    && money(item.inputs?.goal_eur) && /^\d{4}-\d{2}-\d{2}$/.test(item.inputs?.goal_date)
     && money(item.inputs?.starting_capital_eur) && typeof item.inputs?.reliability === 'number'
     && typeof item.inputs?.strategy?.parameters === 'object' && item.inputs.strategy.parameters !== null
     && typeof item.success_probability === 'number' && item.success_probability >= 0 && item.success_probability <= 1;
   return <>
     <div className="section-heading page-heading"><div><h2 className="instrument-name">{goal.name}</h2>
       <p className="muted">{formatEuros(goal.goal_eur)} by {goal.goal_date}</p></div>
-      <a className="button-link" href={`${route}/new${prefill(isin)}`}>New simulation</a></div>
+      <div className="button-group">
+        <button type="button" className="secondary" disabled={editing} onClick={() => { setEditing(true); setUpdated(false); }}>Edit goal</button>
+        <a className="button-link" href={`${route}/new${prefill(isin)}`}>New simulation</a>
+      </div></div>
+    {editing && <EditGoalForm request={request} goal={goal} onCancel={() => setEditing(false)}
+      onSaved={(data) => { onUpdated(data); setEditing(false); setUpdated(true); }} />}
+    {updated && <p role="status">Goal updated.</p>}
     <PagedList request={request} path={`${goalPath(goal.customer_id, goal.id)}/simulations`} label="Saved simulations" validate={validSummary}
       empty="No saved simulations yet. Calculate a simulation, then choose Save simulation to keep it.">
       {(items) => <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Simulation comparison">
         <table className="planner-table"><caption>Saved simulations for {goal.name}</caption>
-          <thead><tr>{['Saved', 'Strategy / parameters', 'Starting capital', 'Reliability target', 'Monthly contribution', 'Estimated success'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+          <thead><tr>{['Saved', 'Goal target / date', 'Strategy / parameters', 'Starting capital', 'Reliability target', 'Monthly contribution', 'Estimated success'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
           <tbody>{items.map((run) => <tr key={run.id}>
             <th scope="row"><a href={simulationRoute(goal.customer_id, goal.id, run.id)}><Time value={run.saved_at} /></a></th>
+            <td>{formatEuros(run.inputs.goal_eur)}<span className="simulation-parameter">{run.inputs.goal_date}</span></td>
             <td>{run.strategy_name}<Parameters strategy={run.inputs.strategy} /></td>
             <td>{formatEuros(run.inputs.starting_capital_eur)}</td><td>{percent(run.inputs.reliability)}</td>
             <td>{formatEuros(run.monthly_contribution_eur)}</td><td>{percent(run.success_probability)}</td>
@@ -205,7 +276,7 @@ function GoalPage({ request, customerId, goalId, newSimulation, simulationId, is
       {(newSimulation || simulationId) && <nav className="planner-breadcrumbs" aria-label="Goal navigation"><a href={`${goalRoute(customerId, goalId)}${prefill(isin)}`}>← {goal.name} · Saved simulations</a></nav>}
       {newSimulation ? <GoalPlanner isin={isin} goal={goal} apiBase={goalPath(customerId, goalId)} reportHref={(runId) => simulationRoute(customerId, goalId, runId)} />
         : simulationId ? <SavedSimulation request={request} goal={goal} simulationId={simulationId} />
-          : <SimulationHistory request={request} goal={goal} isin={isin} />}
+          : <SimulationHistory request={request} goal={goal} isin={isin} onUpdated={resource.update} />}
     </>}
   </LoadState>;
 }

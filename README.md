@@ -145,8 +145,10 @@ and **Annual volatility** as percentages. Returns remain log-based; volatility
 is the square root of variance, with annualization using 252 trading days.
 
 Open **Customers** for your customer list. Create a customer (name only),
-then add named goals with fixed EUR targets and dates. Each goal can hold
-multiple saved simulations. Choose **New simulation**, configure starting
+then add named goals with EUR targets and dates. Open a goal and choose **Edit
+goal** to change its name, target or date. Saved simulations retain their original
+settings and results. Each goal can hold multiple saved simulations.
+Choose **New simulation**, configure starting
 capital, reliability (50–99%) and a strategy, then calculate. Click **Save
 simulation** to keep that exact result; calculation alone does not add it to
 history. Saved reports are read-only and private to your account.
@@ -167,7 +169,9 @@ label does not convert non-EUR history. See [model, data rules and API details](
 Rebuild the worker with `make services-up` after updating backend dependencies.
 
 Customer persistence uses authenticated `/customers` and
-`/customers/{customerId}/goals` list/create APIs. A goal's `/simulate` endpoint
+`/customers/{customerId}/goals` list/create APIs, plus
+`PATCH /customers/{customerId}/goals/{goalId}` for goal edits.
+A goal's `/simulate` endpoint
 previews a calculation; `/simulations/{simulationId}/save` explicitly retains
 it without recalculating. Goal `/simulations` lists saved summaries, and
 `/simulations/{simulationId}` reads a full report. Unsaved previews expire after

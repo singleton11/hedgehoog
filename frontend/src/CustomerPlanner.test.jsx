@@ -92,6 +92,12 @@ function mockServer({ seed = true } = {}) {
     const value = { id: uid(nextGoal++), customer_id: cid, ...body };
     server.goals.set(value.id, structuredClone(value)); return value;
   };
+  server.updateGoal = async (cid, gid, body) => {
+    const current = await server.goal(cid, gid);
+    if (!current) throw new Error('Goal not found.');
+    const updated = { ...current, ...body };
+    server.goals.set(gid, structuredClone(updated)); return updated;
+  };
   server.customer = async (cid) => server.customers.get(cid);
   server.goal = async (cid, gid) => server.goals.get(gid)?.customer_id === cid ? server.goals.get(gid) : null;
   server.customerList = async (query) => page([...server.customers.values()], query);
@@ -127,7 +133,7 @@ function mockServer({ seed = true } = {}) {
       if (save && post) return server.save(cid, gid, sid, options);
       return sid ? server.report(cid, gid, sid, options) : server.history(cid, gid, url.searchParams, options);
     }
-    return server.goal(cid, gid, options);
+    return options.method === 'PATCH' ? server.updateGoal(cid, gid, options.body, options) : server.goal(cid, gid, options);
   }
   // JSON-like boundaries prevent rendered data or submitted bodies from aliasing persistent server objects.
   server.handle = async (path, options = {}) => structuredClone(await dispatch(path,
@@ -136,6 +142,7 @@ function mockServer({ seed = true } = {}) {
   return server;
 }
 const posts = () => request.mock.calls.filter(([, options]) => options?.method === 'POST');
+const patches = () => request.mock.calls.filter(([, options]) => options?.method === 'PATCH');
 const reads = (path) => request.mock.calls.filter(([url]) => url === path);
 const result = () => screen.queryByRole('region', { name: 'Goal simulation result' });
 const calculate = () => screen.getByRole('button', { name: 'Calculate monthly contribution' });
@@ -237,6 +244,142 @@ describe('customers, fixed goals and instrument shortcuts', () => {
     server.createCustomer = async (body) => { server.customers.set(customer.id, { ...customer, ...body }); return server.customers.get(customer.id); };
     fireEvent.click(screen.getByRole('button', { name: 'Create customer' })); await flush();
     expect(screen.getByRole('link', { name: /Alice/ })).toBeInTheDocument(); expect(posts()).toHaveLength(2);
+  });
+});
+
+describe('editing existing goals', () => {
+  async function editGoal() { fireEvent.click(screen.getByRole('button', { name: 'Edit goal' })); await flush(); }
+  async function saveChanges() { fireEvent.click(screen.getByRole('button', { name: 'Save changes' })); await flush(); }
+
+  it('prefills the goal, saves a trimmed name-only change, and persists it across navigation and reload', async () => {
+    const server = mockServer(); const view = await open(goalRoute()); await editGoal();
+    expect(screen.getByLabelText('Goal name')).toHaveValue(goal.name);
+    expect(screen.getByLabelText('Goal name')).toHaveFocus();
+    expect(screen.getByLabelText('Target (EUR)')).toHaveValue(goal.goal_eur);
+    expect(screen.getByLabelText('Goal date (UTC)')).toHaveValue(goal.goal_date);
+    change('Goal name', '  Our retirement  ');
+    expect(patches()).toHaveLength(0);
+    await saveChanges();
+    expect(patches()).toEqual([[goalPath(), expect.objectContaining({ method: 'PATCH', body: { name: 'Our retirement' }, signal: expect.any(AbortSignal) })]]);
+    expect(server.goals.get(goal.id)).toEqual({ ...goal, name: 'Our retirement' });
+    expect(screen.getByRole('heading', { name: 'Our retirement' })).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Goal updated.');
+    expect(screen.queryByRole('form', { name: 'Edit goal' })).not.toBeInTheDocument();
+    expectNoPlannerReads(); expect(posts()).toHaveLength(0);
+    await follow(/Alice.*Goals/);
+    expect(screen.getByRole('link', { name: /Our retirement/ })).toHaveAttribute('href', goalRoute());
+    view.unmount(); await open(goalRoute());
+    expect(screen.getByRole('heading', { name: 'Our retirement' })).toBeInTheDocument();
+  });
+
+  it('cancels edits locally and does not send a no-op update', async () => {
+    const server = mockServer(); await open(goalRoute()); await editGoal();
+    change('Goal name', 'Discard this'); change('Target (EUR)', '250000'); change('Goal date (UTC)', '2031-09-24');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' })); await flush();
+    expect(screen.getByRole('heading', { name: goal.name })).toBeInTheDocument();
+    expect(server.goals.get(goal.id)).toEqual(goal); expect(patches()).toHaveLength(0);
+    await editGoal(); expect(screen.getByLabelText('Goal name')).toHaveValue(goal.name);
+    await saveChanges(); expect(patches()).toHaveLength(0);
+    expect(screen.queryByRole('form', { name: 'Edit goal' })).not.toBeInTheDocument();
+  });
+
+  it('updates all goal fields for new simulations while displaying original targets in saved history and reports', async () => {
+    const server = mockServer(); const original = server.seedRun(); await open(goalRoute()); await editGoal();
+    change('Goal name', 'Home deposit'); change('Target (EUR)', '0250000.5'); change('Goal date (UTC)', '2031-09-24');
+    await saveChanges();
+    const changes = { name: 'Home deposit', goal_eur: '250000.50', goal_date: '2031-09-24' };
+    expect(patches()[0][1].body).toEqual(changes);
+    expect(server.goals.get(goal.id)).toEqual({ ...goal, ...changes });
+    const table = screen.getByRole('table', { name: 'Saved simulations for Home deposit' });
+    expect(within(table).getByRole('columnheader', { name: 'Goal target / date' })).toBeInTheDocument();
+    expect(within(table).getByText('€100,000.00')).toBeInTheDocument();
+    expect(within(table).getByText(goal.goal_date)).toBeInTheDocument();
+    expectNoPlannerReads(); expect(posts()).toHaveLength(0);
+    fireEvent.click(within(table).getByRole('link')); await advance();
+    expect(result()).toBeInTheDocument(); expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByText(/Read-only result for Home deposit/)).toBeInTheDocument();
+    expect(screen.getByText('Target', { selector: 'dt' }).nextElementSibling).toHaveTextContent('€100,000.00');
+    expect(screen.getByText('Goal date', { selector: 'dt' }).nextElementSibling).toHaveTextContent(goal.goal_date);
+    expect(server.saved.get(original.id)).toEqual(original);
+    await follow('New simulation');
+    expect(screen.getByLabelText('Target (EUR)')).toHaveValue(changes.goal_eur);
+    expect(screen.getByLabelText('Goal date (UTC)')).toHaveValue(changes.goal_date);
+    change('Instrument', A); await flush(); await submit();
+    expect(result()).toBeInTheDocument();
+    const preview = [...server.previews.values()].at(-1);
+    expect(preview.inputs.goal_eur).toBe(changes.goal_eur); expect(preview.inputs.goal_date).toBe(changes.goal_date);
+    expect(server.saved.get(original.id)).toEqual(original);
+  });
+
+  it('allows renaming an expired goal without requiring a new date', async () => {
+    const server = mockServer(); server.goals.get(goal.id).goal_date = '2025-01-01';
+    await open(goalRoute()); await editGoal(); change('Goal name', 'Completed goal');
+    expect(screen.getByRole('form', { name: 'Edit goal' }).checkValidity()).toBe(true);
+    await saveChanges();
+    expect(patches()[0][1].body).toEqual({ name: 'Completed goal' });
+    expect(server.goals.get(goal.id).goal_date).toBe('2025-01-01');
+  });
+
+  it.each([['Goal name', '   '], ['Target (EUR)', '0'], ['Target (EUR)', '1.001'], ['Target (EUR)', '-1']])('validates %s before updating', async (label, value) => {
+    mockServer(); await open(goalRoute()); await editGoal(); change(label, value); await saveChanges();
+    expect(screen.getByRole('alert')).toHaveTextContent(label === 'Goal name' ? 'Enter a goal name' : 'positive target amount');
+    expect(patches()).toHaveLength(0);
+  });
+
+  it.each(['offline', 'lost reply', 'wrong ID', 'wrong customer', 'malformed', 'unapplied change'])('keeps edits and explicitly retries after %s', async (failure) => {
+    const server = mockServer(), update = server.updateGoal;
+    server.updateGoal = async (cid, gid, body) => {
+      if (failure === 'offline') throw new Error('Could not update goal.');
+      const value = await update(cid, gid, body);
+      if (failure === 'lost reply') throw new Error('Reply lost.');
+      if (failure === 'wrong ID') return { ...value, id: uid(999) };
+      if (failure === 'wrong customer') return { ...value, customer_id: uid(999) };
+      if (failure === 'unapplied change') return goal;
+      return { id: gid };
+    };
+    await open(goalRoute()); await editGoal(); change('Goal name', 'New name'); await saveChanges();
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(screen.getByLabelText('Goal name')).toHaveValue('New name');
+    expect(screen.getByRole('heading', { name: goal.name })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled();
+    await advance(10000); expect(patches()).toHaveLength(1);
+    server.updateGoal = update; await saveChanges();
+    expect(screen.getByRole('heading', { name: 'New name' })).toBeInTheDocument();
+    expect(patches()).toHaveLength(2); expect(server.goals.size).toBe(1);
+  });
+
+  it('locks controls and prevents duplicate updates while saving', async () => {
+    const server = mockServer(), pending = deferred(); server.updateGoal = () => pending.promise;
+    await open(goalRoute()); await editGoal(); change('Goal name', 'New name'); await saveChanges();
+    for (const label of ['Goal name', 'Target (EUR)', 'Goal date (UTC)']) expect(screen.getByLabelText(label)).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Saving changes…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    fireEvent.submit(screen.getByRole('form', { name: 'Edit goal' })); expect(patches()).toHaveLength(1);
+    await act(async () => pending.resolve({ ...goal, name: 'New name' }));
+    expect(screen.getByRole('heading', { name: 'New name' })).toBeInTheDocument();
+  });
+
+  it.each(['route', 'user', 'status', 'request', 'unmount'].flatMap((identity) => ['resolve', 'reject'].map((outcome) => [identity, outcome])))('ignores a late update after %s changes (%s)', async (identity, outcome) => {
+    const server = mockServer(), pending = deferred(), update = server.updateGoal; server.updateGoal = () => pending.promise;
+    const view = await open(goalRoute()); await editGoal(); change('Goal name', 'Private edit'); await saveChanges();
+    const options = patches()[0][1];
+    if (identity === 'route') await navigate(customerRoute());
+    else if (identity === 'unmount') view.unmount();
+    else {
+      if (identity === 'user') auth.user = { id: 'user-b' };
+      if (identity === 'status') auth.status = 'checking';
+      if (identity === 'request') auth.request = vi.fn(server.handle);
+      view.rerender(<InstrumentWorkspace />); await flush();
+    }
+    expect(options.signal.aborted).toBe(true);
+    const route = window.location.hash;
+    // The server may commit despite abort; the obsolete callback must not change the current UI.
+    await act(async () => outcome === 'resolve' ? pending.resolve(await update(customer.id, goal.id, options.body)) : pending.reject(new Error('Stale edit error')));
+    expect(screen.queryByRole('heading', { name: 'Private edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'Edit goal' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText('Goal updated.')).not.toBeInTheDocument();
+    expect(window.location.hash).toBe(route); expect(patches()).toHaveLength(1);
   });
 });
 

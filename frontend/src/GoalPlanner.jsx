@@ -65,7 +65,8 @@ export function validSimulationRecord(data, goal, { saved = false, id } = {}) {
     && data.customer_id === goal.customer_id && data.goal_id === goal.id
     && typeof data.calculated_at === 'string' && Number.isFinite(Date.parse(data.calculated_at))
     && (saved ? typeof data.saved_at === 'string' && Number.isFinite(Date.parse(data.saved_at)) : data.saved_at === null)
-    && data.inputs?.goal_eur === goal.goal_eur && data.inputs?.goal_date === goal.goal_date
+    // Saved reports describe their original goal settings, not today's editable goal.
+    && (saved || (data.inputs?.goal_eur === goal.goal_eur && data.inputs?.goal_date === goal.goal_date))
     && typeof data.inputs?.starting_capital_eur === 'string' && /^\d+\.\d{2}$/.test(data.inputs.starting_capital_eur)
     && data.strategy_definition?.id === data.inputs?.strategy?.id && typeof data.strategy_definition?.name === 'string'
     && validResult(data.result, data.inputs, data.strategy_definition);
@@ -207,7 +208,8 @@ export default function GoalPlanner({ isin, goal, apiBase, reportHref }) {
     try {
       const saved = await request(`${apiBase}/simulations/${encodeURIComponent(result.preview.id)}/save`, { method: 'POST', signal: abort.signal });
       if (abort.signal.aborted || sequence.current !== current) return;
-      if (!validSimulationRecord(saved, goal, { saved: true, id: result.preview.id })) {
+      if (!validSimulationRecord(saved, goal, { saved: true, id: result.preview.id })
+        || saved.inputs.goal_eur !== result.preview.inputs.goal_eur || saved.inputs.goal_date !== result.preview.inputs.goal_date) {
         throw new Error('Unexpected save response. Check saved simulations or retry saving this result.');
       }
       window.location.hash = reportHref(saved.id);

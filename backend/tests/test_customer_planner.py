@@ -92,11 +92,74 @@ def test_creation_normalizes_and_reads_only_public_fields_with_startup_indexes(a
     publish.assert_not_called()
 
 
+def test_goal_update_normalizes_partial_changes_and_preserves_identity(planner, db):
+    client, customer, goal, url = planner
+    response = client.patch(url, json={"name": "  Our first home  "})
+    assert response.status_code == 200, response.text
+    renamed = {**goal, "name": "Our first home"}
+    assert response.json() == renamed
+    assert client.get(url).json() == renamed
+    response = client.patch(url, json={"goal_eur": "234.5", "goal_date": "2031-09-17"})
+    assert response.status_code == 200, response.text
+    updated = {**renamed, "goal_eur": "234.50", "goal_date": "2031-09-17"}
+    assert response.json() == updated
+    assert client.get(f"/customers/{customer['id']}/goals").json()["items"] == [updated]
+    assert db.planner_goals.count_documents({}) == 1
+    assert client.patch(url, json={"name": updated["name"]}).json() == updated
+
+
+@pytest.mark.parametrize("change", [
+    {}, {"name": None}, {"goal_eur": None}, {"goal_date": None},
+    {"customer_id": "forged"}, {"created_at": "forged"}, {"user_id": "forged"}, {"id": "forged"},
+    {"name": "Valid name", "goal_eur": "0"},
+])
+def test_goal_update_rejects_empty_null_or_forbidden_fields_without_partial_writes(planner, db, change):
+    client, _, goal, url = planner
+    before = db.planner_goals.find_one({"_id": goal["id"]})
+    assert client.patch(url, json=change).status_code == 422
+    assert db.planner_goals.find_one({"_id": goal["id"]}) == before
+
+
+def test_older_goal_can_be_renamed_without_changing_its_date(planner, clock):
+    client, _, goal, url = planner
+    clock[0] += timedelta(days=5000)
+    response = client.patch(url, json={"name": "Completed goal"})
+    assert response.status_code == 200
+    assert response.json() == {**goal, "name": "Completed goal"}
+    # Resubmitting an unchanged date is also harmless; new past dates are not.
+    assert client.patch(url, json={"goal_date": goal["goal_date"]}).status_code == 200
+    assert client.patch(url, json={"goal_date": "2030-01-01"}).status_code == 422
+
+
+def test_goal_changes_preserve_saved_and_unsaved_snapshots_and_new_calculations_use_new_settings(planner, db):
+    client, _, goal, url = planner
+    saved = save(client, url, calculate(client, url))
+    preview = calculate(client, url)
+    before = list(db.planner_simulations.find())
+    changes = {"name": "New target", "goal_eur": "250000.00", "goal_date": "2031-09-17"}
+    assert client.patch(url, json=changes).json() == {**goal, **changes}
+    assert list(db.planner_simulations.find()) == before
+    assert client.get(url + f"/simulations/{saved['id']}").json() == saved
+    assert save(client, url, preview) == {**preview, "saved_at": planner_api._timestamp(NOW)}
+    current = calculate(client, url)
+    for field in ("goal_eur", "goal_date"):
+        assert current["inputs"][field] == current["result"][field] == changes[field]
+        assert all(item["inputs"][field] == goal[field] for item in client.get(url + "/simulations").json()["items"])
+
+
+def test_failed_goal_update_leaves_the_original_unchanged(planner, db, monkeypatch):
+    client, _, goal, url = planner
+    monkeypatch.setattr(db.planner_goals, "find_one_and_update", Mock(side_effect=ConnectionFailure("offline")))
+    assert client.patch(url, json={"name": "Not saved"}).status_code == 503
+    assert client.get(url).json() == goal
+
+
 def test_every_endpoint_requires_authentication(api):
     client, _ = api
     base = f"/customers/{ObjectId()}"
     goal = base + f"/goals/{ObjectId()}"
     history = goal + "/simulations"
+    assert client.patch(goal, json={"name": "Changed"}).status_code == 401
     for url in ("/customers", base, base + "/goals", goal, history, history + f"/{ObjectId()}"):
         response = client.get(url)
         assert response.status_code == 401
@@ -110,6 +173,9 @@ def test_every_endpoint_requires_authentication(api):
 def test_mutations_keep_origin_protection(planner, db, headers):
     client, customer, _, url = planner
     preview = calculate(client, url)
+    original = client.get(url).json()
+    assert client.patch(url, json={"name": "Changed"}, headers=headers).status_code == 403
+    assert client.get(url).json() == original
     for endpoint, body in (("/customers", {"name": "Name"}), (f"/customers/{customer['id']}/goals", GOAL),
                            (url + "/simulate", selection()), (url + f"/simulations/{preview['id']}/save", {})):
         assert client.post(endpoint, json=body, headers=headers).status_code == 403
@@ -122,7 +188,9 @@ def test_mutations_keep_origin_protection(planner, db, headers):
 def test_names_are_strict_trimmed_nonempty_and_bounded(api, db, name):
     client, _ = api
     login(client)
-    customer, _, _ = target(client)
+    customer, goal, url = target(client)
+    assert client.patch(url, json={"name": name}).status_code == 422
+    assert client.get(url).json() == goal
     assert client.post("/customers", json={"name": name}).status_code == 422
     assert client.post(f"/customers/{customer['id']}/goals", json={**GOAL, "name": name}).status_code == 422
     assert db.planner_customers.count_documents({}) == db.planner_goals.count_documents({}) == 1
@@ -145,7 +213,9 @@ def test_creation_rejects_unknown_fields(api, db, extra):
 def test_goal_money_horizon_and_fixed_only_fields_are_validated(api, db, change):
     client, _ = api
     login(client)
-    customer, _, _ = target(client)
+    customer, goal, url = target(client)
+    assert client.patch(url, json=change).status_code == 422
+    assert client.get(url).json() == goal
     response = client.post(f"/customers/{customer['id']}/goals", json={**GOAL, **change})
     assert response.status_code == 422, response.text
     assert db.planner_goals.count_documents({}) == 1
@@ -301,6 +371,7 @@ def test_foreign_owner_and_mismatched_parent_ids_never_expose_or_save(planner, d
     # A goal from another customer cannot be addressed under the first one.
     for parent in (wrong_customer_url, url.rsplit("/", 1)[0] + "/" + sibling["id"]):
         assert client.get(parent).status_code == 404
+        assert client.patch(parent, json={"name": "Wrong parent"}).status_code == 404
         assert client.get(parent + "/simulations").status_code == 404
         assert client.post(parent + "/simulate", json=selection()).status_code == 404
     same_customer_goal = client.post(f"/customers/{customer['id']}/goals", json={**GOAL, "name": "Another goal"}).json()
@@ -321,6 +392,8 @@ def test_foreign_owner_and_mismatched_parent_ids_never_expose_or_save(planner, d
             assert other.get(endpoint, params={"user_id": str(db.users.find_one({"login": "admin"})["_id"])}).status_code == 404
         assert other.post(f"/customers/{customer['id']}/goals", json=GOAL).status_code == 404
         assert other.post(url + "/simulate", json=selection()).status_code == 404
+        assert other.patch(url, json={"name": "Foreign edit"}).status_code == 404
+        assert client.get(url).json() == goal
         for item in (saved, preview):
             assert other.post(url + f"/simulations/{item['id']}/save").status_code == 404
             assert other.get(other_url + f"/simulations/{item['id']}").status_code == 404
@@ -335,6 +408,8 @@ def test_unknown_ids_are_clear_404s(planner, unknown):
     client, customer, _, url = planner
     assert client.get(f"/customers/{unknown}").status_code == 404
     assert client.get(f"/customers/{customer['id']}/goals/{unknown}").status_code == 404
+    assert client.patch(f"/customers/{customer['id']}/goals/{unknown}", json={"name": "Unknown"}).status_code == 404
+    assert client.patch(f"/customers/{unknown}/goals/{url.rsplit('/', 1)[1]}", json={"name": "Unknown"}).status_code == 404
     assert client.post(f"/customers/{unknown}/goals", json=GOAL).status_code == 404
     assert client.get(url + f"/simulations/{unknown}").status_code == 404
     assert client.post(url + f"/simulations/{unknown}/save").status_code == 404

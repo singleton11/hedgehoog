@@ -1,11 +1,11 @@
-"""Owner-scoped customers, fixed goals and explicitly saved simulation snapshots."""
+"""Owner-scoped customers, editable goals and explicitly saved simulation snapshots."""
 
 from datetime import date, timedelta
 from typing import Annotated
 
 from bson import ObjectId
 from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from pymongo import ReturnDocument
 
 from auth import CurrentUser
@@ -38,6 +38,19 @@ class CustomerRequest(BaseModel):
 class CustomerGoalRequest(CustomerRequest):
     goal_eur: Money = Field(gt=0)
     goal_date: date
+
+
+class CustomerGoalUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Name | None = None
+    goal_eur: Money | None = Field(default=None, gt=0)
+    goal_date: date | None = None
+
+    @model_validator(mode="after")
+    def require_changes(self):
+        if not self.model_fields_set or any(getattr(self, field) is None for field in self.model_fields_set):
+            raise ValueError("Supply at least one goal field; fields cannot be null.")
+        return self
 
 
 class SimulationRequest(BaseModel):
@@ -151,6 +164,29 @@ def create_goal(customer_id: str, body: CustomerGoalRequest, request: Request, u
 @router.get("/{customer_id}/goals/{goal_id}")
 def goal(customer_id: str, goal_id: str, request: Request, user: CurrentUser):
     return _public(_goal(request.app.state.database, str(user["_id"]), customer_id, goal_id), GOAL_FIELDS)
+
+
+@router.patch("/{customer_id}/goals/{goal_id}")
+def update_goal(customer_id: str, goal_id: str, body: CustomerGoalUpdate, request: Request, user: CurrentUser):
+    db, owner = request.app.state.database, str(user["_id"])
+    target = _goal(db, owner, customer_id, goal_id)
+    changes = body.model_dump(exclude_unset=True)
+    if "goal_eur" in changes:
+        changes["goal_eur"] = money_string(body.goal_eur)
+    if "goal_date" in changes:
+        changes["goal_date"] = body.goal_date.isoformat()
+        # Renaming an older goal must not require moving its date. Only a
+        # changed date is validated against today's simulation horizon.
+        if changes["goal_date"] != target["goal_date"]:
+            contribution_dates(md.utcnow().date(), body.goal_date)
+    document = db.planner_goals.find_one_and_update(
+        {"_id": goal_id, "user_id": owner, "customer_id": customer_id},
+        {"$set": changes}, return_document=ReturnDocument.AFTER,
+    )
+    if document is None:
+        raise md.DataError(404, "Goal not found.")
+    # Simulation inputs/results and portfolio goal attachments are untouched.
+    return _public(document, GOAL_FIELDS)
 
 
 @router.post("/{customer_id}/goals/{goal_id}/simulate")

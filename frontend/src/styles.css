@@ -256,7 +256,7 @@ summary::marker { color: #839a8b; }
 .planner-controls input[readonly] { background: var(--surface, #f5f7f4); color: var(--muted); }
 .planner-create { margin-top: 1.5rem; }
 .planner-create h3 { margin: 0; }
-.planner-create fieldset > button { margin-top: 1rem; }
+.planner-create fieldset > button, .planner-create fieldset > .button-group { margin-top: 1rem; }
 .planner-breadcrumbs { margin-bottom: 1rem; font-size: 0.85rem; }
 .planner-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 1rem; padding: 0; list-style: none; }
 .planner-cards a { display: flex; flex-direction: column; gap: 0.6rem; padding: 1.2rem; border: 1px solid var(--line); border-radius: var(--radius); font-weight: 650; overflow-wrap: anywhere; }

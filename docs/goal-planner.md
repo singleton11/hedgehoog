@@ -2,10 +2,12 @@
 
 Open **Customers** in the signed-in workspace (`#/goal`) to see your
 **customers**. Create a customer with a name, then create one or more named
-**goals**, each with a fixed EUR target and goal date. Open a goal to see its
-saved simulations and choose **New simulation**. Starting capital, target
-reliability (50–99%), strategy and strategy parameters vary per simulation;
-the goal's target and date are read-only.
+**goals**, each with a EUR target and goal date. Open a goal and choose **Edit
+goal** to change its name, target or date, then **Save changes**. **Cancel**
+discards your edits. Open **New simulation** to calculate using the current goal
+settings. Starting capital, target reliability (50–99%), strategy and strategy
+parameters vary per simulation; the goal's target and date are read-only within
+the simulation form.
 
 **Calculate monthly contribution** previews the result and chart without adding
 a saved simulation. Click **Save simulation** to retain that exact calculation.
@@ -15,8 +17,11 @@ retrying the same save cannot create duplicates. Changing inputs or refreshing
 statistics discards the current preview; leaving the form discards local inputs.
 Unsaved previews are saveable for 24 hours and stored server-side so that saving
 uses a trusted result rather than a client-supplied report. They are excluded from
-history and cannot be opened as saved reports. Customer names and goal settings
-are creation-only in this version; editing and deletion are not offered.
+history and cannot be opened as saved reports. Editing a goal never changes an
+existing preview or saved simulation: each keeps its original target, date and
+result. History shows each simulation's target and date so older results remain
+identifiable after an edit. Renaming also works for goals whose dates have passed.
+Customer names are creation-only; deletion is not offered.
 
 The result is a **fixed monthly contribution**, not a lump sum. The only strategy
 currently offered is **Buy and hold single instrument**, with one required
@@ -85,7 +90,7 @@ Extension points:
   definitions are derived from the model's field metadata. Unknown strategy IDs, unknown/missing
   parameters and invalid types are rejected; no strategy silently falls back to
   buy-and-hold.
-- `backend/customer_planner.py`: owner-scoped customers, fixed goals, preview
+- `backend/customer_planner.py`: owner-scoped customers, editable goals, preview
   calculation, explicit saving, paginated history and immutable report reads.
 - `backend/goal_planner.py`: common request validation, authenticated catalogue
   and standalone simulation dispatch. There is no instrument field in the goal contract itself.
@@ -307,7 +312,7 @@ This is an educational planning estimate, not a guaranteed investment plan.
 
 ## API and operation
 
-All endpoints require the existing authenticated session. POST uses the same
+All endpoints require the existing authenticated session. POST and PATCH use the same
 Origin protections as other commands. None calls Marketstack or spends quota.
 
 ### Customers, goals and saved simulations
@@ -315,6 +320,13 @@ Origin protections as other commands. None calls Marketstack or spends quota.
 - `GET /customers`, `POST /customers` (`{name}`), `GET /customers/{customerId}`.
 - `GET /customers/{customerId}/goals`, `POST /customers/{customerId}/goals`
   (`{name, goal_eur, goal_date}`), and `GET /customers/{customerId}/goals/{goalId}`.
+- `PATCH /customers/{customerId}/goals/{goalId}` updates one or more of
+  `{name, goal_eur, goal_date}` and returns the updated goal. Only supplied fields
+  change; nulls, empty requests and unknown fields are rejected. Names are trimmed
+  and limited to 200 characters, targets use the same positive EUR validation as
+  creation, and changed dates must satisfy the current simulation horizon. An
+  unchanged older date does not prevent renaming. Identity, customer attachment,
+  creation time, linked portfolios and simulation snapshots are preserved.
 - Under `/customers/{customerId}/goals/{goalId}`:
   - `POST /simulate` accepts `{strategy, starting_capital_eur, reliability}`.
     Target/date are loaded from the saved goal, never overridden by the client.
