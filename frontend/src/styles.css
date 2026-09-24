@@ -132,8 +132,8 @@ button.sign-out { min-height: 34px; padding: 0.4rem 0.65rem; font-size: 0.74rem;
 .acquired-table thead th { padding-top: 0.65rem; padding-bottom: 0.65rem; font-weight: 500; }
 .acquired-table thead th[rowspan] { vertical-align: middle; }
 .acquired-table .statistic-group { text-align: center; font-size: 0.61rem; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; }
-.acquired-table .return-positive, .return-statistics .return-positive { color: #228065; }
-.acquired-table .return-negative, .return-statistics .return-negative { color: #b34452; }
+.acquired-table .return-positive, .return-statistics .return-positive, .portfolio-tracker .return-positive { color: #228065; }
+.acquired-table .return-negative, .return-statistics .return-negative, .portfolio-tracker .return-negative { color: #b34452; }
 .acquired-table th[scope='row'] { width: 26%; font-weight: 500; }
 .fund-identity { display: flex; align-items: center; gap: 0.8rem; }
 .fund-identity > div { min-width: 0; }
@@ -229,6 +229,21 @@ summary::marker { color: #839a8b; }
 .price-history .button-group button { min-height: 29px; padding: 0.25rem 0.7rem; border: 0; border-radius: 5px; background: transparent; font-size: 0.7rem; color: var(--muted); }
 .price-history .button-group button[aria-pressed='true'] { color: #326747; background: white; box-shadow: 0 1px 4px #142f2714; }
 .price-history > p { font-size: 0.78rem; }
+
+/* Portfolio tracking shares the customer planner's cards, forms and tables. */
+.portfolio-tracker .planner-breadcrumbs { display: flex; flex-wrap: wrap; gap: 0.7rem 1.25rem; }
+.portfolio-tracker .goal-fields select { margin: 0; }
+.portfolio-tracker .goal-fields .muted { margin-top: 0.5rem; font-size: 0.8rem; }
+.portfolio-tracker .portfolio-ledger-notice { margin-top: 1rem; font-size: 0.8rem; }
+.portfolio-tracker .facts dd { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.portfolio-table td { font-variant-numeric: tabular-nums; }
+.portfolio-table td:not(.portfolio-instrument) { white-space: nowrap; }
+.portfolio-table td .simulation-parameter { white-space: normal; }
+.portfolio-scroll-hint { color: var(--muted); font-size: 0.75rem; }
+.portfolio-forms { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 25rem), 1fr)); gap: 1.25rem; align-items: start; }
+.portfolio-table th:first-child { min-width: 12rem; }
+.portfolio-warning { display: block; margin-top: 0.4rem; color: #795518; font-size: 0.8rem; font-weight: 400; }
+.portfolio-warnings { padding: 1rem 1rem 1rem 2rem; border: 1px solid #e7d6ae; border-radius: var(--radius); background: #fffaf0; color: #795518; font-size: 0.85rem; }
 
 /* Saved-data goal planning. */
 .goal-planner, .customer-planner { max-width: 1200px; }

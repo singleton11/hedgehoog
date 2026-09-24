@@ -120,6 +120,20 @@ Authenticated endpoints (browser prefix `/api`):
 
 `as_of` requires an explicit timezone and filters **collected market-data observations**; the catalogue, manual price-currency setting and operational job/budget are still current. See [the design contract](docs/on-demand-market-data.md).
 
+## Portfolio tracking
+
+Open **Customers → a customer → Portfolios** to create multiple named EUR portfolios.
+Link a goal now or attach/change/detach it later. Add dated deposits, withdrawals,
+buys and sells manually; dates default to today (UTC). Only confirmed EUR-priced
+acquired listings are supported. Cash must be funded and positions cannot be short,
+including throughout a backdated transaction's full timeline.
+
+Holdings show quantity, fee-inclusive average cost, saved-price value and daily/total
+unrealized PnL; portfolio totals include cash, equity and realized PnL. Missing prices
+remain unavailable, and quote dates/staleness are explicit. Transactions use
+weighted-average cost and are append-only, with idempotent retries and atomic
+concurrency protection. See [portfolio accounting, limits and API](docs/portfolio-tracker.md).
+
 ## Return statistics and goal planning
 
 After EOD acquisition, Hedgehoog calculates each instrument's average daily log

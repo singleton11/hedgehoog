@@ -118,11 +118,11 @@ function CreateForm({ request, customerId, onCreated }) {
 function Customers({ request, isin }) {
   const [revision, setRevision] = useState(0);
   return <>
-    <div className="page-heading"><h2 className="instrument-name">Customers</h2><p className="muted">Choose a customer, create a goal and save the simulations you want to keep.</p></div>
+    <div className="page-heading"><h2 className="instrument-name">Customers</h2><p className="muted">Choose a customer to manage portfolios, goals and saved simulations.</p></div>
     {isin && <p className="planner-prefill">Planning with {isin}. Choose a customer and goal first; this instrument will be preselected for the new simulation.</p>}
     <PagedList key={revision} request={request} path="/customers" label="Customers" validate={validCustomer} empty="No customers yet. Create your first customer below.">
       {(items) => <ul className="planner-cards">{items.map((customer) => <li key={customer.id}>
-        <a href={`${customerRoute(customer.id)}${prefill(isin)}`}>{customer.name}<span>View goals →</span></a>
+        <a href={`${customerRoute(customer.id)}${prefill(isin)}`}>{customer.name}<span>View portfolios and goals →</span></a>
       </li>)}</ul>}
     </PagedList>
     <CreateForm request={request} onCreated={() => setRevision((value) => value + 1)} />
@@ -131,7 +131,8 @@ function Customers({ request, isin }) {
 function CustomerGoals({ request, customer, isin }) {
   const [revision, setRevision] = useState(0);
   return <>
-    <h2 className="instrument-name">{customer.name}</h2>
+    <div className="section-heading"><h2 className="instrument-name">{customer.name}</h2>
+      <a className="button-link" href={`${customerRoute(customer.id)}/portfolios`}>Portfolios</a></div>
     <p className="muted">Each goal has a fixed target and date. Explore different ways to fund it with separate simulations.</p>
     <PagedList key={revision} request={request} path={`${customerPath(customer.id)}/goals`} label="Goals" validate={(item) => validGoal(item, customer.id)} empty="No goals yet. Create a goal below.">
       {(items) => <ul className="planner-cards">{items.map((goal) => <li key={goal.id}>

@@ -25,6 +25,7 @@ from customer_planner import ensure_indexes as ensure_customer_planner_indexes, 
 from instrument_routes import router as instrument_router
 from goal_planner import router as goal_router
 from market_data import DataError
+from portfolio_tracker import ensure_indexes as ensure_portfolio_indexes, router as portfolio_router
 
 
 def create_app(settings: Settings | None = None, client_factory=MongoClient) -> FastAPI:
@@ -39,6 +40,7 @@ def create_app(settings: Settings | None = None, client_factory=MongoClient) -> 
             await run_in_threadpool(seed_admin, app.state.database, config)
             await run_in_threadpool(ensure_calibration_indexes, app.state.database)
             await run_in_threadpool(ensure_customer_planner_indexes, app.state.database)
+            await run_in_threadpool(ensure_portfolio_indexes, app.state.database)
             await run_in_threadpool(enqueue_etf_import, config)
             yield
         finally:
@@ -48,6 +50,7 @@ def create_app(settings: Settings | None = None, client_factory=MongoClient) -> 
     app.include_router(instrument_router)
     app.include_router(goal_router)
     app.include_router(customer_planner_router)
+    app.include_router(portfolio_router)
 
     @app.exception_handler(DataError)
     async def acquisition_error(request: Request, exc: DataError):
