@@ -121,9 +121,18 @@ def _summary(document):
 
 @router.get("")
 def customers(request: Request, user: CurrentUser, limit: Limit = 20, offset: Offset = 0):
-    return _page(request.app.state.database.planner_customers, {"user_id": str(user["_id"])},
+    # Portfolio routes use this module's ownership helpers; defer the reverse
+    # dependency until request time to reuse the same valuation rules.
+    from portfolio_tracker import customer_net_worth
+
+    db, owner = request.app.state.database, str(user["_id"])
+    page = _page(db.planner_customers, {"user_id": owner},
                  {field: 1 for field in CUSTOMER_FIELDS}, CREATED_ORDER,
                  lambda row: _public(row, CUSTOMER_FIELDS), limit, offset)
+    totals = customer_net_worth(db, owner, [item["id"] for item in page["items"]])
+    for item in page["items"]:
+        item["net_worth_eur"] = totals[item["id"]]
+    return page
 
 
 @router.post("", status_code=201)

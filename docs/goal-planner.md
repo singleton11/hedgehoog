@@ -1,7 +1,13 @@
 # Customers, goals and return statistics
 
 Open **Customers** in the signed-in workspace (`#/goal`) to see your
-**customers**. Create a customer with a name, then create one or more named
+**customers** in a table with their **Net worth (EUR)**. Net worth is the sum of
+cash and holdings across all of a customer's tracked portfolios, whether linked
+to a goal or not, using saved prices rather than live quotes. External assets and
+debts, goal targets and simulated capital are not included. Customers without
+portfolios show €0.00; if any open holding cannot be valued, the total shows
+**Unavailable**, never a partial sum. **Refresh customers** reloads these totals.
+Create a customer with a name, then create one or more named
 **goals**, each with a EUR target and goal date. Open a goal and choose **Edit
 goal** to change its name, target or date, then **Save changes**. **Cancel**
 discards your edits. Open **New simulation** to calculate using the current goal
@@ -318,6 +324,12 @@ Origin protections as other commands. None calls Marketstack or spends quota.
 ### Customers, goals and saved simulations
 
 - `GET /customers`, `POST /customers` (`{name}`), `GET /customers/{customerId}`.
+  Customer list items additionally include `net_worth_eur`, an exact two-decimal
+  EUR string or `null` when any tracked holding cannot be valued. Totals are
+  computed on read only for the current user's requested customer page, using
+  the same rounded equity and saved-price rules as portfolio details. No market
+  data acquisition or simulation is triggered. Creation/detail responses remain
+  name-only metadata; the derived total is not stored on the customer.
 - `GET /customers/{customerId}/goals`, `POST /customers/{customerId}/goals`
   (`{name, goal_eur, goal_date}`), and `GET /customers/{customerId}/goals/{goalId}`.
 - `PATCH /customers/{customerId}/goals/{goalId}` updates one or more of

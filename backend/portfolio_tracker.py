@@ -287,6 +287,31 @@ def valuation(db, document):
                 "positions": [event_public(item) for item in items], "warnings": warnings}
 
 
+def customer_net_worth(db, owner, customer_ids):
+    """Sum tracked portfolio equity for one customer page, never partial totals.
+
+    Use the same rounded EUR equity shown on each portfolio. Goals and simulated
+    capital are not assets. No portfolios means zero; any unpriced holding means
+    the customer's total is unavailable, not just the sum of known assets.
+    """
+    if not customer_ids:
+        return {}
+    with localcontext() as context:
+        context.prec = 80
+        totals = dict.fromkeys(customer_ids, ZERO)
+        documents = db.portfolios.find(
+            {"user_id": owner, "customer_id": {"$in": customer_ids}},
+            {field: 1 for field in (*META_FIELDS, "transactions")},
+        )
+        for document in documents:
+            customer_id = document["customer_id"]
+            if totals[customer_id] is None:
+                continue
+            equity = valuation(db, document)["equity_eur"]
+            totals[customer_id] = totals[customer_id] + Decimal(equity) if equity is not None else None
+        return {customer_id: euros(total) for customer_id, total in totals.items()}
+
+
 @router.get("/portfolio-instruments")
 def instruments(request: Request, user: CurrentUser, limit: Limit = 20, offset: Offset = 0):
     db, now = request.app.state.database, md.utcnow()

@@ -10,6 +10,7 @@ const id = (value) => typeof value === 'string' && /^[a-zA-Z0-9_-]+$/.test(value
 const text = (value) => typeof value === 'string' && value.trim().length > 0;
 const money = (value) => typeof value === 'string' && /^\d+\.\d{2}$/.test(value);
 const validCustomer = (value) => id(value?.id) && text(value.name);
+const validCustomerSummary = (value) => validCustomer(value) && (value.net_worth_eur === null || money(value.net_worth_eur));
 const validGoal = (value, customerId) => validCustomer(value) && value.customer_id === customerId && money(value.goal_eur)
   && typeof value.goal_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.goal_date);
 const customerPath = (customerId) => `/customers/${encodeURIComponent(customerId)}`;
@@ -182,10 +183,20 @@ function Customers({ request, isin }) {
   return <>
     <div className="page-heading"><h2 className="instrument-name">Customers</h2><p className="muted">Choose a customer to manage portfolios, goals and saved simulations.</p></div>
     {isin && <p className="planner-prefill">Planning with {isin}. Choose a customer and goal first; this instrument will be preselected for the new simulation.</p>}
-    <PagedList key={revision} request={request} path="/customers" label="Customers" validate={validCustomer} empty="No customers yet. Create your first customer below.">
-      {(items) => <ul className="planner-cards">{items.map((customer) => <li key={customer.id}>
-        <a href={`${customerRoute(customer.id)}${prefill(isin)}`}>{customer.name}<span>View portfolios and goals →</span></a>
-      </li>)}</ul>}
+    <PagedList key={revision} request={request} path="/customers" label="Customers" validate={validCustomerSummary} empty="No customers yet. Create your first customer below.">
+      {(items) => <>
+        <p className="muted" id="customer-net-worth-note">Net worth is cash plus holdings across tracked EUR portfolios, using saved prices—not live prices. External assets and debts are not included.</p>
+        <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Customers table">
+          <table className="planner-table customers-table" aria-describedby="customer-net-worth-note">
+            <caption>Customer net worth</caption>
+            <thead><tr><th scope="col">Customer</th><th scope="col">Net worth (EUR)</th></tr></thead>
+            <tbody>{items.map((customer) => <tr key={customer.id}>
+              <th scope="row"><a href={`${customerRoute(customer.id)}${prefill(isin)}`}>{customer.name}<span className="simulation-parameter">View portfolios and goals →</span></a></th>
+              <td>{formatEuros(customer.net_worth_eur)}{customer.net_worth_eur === null && <span className="simulation-parameter">Some holdings cannot be valued.</span>}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+      </>}
     </PagedList>
     <CreateForm request={request} onCreated={() => setRevision((value) => value + 1)} />
   </>;

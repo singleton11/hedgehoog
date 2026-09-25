@@ -75,7 +75,7 @@ function mockServer() {
     if (path.startsWith('/instruments/acquired?')) return server.acquired(new URL(path, 'http://localhost').searchParams, options);
     if (path === '/goals/strategies') return server.strategies(options);
     if (path === '/goals/simulate') return server.simulate(options.body, options);
-    if (path.startsWith('/customers?')) return { items: [customer], total: 1, limit: 20, offset: 0 };
+    if (path.startsWith('/customers?')) return { items: [{ ...customer, net_worth_eur: '0.00' }], total: 1, limit: 20, offset: 0 };
     if (path === '/customers/customer-1') return structuredClone(customer);
     if (path.startsWith('/customers/customer-1/goals?')) return { items: [structuredClone(goal)], total: 1, limit: 20, offset: 0 };
     if (path === '/customers/customer-1/goals/goal-1') return structuredClone(goal);

@@ -268,6 +268,11 @@ summary::marker { color: #839a8b; }
 .planner-table caption { text-align: left; margin-bottom: 1rem; color: var(--muted); }
 .planner-table th, .planner-table td { padding: 0.85rem; text-align: left; border-bottom: 1px solid var(--line); min-width: 8rem; }
 .planner-table thead { color: var(--muted); font-size: 0.75rem; }
+.customers-table { table-layout: fixed; }
+.customers-table th, .customers-table td { min-width: 0; overflow-wrap: anywhere; }
+.customers-table th:last-child, .customers-table td { text-align: right; font-variant-numeric: tabular-nums; }
+.customers-table tbody tr:hover { background: #f4f8f3; }
+.customers-table tbody a { display: block; }
 .simulation-parameter { display: block; color: var(--muted); font-size: 0.8rem; overflow-wrap: anywhere; }
 .simulation-save { margin: 1.5rem 0; padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius); background: #f4f8f3; }
 .simulation-save .muted, .planner-prefill { font-size: 0.8rem; }

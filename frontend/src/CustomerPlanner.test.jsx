@@ -100,7 +100,7 @@ function mockServer({ seed = true } = {}) {
   };
   server.customer = async (cid) => server.customers.get(cid);
   server.goal = async (cid, gid) => server.goals.get(gid)?.customer_id === cid ? server.goals.get(gid) : null;
-  server.customerList = async (query) => page([...server.customers.values()], query);
+  server.customerList = async (query) => page([...server.customers.values()].map((item) => ({ net_worth_eur: '0.00', ...item })), query);
   server.goalList = async (cid, query) => page([...server.goals.values()].filter((item) => item.customer_id === cid), query);
   server.history = async (cid, gid, query) => page([...server.saved.values()].filter((run) => run.customer_id === cid && run.goal_id === gid)
     .sort((a, b) => b.calculated_at.localeCompare(a.calculated_at) || b.id.localeCompare(a.id)).map(summary), query);
@@ -171,6 +171,64 @@ beforeEach(() => {
   window.history.replaceState(null, '', '#/');
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); window.history.replaceState(null, '', '#/'); });
+
+describe('customer net-worth table', () => {
+  it('shows exact EUR totals, zero and unavailable values with native customer links', async () => {
+    const server = mockServer();
+    server.customers.set(customer.id, { ...customer, net_worth_eur: '9007199254740993.01' });
+    server.customers.set(uid(2), { id: uid(2), name: 'No portfolios', net_worth_eur: '0.00' });
+    server.customers.set(uid(3), { id: uid(3), name: 'Missing prices', net_worth_eur: null });
+    await open();
+    const table = within(screen.getByRole('table', { name: 'Customer net worth' }));
+    expect(table.getByRole('columnheader', { name: 'Customer', exact: true })).toBeInTheDocument();
+    expect(table.getByRole('columnheader', { name: 'Net worth (EUR)' })).toBeInTheDocument();
+    expect(table.getAllByRole('row')).toHaveLength(4);
+    expect(table.getByRole('row', { name: /Alice/ })).toHaveTextContent('€9,007,199,254,740,993.01');
+    expect(table.getByRole('row', { name: /No portfolios/ })).toHaveTextContent('€0.00');
+    const unavailable = within(table.getByRole('row', { name: /Missing prices/ }));
+    expect(unavailable.getByText('Unavailable')).toBeInTheDocument();
+    expect(unavailable.queryByText('€0.00')).not.toBeInTheDocument();
+    expect(unavailable.getByText('Some holdings cannot be valued.')).toBeInTheDocument();
+    expect(table.getByRole('link', { name: /Alice/ })).toHaveAttribute('href', customerRoute());
+    expect(screen.getByText(/External assets and debts are not included/)).toBeInTheDocument();
+    expect(request.mock.calls.map(([path]) => path)).toEqual([pagePath('/customers')]);
+    expect(posts()).toHaveLength(0);
+  });
+
+  it.each([undefined, 123.45, 'NaN', '-1.00', '1.234', ''])('rejects malformed net worth %s and supports explicit retry', async (value) => {
+    const server = mockServer(); server.customers.set(customer.id, { ...customer, net_worth_eur: value });
+    await open();
+    expect(screen.getByRole('alert')).toHaveTextContent('unexpected response');
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    server.customers.set(customer.id, { ...customer, net_worth_eur: '123.45' });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' })); await flush();
+    expect(screen.getByRole('table')).toHaveTextContent('€123.45'); expect(posts()).toHaveLength(0);
+  });
+
+  it('hides old totals during refresh, reports read failures and loads updated totals on retry', async () => {
+    const server = mockServer(); await open();
+    const customerList = server.customerList, pending = deferred(); server.customerList = () => pending.promise;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh customers' })); await flush();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument(); expect(screen.getByRole('status')).toHaveTextContent('Loading');
+    await act(async () => pending.reject(new Error('Could not load customer valuations.')));
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load customer valuations');
+    server.customerList = customerList; server.customers.set(customer.id, { ...customer, net_worth_eur: '456.78' });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' })); await flush();
+    expect(screen.getByRole('table')).toHaveTextContent('€456.78'); expect(posts()).toHaveLength(0);
+  });
+
+  it.each(['user', 'request'])('aborts pending customer totals and ignores late private values after a %s change', async (identity) => {
+    const server = mockServer(), pending = deferred(); server.customerList = () => pending.promise;
+    const view = render(<CustomerPlanner />); await flush();
+    const signal = reads(pagePath('/customers'))[0][1].signal;
+    server.customerList = async () => ({ items: [{ id: uid(2), name: 'New session', net_worth_eur: '1.00' }], total: 1, limit: 20, offset: 0 });
+    if (identity === 'user') auth.user = { id: 'user-b' }; else auth.request = vi.fn(server.handle);
+    view.rerender(<CustomerPlanner />); await flush(); expect(signal.aborted).toBe(true);
+    await act(async () => pending.resolve({ items: [{ ...customer, net_worth_eur: '999.00' }], total: 1, limit: 20, offset: 0 }));
+    expect(screen.getByRole('table')).toHaveTextContent('New session');
+    expect(screen.queryByText('€999.00')).not.toBeInTheDocument(); expect(screen.queryByText('Alice')).not.toBeInTheDocument();
+  });
+});
 
 describe('customers, fixed goals and instrument shortcuts', () => {
   it('creates a name-only customer and multiple named goals without calculating or saving', async () => {

@@ -142,6 +142,98 @@ def test_named_multiple_portfolios_attach_detach_and_independent_balances(tracke
     assert set(client.get(f"/customers/{customer_id}/portfolios").json()["items"][0]) == set(first)
 
 
+def test_customer_net_worth_sums_cash_and_holdings_across_linked_and_unlinked_portfolios(tracker, db):
+    client, customer_id, _, url = tracker
+    target = goal(client, customer_id)
+    _, other_url = portfolio(client, customer_id, goal_id=target)
+    record(client, url, cash(amount="1000"))
+    record(client, url, trade(quantity="2", price="100", commission_eur="1.23"))
+    record(client, url, cash("withdrawal", amount="50", day="2026-09-16"))
+    record(client, other_url, cash(amount="250.45"))
+    before = list(db.portfolios.find())
+    response = client.get("/customers")
+    assert response.status_code == 200, response.text
+    assert response.headers["Cache-Control"] == "no-store"
+    summary = response.json()["items"][0]
+    # 1000 - 201.23 - 50 cash + 220 saved holdings + 250.45 other cash.
+    assert summary["net_worth_eur"] == "1219.22"
+    assert Decimal(summary["net_worth_eur"]) == sum(Decimal(detail(client, path)["equity_eur"]) for path in (url, other_url))
+    assert set(summary) == {"id", "name", "created_at", "net_worth_eur"}
+    assert list(db.portfolios.find()) == before
+    assert "net_worth_eur" not in db.planner_customers.find_one({"_id": customer_id})
+    # A refreshed list reflects saved market data without any provider request.
+    quote(db, "2026-09-17", "120")
+    assert client.get("/customers").json()["items"][0]["net_worth_eur"] == "1239.22"
+
+
+def test_customer_net_worth_is_exact_and_includes_more_than_one_portfolio_page(tracker, db):
+    client, customer_id, _, url = tracker
+    record(client, url, cash())
+    record(client, url, trade())
+    quote(db, "2026-09-17", "9007199254740993.01")
+    for _ in range(21):
+        _, other_url = portfolio(client, customer_id)
+        record(client, other_url, cash(amount="0.01"))
+    assert client.get("/customers").json()["items"][0]["net_worth_eur"] == "9007199254741893.22"
+
+
+@pytest.mark.parametrize("failure", ["missing", "invalid", "currency"])
+def test_customer_net_worth_is_unavailable_rather_than_partial_when_any_holding_is_unpriced(tracker, db, failure):
+    client, customer_id, _, url = tracker
+    record(client, url, cash())
+    record(client, url, trade())
+    _, other_url = portfolio(client, customer_id)
+    record(client, other_url, cash(amount="250"))
+    if failure == "missing":
+        db.quotes.delete_many({})
+    elif failure == "invalid":
+        quote(db, "2026-09-17", "not-a-price")
+    else:
+        quote(db, "2026-09-17", "110", currency="USD")
+    assert client.get("/customers").json()["items"][0]["net_worth_eur"] is None
+    # Once liquidated, there is no missing holding value to conceal the cash.
+    record(client, url, trade("sell", day="2026-09-17"))
+    assert client.get("/customers").json()["items"][0]["net_worth_eur"] == "1250.00"
+
+
+def test_customer_net_worth_distinguishes_empty_and_cash_only_customers(tracker):
+    client, customer_id, _, url = tracker
+    empty_id = customer(client, "No portfolios")
+    goal(client, empty_id)  # A goal target is not an asset.
+    summaries = {item["id"]: item["net_worth_eur"] for item in client.get("/customers").json()["items"]}
+    assert summaries == {customer_id: "0.00", empty_id: "0.00"}
+    record(client, url, cash(amount="0.10"))
+    record(client, url, cash(amount="0.20"))
+    summaries = {item["id"]: item["net_worth_eur"] for item in client.get("/customers").json()["items"]}
+    assert summaries == {customer_id: "0.30", empty_id: "0.00"}
+
+
+def test_customer_net_worth_reads_only_the_current_owners_customer_page(tracker, db, monkeypatch):
+    client, customer_id, first, url = tracker
+    record(client, url, cash(amount="12.34"))
+    other_customer = customer(client, "Off-page customer")
+    _, other_url = portfolio(client, other_customer)
+    record(client, other_url, cash(amount="999.99"))
+    foreign = db.portfolios.find_one({"_id": first["id"]})
+    foreign.update({"_id": str(ObjectId()), "user_id": "another-owner"})
+    db.portfolios.insert_one(foreign)
+    find = Mock(wraps=db.portfolios.find)
+    value = Mock(wraps=tracker_api.valuation)
+    monkeypatch.setattr(db.portfolios, "find", find)
+    monkeypatch.setattr(tracker_api, "valuation", value)
+    response = client.get("/customers?limit=1&offset=1")
+    assert response.status_code == 200, response.text
+    page = response.json()
+    assert (page["total"], page["limit"], page["offset"]) == (2, 1, 1)
+    assert [(item["id"], item["net_worth_eur"]) for item in page["items"]] == [(customer_id, "12.34")]
+    assert find.call_count == value.call_count == 1
+    owner = str(db.users.find_one({"login": "admin"})["_id"])
+    assert find.call_args.args[0] == {"user_id": owner, "customer_id": {"$in": [customer_id]}}
+    assert value.call_args.args[1]["_id"] == first["id"]
+    assert client.get("/customers?offset=100").json()["items"] == []
+    assert find.call_count == value.call_count == 1
+
+
 def test_owner_customer_and_goal_scoping_cannot_be_crossed(tracker, db):
     client, customer_id, first, url = tracker
     own_goal = goal(client, customer_id)
