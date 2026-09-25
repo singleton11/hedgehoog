@@ -131,8 +131,10 @@ including throughout a backdated transaction's full timeline.
 Holdings show quantity, fee-inclusive average cost, saved-price value and daily/total
 unrealized PnL; portfolio totals include cash, equity and realized PnL. Missing prices
 remain unavailable, and quote dates/staleness are explicit. Transactions use
-weighted-average cost and are append-only, with idempotent retries and atomic
-concurrency protection. See [portfolio accounting, limits and API](docs/portfolio-tracker.md).
+weighted-average cost, with idempotent retries and atomic concurrency protection.
+Use **Remove** in transaction history to correct an entry after confirmation;
+removal recalculates balances and is blocked if any remaining cash or holdings
+would become negative. See [portfolio accounting, limits and API](docs/portfolio-tracker.md).
 
 ## Return statistics and goal planning
 

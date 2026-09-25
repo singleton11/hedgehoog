@@ -275,7 +275,7 @@ function TransactionForm({ request, path, cash = false, instruments, positions, 
           <div><label htmlFor="trade-commission">Commission (EUR, optional)</label><input id="trade-commission" inputMode="decimal" maxLength={100} placeholder="0.00" value={commission} onChange={(event) => setCommission(event.target.value)} /></div>
         </>}
       </div>
-      <p className="muted portfolio-ledger-notice" id={`${prefix}-ledger-notice`}>Transactions are append-only: saved entries cannot be edited or deleted. Dividends, splits and other corporate actions are not processed.</p>
+      <p className="muted portfolio-ledger-notice" id={`${prefix}-ledger-notice`}>Saved entries cannot be edited, but can be removed from transaction history if the remaining cash and holdings stay non-negative. Dividends, splits and other corporate actions are not processed.</p>
       <button type="submit">{mutation.busy ? 'Saving…' : cash ? 'Save cash movement' : 'Save trade'}</button>
     </fieldset>
     {!cash && <><ReadStatus resource={instruments} label="instruments" />
@@ -284,23 +284,53 @@ function TransactionForm({ request, path, cash = false, instruments, positions, 
     <MutationStatus mutation={mutation} />
   </form>;
 }
-function Transactions({ request, path, revision }) {
+function Transactions({ request, path, revision, onRemoved }) {
   const [offset, setOffset] = useState(0);
+  const [selected, setSelected] = useState(null);
+  const confirmationHeading = useRef(null);
+  const historyHeading = useRef(null);
+  const removeButton = useRef(null);
+  const mutation = useMutation(request);
   const resource = useRead(request, `${path}?limit=${PAGE_SIZE}&offset=${offset}`, { revision });
   const valid = validPage(resource.data, offset, PAGE_SIZE, validTransaction);
+  const blocked = mutation.busy || resource.loading || Boolean(resource.error) || !valid;
+  useEffect(() => { if (selected) confirmationHeading.current?.focus(); }, [selected]);
+  useEffect(() => {
+    if (valid && !resource.loading && !resource.error && offset > 0 && offset >= resource.data.total) {
+      setOffset(Math.max(0, Math.ceil(resource.data.total / PAGE_SIZE) - 1) * PAGE_SIZE);
+    }
+  }, [valid, resource.loading, resource.error, resource.data?.total, offset]);
+  async function remove(event) {
+    event.preventDefault();
+    if (blocked || !selected) return;
+    await mutation.submit(`${path}/${encodeURIComponent(selected.id)}`, 'DELETE', undefined,
+      (data) => data?.id === selected.id && data.removed === true,
+      () => { setSelected(null); historyHeading.current?.focus(); onRemoved(); }, 'Transaction removed.');
+  }
   return <section className="planner-list" aria-label="Transaction history">
-    <div className="section-heading"><h3>Transaction history</h3><button type="button" className="secondary" onClick={resource.retry}>Refresh transactions</button></div>
+    <div className="section-heading"><h3 ref={historyHeading} tabIndex={-1}>Transaction history</h3><button type="button" className="secondary" disabled={mutation.busy} onClick={resource.retry}>Refresh transactions</button></div>
     <ReadStatus resource={resource} label="transactions" invalid={!valid} />
+    {selected && <form className="goal-form planner-create" aria-label="Remove transaction" onSubmit={remove}>
+      <h4 ref={confirmationHeading} tabIndex={-1}>Remove transaction?</h4>
+      <p>{transactionName(selected.type)} · {selected.date} · {selected.instrument
+        ? `${instrumentName(selected.instrument)} · ${selected.quantity} at ${formatEuros(selected.price_eur)}`
+        : formatEuros(selected.amount_eur)}</p>
+      <p>This removes the entry from history and recalculates balances, holdings and P&amp;L. It cannot be undone. Removal is blocked if any remaining transaction would leave negative cash or holdings.</p>
+      <div className="button-group"><button type="submit" disabled={blocked}>{mutation.busy ? 'Removing…' : 'Confirm removal'}</button>
+        <button type="button" className="secondary" disabled={mutation.busy} onClick={() => { setSelected(null); removeButton.current?.focus(); }}>Cancel</button></div>
+    </form>}
+    <MutationStatus mutation={mutation} />
     {valid && <>{resource.data.total === 0 ? <p className="empty-state">No transactions yet. Record a deposit to fund your first purchase.</p> : <>
       <p id="portfolio-transactions-scroll" className="portfolio-scroll-hint">Scroll horizontally to view all columns.</p>
       <div className="planner-table-scroll" role="region" tabIndex={0} aria-label="Transactions table" aria-describedby="portfolio-transactions-scroll"><table className="planner-table portfolio-table">
-        <caption>Transactions · newest date and sequence first</caption><thead><tr>{['Date (UTC)', 'Type', 'Instrument', 'Quantity', 'Execution price', 'Commission', 'Cash amount'].map((label) => <th key={label} scope="col">{label}</th>)}</tr></thead>
+        <caption>Transactions · newest date and sequence first</caption><thead><tr>{['Date (UTC)', 'Type', 'Instrument', 'Quantity', 'Execution price', 'Commission', 'Cash amount', 'Actions'].map((label) => <th key={label} scope="col">{label}</th>)}</tr></thead>
         <tbody>{resource.data.items.map((event) => <tr key={event.id}><th scope="row"><time dateTime={event.date}>{event.date}</time></th><td>{transactionName(event.type)}</td>
           <td className="portfolio-instrument">{event.instrument ? instrumentName(event.instrument) : '—'}</td><td>{event.quantity ?? '—'}</td><td>{event.price_eur === undefined ? '—' : formatEuros(event.price_eur)}</td>
           <td>{event.commission_eur === undefined ? '—' : formatEuros(event.commission_eur)}</td><td>{event.amount_eur === undefined ? '—' : formatEuros(event.amount_eur)}</td>
+          <td><button type="button" className="secondary" disabled={blocked} aria-label={`Remove ${transactionName(event.type).toLowerCase()} on ${event.date}`} onClick={(click) => { removeButton.current = click.currentTarget; setSelected(event); }}>Remove</button></td>
         </tr>)}</tbody>
       </table></div>
-      <Pagination label="Transactions" offset={offset} total={resource.data.total} count={resource.data.items.length} setOffset={setOffset} loading={resource.loading} />
+      <Pagination label="Transactions" offset={offset} total={resource.data.total} count={resource.data.items.length} setOffset={setOffset} loading={resource.loading || mutation.busy} />
     </>}</>}
   </section>;
 }
@@ -324,7 +354,7 @@ function PortfolioDetail({ request, customerId, portfolioId, goals }) {
         <TransactionForm request={request} path={`${path}/transactions`} cash onSaved={refresh} disabled={resource.loading || Boolean(resource.error)} />
         <TransactionForm request={request} path={`${path}/transactions`} instruments={instruments} positions={resource.data.positions} onSaved={refresh} disabled={resource.loading || Boolean(resource.error)} />
       </div>
-      <Transactions request={request} path={`${path}/transactions`} revision={revision} />
+      <Transactions request={request} path={`${path}/transactions`} revision={revision} onRemoved={refresh} />
       <MetadataForm request={request} customerId={customerId} portfolio={resource.data.portfolio} goals={goals} onSaved={refresh} />
     </>}
   </>;

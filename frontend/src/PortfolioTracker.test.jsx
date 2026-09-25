@@ -36,12 +36,14 @@ function mockServer() {
       ...(['buy', 'sell'].includes(body.type) ? { instrument: body.instrument_id === B ? held : instrument } : {}) };
     server.transactions.unshift(item); return item;
   };
+  server.remove = async (id) => { server.transactions = server.transactions.filter((item) => item.id !== id); return { id, removed: true }; };
   async function dispatch(path, options = {}) {
     const url = new URL(path, 'http://localhost');
     if (url.pathname === `/customers/${cid}`) return server.customer(options);
     if (url.pathname === `/customers/${cid}/goals`) return server.goalList(url.searchParams, options);
     if (url.pathname === '/portfolio-instruments') return server.instrumentList(url.searchParams, options);
     if (url.pathname === base) return options.method === 'POST' ? server.create(options.body, options) : server.portfolioList(url.searchParams, options);
+    if (url.pathname.startsWith(`${transactionsPath}/`) && options.method === 'DELETE') return server.remove(url.pathname.split('/').at(-1), options);
     if (url.pathname.startsWith(`${base}/`) && url.pathname.endsWith('/transactions')) return options.method === 'POST' ? server.save(options.body, options) : server.transactionList(url.searchParams, options);
     if (url.pathname.startsWith(`${base}/`)) return options.method === 'PATCH' ? server.patch(url.pathname.split('/').at(-1), options.body, options) : server.detail(url.pathname.split('/').at(-1), options);
     throw new Error(`Unexpected request: ${path}`);
@@ -50,7 +52,7 @@ function mockServer() {
   request.mockImplementation(server.handle);
   return server;
 }
-const writes = () => request.mock.calls.filter(([, options]) => ['POST', 'PATCH'].includes(options?.method));
+const writes = () => request.mock.calls.filter(([, options]) => ['POST', 'PATCH', 'DELETE'].includes(options?.method));
 const tradeForm = () => screen.getByRole('form', { name: 'Trade', exact: true });
 const cashForm = () => screen.getByRole('form', { name: 'Cash movement', exact: true });
 const settings = () => screen.getByRole('form', { name: 'Portfolio settings' });
@@ -210,14 +212,14 @@ describe('exact manually dated cash and trade transactions', () => {
     expect(request.mock.calls.some(([path]) => path.includes('/instruments/acquired'))).toBe(false);
   });
 
-  it('discloses the immutable ledger before saving and links empty EUR choices to acquisition and currency settings', async () => {
+  it('discloses ledger correction rules before saving and links empty EUR choices to acquisition and currency settings', async () => {
     const server = mockServer(); server.instruments = []; await open();
     expect(screen.getByRole('link', { name: 'Add an ETF' })).toHaveAttribute('href', '#/add');
     expect(screen.getByRole('link', { name: 'your ETFs' })).toHaveAttribute('href', '#/');
     expect(screen.getByText(/set its price currency to EUR/)).toBeInTheDocument();
     for (const form of [cashForm(), tradeForm()]) {
-      const notice = within(form).getByText(/Transactions are append-only/);
-      expect(notice).toHaveTextContent('saved entries cannot be edited or deleted');
+      const notice = within(form).getByText(/Saved entries cannot be edited/);
+      expect(notice).toHaveTextContent('can be removed from transaction history if the remaining cash and holdings stay non-negative');
       expect(notice).toHaveTextContent('Dividends, splits and other corporate actions are not processed');
       expect(form).toHaveAttribute('aria-describedby', notice.id);
       expect(notice.compareDocumentPosition(within(form).getByRole('button', { name: /Save/ })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -308,6 +310,98 @@ describe('exact manually dated cash and trade transactions', () => {
     expect(screen.getByLabelText('Quantity')).toHaveValue('1.25000001');
     change('Trade type', 'sell'); await submit(tradeForm()); expect(screen.getByRole('alert')).toHaveTextContent('Cannot sell more than held.');
     expect(writes()[1][1].body.client_id).not.toBe(writes()[0][1].body.client_id);
+  });
+});
+
+describe('transaction removal', () => {
+  const history = () => within(screen.getByRole('region', { name: 'Transaction history' }));
+  const confirmation = () => screen.getByRole('form', { name: 'Remove transaction' });
+  async function selectFirst() { fireEvent.click(history().getAllByRole('button', { name: /^Remove / })[0]); await flush(); }
+
+  it('requires confirmation, supports cancel, and refreshes history, holdings and authoritative balances', async () => {
+    const server = mockServer(); server.transactions = [cashEvent(1)];
+    const original = server.remove;
+    server.remove = async (id) => {
+      const result = await original(id);
+      server.details.set(pid, snapshot(metadata(), { cash_eur: '42.00', positions: [], equity_eur: '42.00', realized_pnl_eur: '3.00' }));
+      return result;
+    };
+    await open(); fillTrade(); change('Amount (EUR)', '25'); await selectFirst();
+    expect(confirmation()).toHaveTextContent('Deposit · 2026-09-23 · €100.00');
+    expect(within(confirmation()).getByRole('heading')).toHaveFocus();
+    expect(confirmation()).toHaveTextContent('It cannot be undone'); expect(writes()).toHaveLength(0);
+    fireEvent.click(within(confirmation()).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('form', { name: 'Remove transaction' })).not.toBeInTheDocument(); expect(writes()).toHaveLength(0);
+    expect(history().getByRole('button', { name: /^Remove deposit/ })).toHaveFocus();
+    await selectFirst(); await submit(confirmation());
+    expect(writes()).toEqual([[`${transactionsPath}/transaction-1`, expect.objectContaining({ method: 'DELETE', body: undefined, signal: expect.any(AbortSignal) })]]);
+    expect(history().getByText('Transaction removed.')).toHaveAttribute('role', 'status');
+    expect(history().getByRole('heading', { name: 'Transaction history' })).toHaveFocus();
+    expect(history().getByText(/No transactions yet/)).toBeInTheDocument();
+    expect(summaryValue('Cash')).toHaveTextContent('€42.00'); expect(summaryValue('Realized P&L')).toHaveTextContent('€3.00');
+    expect(screen.getByText('No open positions.')).toBeInTheDocument();
+    expect(screen.getByLabelText('Quantity')).toHaveValue('1.25000001'); expect(screen.getByLabelText('Amount (EUR)')).toHaveValue('25');
+  });
+
+  it('shows trade details and keeps failed removals visible with a safe explicit retry', async () => {
+    const server = mockServer(), original = server.remove;
+    server.transactions = [{ ...cashEvent(1), type: 'buy', instrument, quantity: '1.25000001', price_eur: '100.00000001', commission_eur: '0.00' }];
+    server.remove = async () => { throw new Error('Cannot remove this transaction: Insufficient holdings. Remove dependent transactions first.'); };
+    await open(); await selectFirst();
+    expect(confirmation()).toHaveTextContent('World ETF'); expect(confirmation()).toHaveTextContent('1.25000001 at €100.00000001');
+    await submit(confirmation());
+    expect(history().getByRole('alert')).toHaveTextContent('Remove dependent transactions first');
+    expect(history().getByRole('button', { name: /^Remove buy/ })).toBeInTheDocument();
+    expect(summaryValue('Cash')).toHaveTextContent('€1,000.00');
+    server.remove = original; await submit(confirmation());
+    expect(writes()).toHaveLength(2); expect(writes()[0][0]).toBe(writes()[1][0]);
+    expect(history().queryByRole('alert')).not.toBeInTheDocument(); expect(history().getByText('Transaction removed.')).toBeInTheDocument();
+  });
+
+  it('prevents duplicate requests and pagination during removal and recovers an emptied last page', async () => {
+    const server = mockServer(), pending = deferred(), original = server.remove;
+    server.transactions = Array.from({ length: 21 }, (_, i) => cashEvent(21 - i));
+    server.remove = () => pending.promise;
+    await open(); fireEvent.click(within(screen.getByRole('navigation', { name: 'Transactions pagination' })).getByRole('button', { name: 'Next' })); await flush();
+    await selectFirst(); const form = confirmation(); await submit(form); await submit(form);
+    expect(writes()).toHaveLength(1); expect(within(form).getByRole('button', { name: 'Removing…' })).toBeDisabled();
+    expect(within(form).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    expect(history().getByRole('button', { name: /^Remove deposit/ })).toBeDisabled();
+    expect(within(screen.getByRole('navigation', { name: 'Transactions pagination' })).getByRole('button', { name: 'Previous' })).toBeDisabled();
+    await act(async () => pending.resolve(await original('transaction-1')));
+    expect(history().getByText('1–20 of 20')).toBeInTheDocument();
+    expect(history().getAllByRole('button', { name: /^Remove deposit/ })).toHaveLength(20);
+  });
+
+  it.each(['lost response', 'malformed response'])('retries the same removal after a %s without changing local balances', async (failure) => {
+    const server = mockServer(), original = server.remove; server.transactions = [cashEvent(1)];
+    server.remove = async (id) => {
+      await original(id);
+      if (failure === 'lost response') throw new Error('Connection interrupted; retry removal.');
+      return { id: 'wrong', removed: true };
+    };
+    await open(); await selectFirst(); await submit(confirmation());
+    expect(history().getByRole('alert')).toHaveTextContent(failure === 'lost response' ? 'Connection interrupted' : 'Unexpected response');
+    expect(history().getByRole('button', { name: /^Remove deposit/ })).toBeInTheDocument();
+    expect(summaryValue('Cash')).toHaveTextContent('€1,000.00');
+    server.remove = original; await submit(confirmation());
+    expect(writes()[0][0]).toBe(writes()[1][0]); expect(history().getByText(/No transactions yet/)).toBeInTheDocument();
+  });
+
+  it.each(['user', 'request', 'status', 'route'])('ignores a late removal after %s changes', async (kind) => {
+    const server = mockServer(), pending = deferred(); server.transactions = [cashEvent(1)]; server.remove = () => pending.promise;
+    const view = render(<PortfolioTracker customerId={cid} portfolioId={pid} />); await flush();
+    await selectFirst(); await submit(confirmation()); const signal = writes()[0][1].signal;
+    if (kind === 'user') auth.user = { id: 'user-b' };
+    if (kind === 'request') auth.request = vi.fn(server.handle);
+    if (kind === 'status') auth.status = 'anonymous';
+    view.rerender(<PortfolioTracker customerId={cid} portfolioId={kind === 'route' ? undefined : pid} />); await flush();
+    expect(signal.aborted).toBe(true);
+    const reads = request.mock.calls.length;
+    await act(async () => pending.resolve({ id: 'transaction-1', removed: true }));
+    expect(request.mock.calls).toHaveLength(reads);
+    expect(screen.queryByText('Transaction removed.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'Remove transaction' })).not.toBeInTheDocument();
   });
 });
 

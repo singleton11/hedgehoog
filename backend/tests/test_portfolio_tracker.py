@@ -1,4 +1,4 @@
-"""API contracts and exact accounting for the funded, append-only EUR ledger."""
+"""API contracts and exact accounting for the funded EUR ledger."""
 
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -102,6 +102,7 @@ def test_all_portfolio_routes_require_authentication(api):
         assert response.headers["Cache-Control"] == "no-store"
     assert client.post(base, json={"name": "Portfolio"}).status_code == 401
     assert client.patch(url, json={"name": "Renamed"}).status_code == 401
+    assert client.delete(url + f"/transactions/{ObjectId()}").status_code == 401
     for body in (cash(), trade()):
         assert client.post(url + "/transactions", json=body).status_code == 401
 
@@ -113,6 +114,7 @@ def test_portfolio_mutations_preserve_origin_protection(tracker, db, headers):
     assert client.post(f"/customers/{customer_id}/portfolios", json={"name": "Bad"}, headers=headers).status_code == 403
     assert client.patch(url, json={"name": "Bad"}, headers=headers).status_code == 403
     assert client.post(url + "/transactions", json=cash(), headers=headers).status_code == 403
+    assert client.delete(url + f"/transactions/{ObjectId()}", headers=headers).status_code == 403
     assert db.portfolios.count_documents({}) == 1
     assert db.portfolios.find_one({"_id": metadata["id"]}) == stored
 
@@ -236,6 +238,7 @@ def test_customer_net_worth_reads_only_the_current_owners_customer_page(tracker,
 
 def test_owner_customer_and_goal_scoping_cannot_be_crossed(tracker, db):
     client, customer_id, first, url = tracker
+    event = record(client, url, cash())
     own_goal = goal(client, customer_id)
     other_customer = customer(client, "Second customer, same owner")
     other_goal = goal(client, other_customer)
@@ -253,6 +256,7 @@ def test_owner_customer_and_goal_scoping_cannot_be_crossed(tracker, db):
     assert client.post(f"/customers/{customer_id}/portfolios", json={"name": "Bad"}).status_code == 404
     assert client.patch(url, json={"name": "Bad"}).status_code == 404
     assert client.post(url + "/transactions", json=cash()).status_code == 404
+    assert client.delete(url + "/transactions/" + event["id"]).status_code == 404
     assert client.post("/auth/logout").status_code == 204
     login(client)
     before = list(db.portfolios.find())
@@ -263,6 +267,7 @@ def test_owner_customer_and_goal_scoping_cannot_be_crossed(tracker, db):
         assert client.get(endpoint + "/transactions").status_code == 404
         assert client.patch(endpoint, json={"name": "Bad", "goal_id": own_goal}).status_code == 404
         assert client.post(endpoint + "/transactions", json=cash()).status_code == 404
+        assert client.delete(endpoint + "/transactions/" + event["id"]).status_code == 404
     for invalid_goal in (other_goal, foreign_goal, str(ObjectId())):
         body = {"name": "Bad attachment", "goal_id": invalid_goal}
         assert client.post(f"/customers/{customer_id}/portfolios", json=body).status_code == 404
@@ -717,7 +722,7 @@ def test_client_id_retries_are_normalized_idempotent_and_conflicts_do_not_write(
 
 @pytest.mark.parametrize("change", [
     {"id": "forged"}, {"sequence": 99}, {"created_at": "2000-01-01"}, {"user_id": "foreign"},
-    {"_request": {}}, {"instrument": {"currency": "USD"}}, {"currency": "USD"},
+    {"_request": {}}, {"_removed_at": "2026-09-17"}, {"instrument": {"currency": "USD"}}, {"currency": "USD"},
     {"client_id": "not-a-uuid"}, {"type": "dividend"},
 ])
 def test_transaction_server_fields_and_invalid_identity_are_rejected(tracker, db, change):
@@ -729,11 +734,12 @@ def test_transaction_server_fields_and_invalid_identity_are_rejected(tracker, db
     assert db.portfolios.find_one({"_id": metadata["id"]}) == before
 
 
-def test_transactions_are_append_only_no_edit_or_delete_routes(tracker, db):
+def test_transactions_cannot_be_edited_or_bulk_deleted(tracker, db):
     client, _, metadata, url = tracker
     event = record(client, url, cash())
     before = db.portfolios.find_one({"_id": metadata["id"]})
-    for method in ("patch", "put", "delete"):
+    assert client.delete(url + "/transactions").status_code == 405
+    for method in ("patch", "put"):
         for endpoint in (url + "/transactions", url + "/transactions/" + event["id"]):
             response = client.request(method, endpoint, json={"amount_eur": "9999"})
             assert response.status_code in (404, 405)
