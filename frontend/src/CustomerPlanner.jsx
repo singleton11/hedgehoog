@@ -205,7 +205,7 @@ function Customers({ request, isin }) {
             <caption>Customer net worth</caption>
             <thead><tr><th scope="col">Customer</th><th scope="col">Net worth (EUR)</th></tr></thead>
             <tbody>{items.map((customer) => <tr key={customer.id}>
-              <th scope="row"><a href={`${customerRoute(customer.id)}${prefill(isin)}`}>{customer.name}<span className="simulation-parameter">View portfolios and goals →</span></a></th>
+              <th scope="row"><a href={`${customerRoute(customer.id)}${prefill(isin)}`}>{customer.name}</a></th>
               <td>{formatEuros(customer.net_worth_eur)}{customer.net_worth_eur === null && <span className="simulation-parameter">Some holdings cannot be valued.</span>}</td>
             </tr>)}</tbody>
           </table>

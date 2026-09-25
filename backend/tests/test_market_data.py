@@ -142,6 +142,9 @@ def test_acquired_list_includes_profile_only_after_failed_download(db, config):
         "annualized_mean_log_return": None, "annualized_volatility": None,
         "historical_year_return": None, "historical_year_start_date": None,
         "historical_year_end_date": None, "historical_year_price_basis": None,
+        "historical_year_volatility": None, "historical_year_volatility_start_date": None,
+        "historical_year_volatility_end_date": None, "historical_year_volatility_price_basis": None,
+        "historical_year_volatility_return_count": None,
     }]
 
 
@@ -169,6 +172,9 @@ def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config
         "annualized_mean_log_return": 0.0, "annualized_volatility": None,
         "historical_year_return": None, "historical_year_start_date": None,
         "historical_year_end_date": None, "historical_year_price_basis": None,
+        "historical_year_volatility": None, "historical_year_volatility_start_date": None,
+        "historical_year_volatility_end_date": None, "historical_year_volatility_price_basis": None,
+        "historical_year_volatility_return_count": None,
     }]}
     assert md.acquired_instruments(db, limit=1, offset=2) == {"items": [], "total": 2, "limit": 1, "offset": 2}
     # Later failed updates do not remove already acquired observations.
@@ -199,6 +205,11 @@ def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(
     assert item["historical_year_start_date"] == "2025-09-16"
     assert item["historical_year_end_date"] == "2026-09-16"
     assert item["historical_year_price_basis"] == "adj_close"
+    assert item["historical_year_volatility"] == pytest.approx(math.sqrt(variance(logs) * 252))
+    assert item["historical_year_volatility_start_date"] == "2025-09-16"
+    assert item["historical_year_volatility_end_date"] == "2026-09-16"
+    assert item["historical_year_volatility_price_basis"] == "adj_close"
+    assert item["historical_year_volatility_return_count"] == 2
     assert list(db.quotes.find()) == original_quotes
     cached = db.instrument_statistics.find_one({"_id": ISIN})
     clock[0] += timedelta(hours=1)
@@ -211,6 +222,7 @@ def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(
     assert updated["quote_count"] == 4
     assert updated["annualized_mean_log_return"] == pytest.approx(math.log(1.1) * 252)
     assert updated["annualized_volatility"] == pytest.approx(0)
+    assert updated["historical_year_volatility"] == pytest.approx(0)
     assert updated["historical_year_return"] == pytest.approx(121 / 90 - 1)
     # Revising the year-ago endpoint also invalidates the cached actual return.
     revised = original_quotes[0]
@@ -230,7 +242,9 @@ def test_acquired_annual_statistics_never_use_a_different_listing(db, config, mi
     assert item["listing"]["symbol"] == "PROFILE.DE"
     assert item["annualized_mean_log_return"] is None
     assert item["annualized_volatility"] is None
-    for key in ("historical_year_return", "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis"):
+    for key in ("historical_year_return", "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis",
+                "historical_year_volatility", "historical_year_volatility_start_date", "historical_year_volatility_end_date",
+                "historical_year_volatility_price_basis", "historical_year_volatility_return_count"):
         assert item[key] is None
 
 
@@ -702,11 +716,13 @@ def test_acquired_api_returns_saved_data_without_provider_calls(api, db, config,
     item = response.json()["items"][0]
     assert item["quote_count"] == 4
     stats = client.get(f"/instruments/{ISIN}/statistics").json()
-    for key in ("annualized_mean_log_return", "annualized_volatility", "historical_year_return"):
+    for key in ("annualized_mean_log_return", "annualized_volatility", "historical_year_return", "historical_year_volatility"):
         assert item[key] == stats[key]
         assert isinstance(item[key], float)
     assert item["historical_year_return"] == pytest.approx(0.1)
-    for key in ("historical_year_start_date", "historical_year_end_date", "historical_year_price_basis"):
+    for key in ("historical_year_start_date", "historical_year_end_date", "historical_year_price_basis",
+                "historical_year_volatility_start_date", "historical_year_volatility_end_date",
+                "historical_year_volatility_price_basis", "historical_year_volatility_return_count"):
         assert item[key] == stats[key]
     assert response.json()["total"] == 1
     assert "data" not in response.json()["items"][0]

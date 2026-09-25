@@ -103,6 +103,9 @@ def test_real_mongo_atomic_job_gate_budget_and_observations(environment, listing
         "annualized_mean_log_return": 0.0, "annualized_volatility": None,
         "historical_year_return": None, "historical_year_start_date": None,
         "historical_year_end_date": None, "historical_year_price_basis": None,
+        "historical_year_volatility": None, "historical_year_volatility_start_date": None,
+        "historical_year_volatility_end_date": None, "historical_year_volatility_price_basis": None,
+        "historical_year_volatility_return_count": None,
     }]}
     assert md.acquired_instruments(db, limit=1, offset=1)["items"] == []
     assert db.quotes.count_documents({}) == 2

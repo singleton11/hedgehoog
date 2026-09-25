@@ -65,6 +65,14 @@ export function historicalReturnTitle(statistics) {
     : 'Requires comparable, positive endpoint prices covering a full year, with a start quote no more than 7 days before the anniversary.';
 }
 
+export function historicalVolatilityTitle(statistics) {
+  const basis = statistics.historical_year_volatility_price_basis === 'adj_close'
+    ? 'Adjusted closes' : 'Unadjusted closes; splits and distributions may affect volatility';
+  return percent(statistics.historical_year_volatility) !== 'Unavailable'
+    ? `${statistics.historical_year_volatility_start_date} – ${statistics.historical_year_volatility_end_date}. ${statistics.historical_year_volatility_return_count} usable daily log returns. ${basis}. Sample standard deviation × √252; missing-weekday intervals are excluded.`
+    : 'Requires saved prices covering a full year (start quote no more than 7 days before the anniversary), comparable currencies, and at least 2 usable daily log returns.';
+}
+
 export function StatisticsSummary({ statistics, variant = 'planner' }) {
   const stats = statistics;
   const historicalReturn = formatReturn(stats.historical_year_return);

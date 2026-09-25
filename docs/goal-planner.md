@@ -200,8 +200,9 @@ simulations are still rejected rather than clipped.
 
 ## Historical yearly return (inventory)
 
-The Acquired ETFs table groups **Annual return** under **Historical**, separately
-from **Annual return** and **Annual volatility** under **Statistical**. Both return
+The Acquired ETFs table groups **Annual return** and **Annual volatility** under
+**Historical**, separately from the all-history **Annual return** and **Annual
+volatility** under **Statistical**. Both return
 columns show green `+` values for growth and red negative values for decline;
 zero, unavailable values and volatility stay neutral. The historical return is the
 actual simple price change
@@ -230,6 +231,32 @@ an input to the Monte Carlo model.
   `historical_year_price_basis` (`adj_close` or `close`). All four are null when
   unavailable. They share the existing cache invalidation; older cache versions
   refresh from saved data without provider requests or changes to raw observations.
+
+### Historical annual volatility (inventory)
+
+`historical_year_volatility` is the **annualized sample standard deviation of daily
+log returns within the trailing year**: `sqrt(252 * variance(log_returns))`, not
+variance of price levels or an endpoint price change. Its window follows the same
+latest-saved-quote/calendar-anniversary rules above. At least two usable daily
+returns and year-long saved coverage are required; insufficient coverage or known
+mixed currencies produce null, not zero. Flat usable prices produce zero.
+
+Unlike the historical endpoint return, volatility uses adjusted closes only when
+all weekday prices **within this window** have usable adjustments; otherwise it
+uses raw closes throughout. Older prices cannot affect either the basis or the
+volatility. The shared daily estimator excludes weekends and intervals spanning
+missing weekdays; bad prices break the return chain. Missing data is not
+interpolated. Sparse coverage can still yield an estimate from the remaining daily
+pairs; small samples are unreliable and do not imply continuous year-long data.
+
+The tooltip shows the selected window, usable return count, basis and formula.
+Separate API/cache metadata fields are `historical_year_volatility_start_date`,
+`historical_year_volatility_end_date`, `historical_year_volatility_price_basis`,
+and `historical_year_volatility_return_count`; all five fields are null when
+volatility is unavailable. Window endpoints are selected quote dates, not a claim
+that every quote inside the interval is usable. These values share existing
+cache/listing isolation and need no provider requests. Full-history statistical
+estimates and Monte Carlo inputs are unchanged.
 
 ## Monte Carlo model and monthly amount
 

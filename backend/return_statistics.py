@@ -8,7 +8,7 @@ from bson import Decimal128
 
 import market_data as md
 
-MODEL_VERSION = 5
+MODEL_VERSION = 6
 TRADING_DAYS = 252
 MIN_RETURNS = 60
 YEAR_START_MAX_GAP_DAYS = 7
@@ -27,25 +27,19 @@ def positive_price(value):
     return number if math.isfinite(number) and number > 0 else None
 
 
-def calculate_historical_year_return(rows):
-    """Observed simple return, independent of daily-return estimation.
+def historical_year_rows(rows):
+    """Select a comparable calendar year ending at the latest saved quote.
 
-    Rows are latest-per-date and ascending. Anchor to the latest saved quote,
-    not today or the latest valid price. Use the quote on/before its calendar
+    Rows are latest-per-date and ascending. Use the quote on/before the calendar
     anniversary (Feb 29 clamps to Feb 28), at most seven days earlier. Never
-    substitute a shorter history or skip an invalid endpoint. Gaps inside the
-    year do not require interpolation: only endpoint prices determine growth.
+    substitute a shorter history or skip an invalid endpoint.
     """
-    unavailable = {
-        "historical_year_return": None, "historical_year_start_date": None,
-        "historical_year_end_date": None, "historical_year_price_basis": None,
-    }
     if len(rows) < 2:
-        return unavailable
+        return []
     end = rows[-1]
     end_date = date.fromisoformat(end["date"])
     if end_date.year == 1:
-        return unavailable
+        return []
     try:
         anniversary = end_date.replace(year=end_date.year - 1)
     except ValueError:  # February 29 in a leap year.
@@ -53,16 +47,27 @@ def calculate_historical_year_return(rows):
     start_index = next((i for i in range(len(rows) - 2, -1, -1)
                         if rows[i]["date"] <= anniversary.isoformat()), None)
     if start_index is None:
-        return unavailable
+        return []
     start = rows[start_index]
     if (anniversary - date.fromisoformat(start["date"])).days > YEAR_START_MAX_GAP_DAYS:
-        return unavailable
+        return []
     # A currency label is not an FX conversion. Unknown currencies are retained,
     # but known conflicting currencies cannot form a comparable price series.
     currencies = {row["price_currency"].strip().upper() for row in rows[start_index:]
                   if isinstance(row.get("price_currency"), str) and row["price_currency"].strip()}
-    if len(currencies) > 1:
+    return rows[start_index:] if len(currencies) <= 1 else []
+
+
+def calculate_historical_year_return(rows):
+    """Observed simple return; interior gaps do not affect the endpoint ratio."""
+    unavailable = {
+        "historical_year_return": None, "historical_year_start_date": None,
+        "historical_year_end_date": None, "historical_year_price_basis": None,
+    }
+    window = historical_year_rows(rows)
+    if not window:
         return unavailable
+    start, end = window[0], window[-1]
     basis = "adj_close" if all(positive_price(row.get("adj_close")) is not None
                                for row in (start, end)) else "close"
     start_price, end_price = (positive_price(row.get(basis)) for row in (start, end))
@@ -77,7 +82,7 @@ def calculate_historical_year_return(rows):
     }
 
 
-def calculate_statistics(rows):
+def calculate_daily_statistics(rows):
     """Rows are latest-per-date, ascending. Never splice adjusted/raw prices.
 
     Bad prices break the return chain. Only adjacent weekdays form daily
@@ -85,7 +90,6 @@ def calculate_statistics(rows):
     exchange calendar this conservatively skips pairs crossing missing holiday
     weekdays too, rather than annualizing sparse weekly/monthly history as daily.
     """
-    historical_return = calculate_historical_year_return(rows)
     quote_count = len(rows)
     rows = [row for row in rows if date.fromisoformat(row["date"]).weekday() < 5]
     weekend_count = quote_count - len(rows)
@@ -151,7 +155,44 @@ def calculate_statistics(rows):
         "return_count": len(logs), "first_date": valid_dates[0] if valid_dates else None,
         "last_date": valid_dates[-1] if valid_dates else None,
         "invalid_price_count": invalid_prices, "skipped_gap_count": skipped_gaps, "weekend_quote_count": weekend_count,
-        **metrics, **historical_return, "warnings": warnings,
+        **metrics, "warnings": warnings,
+    }
+
+
+def calculate_historical_year_volatility(rows):
+    """Annualized sample volatility of usable daily log returns in the last year.
+
+    Unlike the endpoint return, every weekday price in this window determines
+    the price basis. Reuse the same gap/invalid-price rules as full-history
+    statistics, without letting older observations affect the estimate.
+    """
+    unavailable = {
+        "historical_year_volatility": None,
+        "historical_year_volatility_start_date": None,
+        "historical_year_volatility_end_date": None,
+        "historical_year_volatility_price_basis": None,
+        "historical_year_volatility_return_count": None,
+    }
+    window = historical_year_rows(rows)
+    if not window:
+        return unavailable
+    stats = calculate_daily_statistics(window)
+    if stats["annualized_volatility"] is None:
+        return unavailable
+    return {
+        "historical_year_volatility": stats["annualized_volatility"],
+        "historical_year_volatility_start_date": window[0]["date"],
+        "historical_year_volatility_end_date": window[-1]["date"],
+        "historical_year_volatility_price_basis": stats["price_basis"],
+        "historical_year_volatility_return_count": stats["return_count"],
+    }
+
+
+def calculate_statistics(rows):
+    return {
+        **calculate_daily_statistics(rows),
+        **calculate_historical_year_return(rows),
+        **calculate_historical_year_volatility(rows),
     }
 
 

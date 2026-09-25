@@ -45,8 +45,12 @@ def test_real_mongo_acquisition_statistics_and_simulation(environment, monkeypat
         assert stats.json()["computed_at"] == md.public(saved["statistics"]["computed_at"])
         acquired = client.get("/instruments/acquired").json()["items"][0]
         for key in ("annualized_mean_log_return", "annualized_volatility", "historical_year_return",
-                    "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis"):
+                    "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis",
+                    "historical_year_volatility", "historical_year_volatility_start_date", "historical_year_volatility_end_date",
+                    "historical_year_volatility_price_basis", "historical_year_volatility_return_count"):
             assert acquired[key] == stats.json()[key]
+        assert acquired["historical_year_volatility"] == stats.json()["annualized_volatility"]
+        assert acquired["historical_year_volatility_return_count"] == 80
         assert acquired["historical_year_return"] == pytest.approx(float(rows[-1]["adj_close"]) / 90 - 1)
         response = client.post("/goals/simulate", json=request_body())
         assert response.status_code == 200, response.text
@@ -70,8 +74,11 @@ def test_real_mongo_acquisition_statistics_and_simulation(environment, monkeypat
         assert refreshed["daily_mean_log_return"] != stats.json()["daily_mean_log_return"]
         acquired = client.get("/instruments/acquired").json()["items"][0]
         for key in ("annualized_mean_log_return", "annualized_volatility", "historical_year_return",
-                    "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis"):
+                    "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis",
+                    "historical_year_volatility", "historical_year_volatility_start_date", "historical_year_volatility_end_date",
+                    "historical_year_volatility_price_basis", "historical_year_volatility_return_count"):
             assert acquired[key] == refreshed[key]
+        assert acquired["historical_year_volatility"] != stats.json()["historical_year_volatility"]
         assert acquired["historical_year_return"] == pytest.approx(200 / 90 - 1)
     assert len(calls) == 2
     assert md.budget_status(db, settings)["used"] == 2

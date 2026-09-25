@@ -141,6 +141,11 @@ def acquired_instruments(db, limit=20, offset=0):
             "historical_year_start_date": statistics.get("historical_year_start_date"),
             "historical_year_end_date": statistics.get("historical_year_end_date"),
             "historical_year_price_basis": statistics.get("historical_year_price_basis"),
+            "historical_year_volatility": statistics.get("historical_year_volatility"),
+            "historical_year_volatility_start_date": statistics.get("historical_year_volatility_start_date"),
+            "historical_year_volatility_end_date": statistics.get("historical_year_volatility_end_date"),
+            "historical_year_volatility_price_basis": statistics.get("historical_year_volatility_price_basis"),
+            "historical_year_volatility_return_count": statistics.get("historical_year_volatility_return_count"),
         })
     return public({"items": items, "total": result["count"][0]["total"] if result["count"] else 0, "limit": limit, "offset": offset})
 
