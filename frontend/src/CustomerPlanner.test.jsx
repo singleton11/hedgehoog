@@ -117,6 +117,7 @@ function mockServer({ seed = true } = {}) {
   async function dispatch(path, options) {
     const url = new URL(path, 'http://localhost'), post = options.method === 'POST';
     if (url.pathname === '/customers') return post ? server.createCustomer(options.body, options) : server.customerList(url.searchParams, options);
+    if (/^\/customers\/[^/]+\/portfolios$/.test(url.pathname)) return page([], url.searchParams);
     if (path === '/goals/strategies') return server.strategies(options);
     if (url.pathname === '/instruments/acquired') return server.acquired(url.searchParams, options);
     const stats = url.pathname.match(/^\/instruments\/([^/]+)\/statistics$/);
@@ -243,6 +244,9 @@ describe('customers, fixed goals and instrument shortcuts', () => {
     expect(screen.getByLabelText('Customer name')).toHaveValue('');
     expect(window.location.hash).toBe('#/goal');
     await follow(/Ada Lovelace/);
+    expect(screen.getByRole('link', { name: 'Portfolios', exact: true })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByText(/No portfolios yet/)).toBeInTheDocument();
+    await follow('Goals');
     expect(screen.getByText(/No goals yet/)).toBeInTheDocument();
     for (const [name, amount, date] of [['Retirement', '0100000.00', '2036-09-24'], ['Home deposit', '999999999999.99', '2031-09-24']]) {
       change('Goal name', name); change('Target (EUR)', amount); change('Goal date (UTC)', date);
@@ -273,9 +277,11 @@ describe('customers, fixed goals and instrument shortcuts', () => {
     expect(screen.getByRole('link', { name: /Alice/ })).toHaveAttribute('href', `${customerRoute()}?instrument=${A}`);
     await follow(/Alice/);
     expect(screen.getByRole('link', { name: '← Customers', exact: true })).toHaveAttribute('href', `#/goal?instrument=${A}`);
+    expect(screen.getByRole('link', { name: 'Portfolios', exact: true })).toHaveAttribute('aria-current', 'page');
+    await follow('Goals');
     expect(screen.getByRole('link', { name: /Retirement/ })).toHaveAttribute('href', `${goalRoute()}?instrument=${A}`);
     await follow(/Retirement/);
-    expect(screen.getByRole('link', { name: /Alice.*Goals/ })).toHaveAttribute('href', `${customerRoute()}?instrument=${A}`);
+    expect(screen.getByRole('link', { name: /Alice.*Goals/ })).toHaveAttribute('href', `${customerRoute()}/goals?instrument=${A}`);
     expect(screen.getByRole('link', { name: 'New simulation' })).toHaveAttribute('href', newRoute()); expectNoPlannerReads();
     await follow('New simulation');
     expect(screen.getByLabelText('Instrument')).toHaveValue(A); expect(calculate()).toBeEnabled();
@@ -587,7 +593,7 @@ describe('saved-data reads and pagination', () => {
     if (label === 'Goals') for (let n = 102; n <= 141; n++) server.goals.set(uid(n), { ...goal, id: uid(n), name: `Goal ${n}` });
     if (label === 'Saved simulations') for (let n = 0; n < 41; n++) server.seedRun(settings({ starting_capital_eur: `${10000 + n}.00` }));
     const path = label === 'Customers' ? '/customers' : label === 'Goals' ? `${customerPath()}/goals` : `${goalPath()}/simulations`;
-    await open(label === 'Customers' ? '#/goal' : label === 'Goals' ? customerRoute() : goalRoute());
+    await open(label === 'Customers' ? '#/goal' : label === 'Goals' ? `${customerRoute()}/goals` : goalRoute());
     const pages = () => within(screen.getByRole('navigation', { name: `${label} pagination` }));
     const list = () => within(screen.getByRole('region', { name: label }));
     expect(list().getAllByRole('link')).toHaveLength(20); expect(pages().getByText('1–20 of 41')).toBeInTheDocument();

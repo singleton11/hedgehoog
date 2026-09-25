@@ -334,8 +334,8 @@ function PortfolioPage({ request, customerId, portfolioId, isin }) {
   const goals = useRead(request, `${customerPath(customerId)}/goals`, { all: true, validate: validGoal });
   const validCustomer = customer.data?.id === customerId && text(customer.data?.name);
   return <article className="customer-planner portfolio-tracker" aria-label="Portfolio tracker">
-    <nav className="planner-breadcrumbs" aria-label="Portfolio navigation"><a href="#/goal">← Customers</a>
-      {portfolioId && <><a href={customerRoute(customerId)}>{validCustomer ? `${customer.data.name} · Goals` : 'Customer goals'}</a>
+    <nav className="planner-breadcrumbs" aria-label="Portfolio navigation"><a href={`#/goal${isin ? `?instrument=${encodeURIComponent(isin)}` : ''}`}>← Customers</a>
+      {portfolioId && <><a href={`${customerRoute(customerId)}/goals`}>{validCustomer ? `${customer.data.name} · Goals` : 'Customer goals'}</a>
         <a href={portfoliosRoute(customerId)}>Portfolios</a></>}
     </nav>
     <ReadStatus resource={customer} label="customer" invalid={!validCustomer} />
