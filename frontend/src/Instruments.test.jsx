@@ -1000,9 +1000,9 @@ describe('ETF autocomplete and routing', () => {
 
 describe('acquisition estimates', () => {
   it.each([
-    ['unresolved', null, false, 1, 3, 8],
-    ['cached', { symbol: 'ETF.DE', exchange: 'XETR' }, false, 0, 2, 7],
-    ['manual', null, true, 0, 2, 7],
+    ['unresolved', null, false, 1, 4, 9],
+    ['cached', { symbol: 'ETF.DE', exchange: 'XETR' }, false, 0, 3, 8],
+    ['manual', null, true, 0, 3, 8],
   ])('includes lookup only for %s automatic listings', (_, listing, manual, lookupCalls, minimumCalls, calls) => {
     const instrument = detail(A, { listing });
     expect(acquisitionEstimate(instrument, 'update', manual)).toMatchObject({ lookupCalls, minimumCalls, pages: 6, calls });
@@ -1025,7 +1025,7 @@ describe('explicit acquisition and complete charts', () => {
     expect(requestDetails).not.toHaveAttribute('open');
     expect(screen.getByText(/first named, EOD-enabled exact ticker.exchange match/)).not.toBeVisible();
     expect(screen.queryByText(/Listing selection is not ISIN verification/)).not.toBeInTheDocument();
-    expect(estimateText()).toHaveTextContent('About 8. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('About 9. Actual usage may vary.');
     expect(screen.getAllByText('Local budget:')).toHaveLength(1);
     expect(screen.getByRole('heading', { name: 'Hedgehoog' }).closest('header')).toContainElement(screen.getByText('Local budget:'));
     expect(within(screen.getByRole('region', { name: 'Market data acquisition' })).queryByText('Local budget:')).not.toBeInTheDocument();
@@ -1079,7 +1079,7 @@ describe('explicit acquisition and complete charts', () => {
     expect(screen.queryByLabelText('Exchange MIC')).not.toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: /Manual listing override/ })).not.toBeInTheDocument();
     expect(screen.getByText('Listing:').closest('p')).toHaveTextContent('SXR8.DE / XETR · Locked');
-    expect(estimateText()).toHaveTextContent('About 4. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('About 5. Actual usage may vary.');
     fireEvent.click(authorization());
     fireEvent.click(screen.getByRole('button', { name: 'Confirm update' }));
     await flush();
@@ -1104,7 +1104,7 @@ describe('explicit acquisition and complete charts', () => {
     await review('Retry Older History');
     expect(screen.getByText(/From 2010-05-19 to before 2020-01-01/)).toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
-    expect(estimateText()).toHaveTextContent('About 5. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('About 6. Actual usage may vary.');
     expect(screen.queryByRole('checkbox', { name: /Manual listing override/ })).not.toBeInTheDocument();
     fireEvent.click(authorization());
     fireEvent.click(screen.getByRole('button', { name: 'Confirm older history' }));
@@ -1147,7 +1147,7 @@ describe('explicit acquisition and complete charts', () => {
     expect(screen.queryByLabelText('Provider symbol')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Exchange MIC')).not.toBeInTheDocument();
     expect(manualOverride()).not.toBeChecked();
-    expect(estimateText()).toHaveTextContent('About 7. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('About 8. Actual usage may vary.');
     expect(screen.getByText(/1 profile call/)).not.toHaveTextContent('ticker-list lookup');
     expect(server.posts()).toHaveLength(0);
     fireEvent.click(authorization());
@@ -1163,14 +1163,14 @@ describe('explicit acquisition and complete charts', () => {
     fireEvent.click(authorization());
     fireEvent.click(manualOverride());
     expect(authorization()).not.toBeChecked();
-    expect(estimateText()).toHaveTextContent('About 7. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('About 8. Actual usage may vary.');
     fireEvent.change(screen.getByLabelText('Provider symbol'), { target: { value: 'OVERRIDE.US' } });
     fireEvent.change(screen.getByLabelText('Exchange MIC'), { target: { value: 'XNYS' } });
     fireEvent.click(authorization());
     fireEvent.click(manualOverride());
     expect(authorization()).not.toBeChecked();
     expect(screen.queryByLabelText('Provider symbol')).not.toBeInTheDocument();
-    expect(estimateText()).toHaveTextContent('About 8. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('About 9. Actual usage may vary.');
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
     expect(server.posts()).toHaveLength(0);
     fireEvent.click(authorization());
@@ -1179,17 +1179,17 @@ describe('explicit acquisition and complete charts', () => {
     expect(JSON.parse(server.posts()[0][1].body)).toEqual({ confirmed: true, mode: 'update' });
   });
 
-  it('requires 3 calls for unresolved acquisition but only 2 to reuse a cached listing', async () => {
+  it('requires 4 calls for unresolved acquisition but only 3 to reuse a cached listing including splits', async () => {
     const server = mockServer();
-    const budget = { month: '2026-09', used: 9998, limit: 10000, remaining: 2 };
+    const budget = { month: '2026-09', used: 9997, limit: 10000, remaining: 3 };
     server.details[A].budget = budget;
     server.details[A].catalogue.inception_date = null;
     server.details[B] = detail(B, { listing: { symbol: 'ETF.DE', exchange: 'XETR' }, budget });
     server.details[B].catalogue.inception_date = null;
     await open(A);
-    expect(screen.getByText(/Insufficient local budget/)).toHaveTextContent('Requires 3 calls with automatic lookup.');
+    expect(screen.getByText(/Insufficient local budget/)).toHaveTextContent('Requires 4 calls with automatic lookup.');
     await review();
-    expect(estimateText()).toHaveTextContent('At least 3. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('At least 4. Actual usage may vary.');
     fireEvent.click(authorization());
     expect(screen.getByRole('button', { name: 'Confirm request' })).toBeDisabled();
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
@@ -1198,7 +1198,7 @@ describe('explicit acquisition and complete charts', () => {
     await navigate(B);
     expect(screen.queryByText(/Insufficient local budget/)).not.toBeInTheDocument();
     await review();
-    expect(estimateText()).toHaveTextContent('At least 2. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('At least 3. Actual usage may vary.');
     fireEvent.click(authorization());
     expect(screen.getByRole('button', { name: 'Confirm request' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Confirm request' }));
@@ -1208,14 +1208,14 @@ describe('explicit acquisition and complete charts', () => {
     expect(JSON.parse(server.posts()[0][1].body)).toEqual({ confirmed: true, mode: 'update' });
   });
 
-  it('allows an explicit valid manual override with 2 calls remaining and skips the lookup estimate', async () => {
+  it('allows an explicit valid manual override with 3 calls remaining including splits and skips lookup', async () => {
     const server = mockServer();
-    server.details[A].budget = { month: '2026-09', used: 9998, limit: 10000, remaining: 2 };
+    server.details[A].budget = { month: '2026-09', used: 9997, limit: 10000, remaining: 3 };
     server.details[A].catalogue.inception_date = null;
     await open(A);
     await review();
     fireEvent.click(manualOverride());
-    expect(estimateText()).toHaveTextContent('At least 2. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('At least 3. Actual usage may vary.');
     expect(screen.queryByText(/This request needs at least/)).not.toBeInTheDocument();
     fireEvent.click(authorization());
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));

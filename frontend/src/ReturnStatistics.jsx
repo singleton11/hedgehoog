@@ -57,9 +57,14 @@ export function formatReturn(value) {
   };
 }
 
+export const priceBasisLabel = (basis) => ({ split_adjusted_close: 'Split-adjusted close',
+  adj_close: 'Adjusted close', close: 'Unadjusted close' }[basis] || 'Unavailable');
+
 export function historicalReturnTitle(statistics) {
-  const basis = statistics.historical_year_price_basis === 'adj_close'
-    ? 'Adjusted closes' : 'Unadjusted closes; splits and distributions may affect the return';
+  const basis = statistics.historical_year_price_basis === 'split_adjusted_close'
+    ? 'Split-adjusted closes; cash distributions are not reinvested'
+    : statistics.historical_year_price_basis === 'adj_close'
+      ? 'Adjusted closes' : 'Unadjusted closes; splits and distributions may affect the return';
   return percent(statistics.historical_year_return) !== 'Unavailable'
     ? `${statistics.historical_year_start_date} – ${statistics.historical_year_end_date}. ${basis}.`
     : 'Requires comparable, positive endpoint prices covering a full year, with a start quote no more than 7 days before the anniversary.';
@@ -86,7 +91,7 @@ export function StatisticsSummary({ statistics, variant = 'planner' }) {
       <div><dt title="Daily volatility × √252 trading days">Annual volatility</dt><dd>{percent(stats.annualized_volatility)}</dd></div>
       <div><dt>Saved quotes / usable prices / returns</dt><dd>{stats.quote_count} / {stats.price_count} / {stats.return_count}</dd></div>
       <div><dt>History window</dt><dd>{stats.first_date && stats.last_date ? `${stats.first_date} – ${stats.last_date}` : 'No usable history'}</dd></div>
-      <div><dt>Price basis</dt><dd>{stats.price_basis === 'adj_close' ? 'Adjusted close' : stats.price_basis === 'close' ? 'Unadjusted close' : 'Unavailable'}</dd></div>
+      <div><dt>Price basis</dt><dd>{priceBasisLabel(stats.price_basis)}</dd></div>
       <div><dt>Listing price currency</dt><dd>{stats.price_currency || 'Unknown'}{stats.currency_source && ` (${stats.currency_source})`}</dd></div>
       <div><dt>Saved-data snapshot (UTC)</dt><dd>{stats.as_of || 'Unavailable'}</dd></div>
     </dl>

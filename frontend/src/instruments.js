@@ -52,7 +52,7 @@ export function acquisitionEstimate(detail, mode, manualOverride = false) {
   // An unresolved automatic listing needs at least one tickerslist request;
   // pagination can add more. Cached listings and manual overrides skip lookup.
   const lookupCalls = detail.listing || manualOverride ? 0 : 1;
-  return { pages, lookupCalls, minimumCalls: 2 + lookupCalls, calls: pages === null ? null : lookupCalls + 1 + pages,
+  return { pages, lookupCalls, minimumCalls: 3 + lookupCalls, calls: pages === null ? null : lookupCalls + 2 + pages,
     range: `${from} ${olderEnd ? `to before ${olderEnd}` : 'to latest available'}` };
 }
 

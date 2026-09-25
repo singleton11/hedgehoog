@@ -48,10 +48,10 @@ def test_auto_queues_without_lookup_then_caches_mapping_and_updates_without_sear
     ])])
     result = md.run_acquisition(db, config, job["id"], source.factory)
     assert result["status"] == "succeeded", result
-    assert [call[0] for call in source.calls] == ["tickerslist", "tickerinfo", "eod"]
+    assert [call[0] for call in source.calls] == ["tickerslist", "tickerinfo", "eod", "splits"]
     assert source.calls[0] == ("tickerslist", "SXR8", 0)
     assert source.calls[2][1:3] == ("SXR8.DE", "XETR")
-    assert result["calls"] == md.budget_status(db, config)["used"] == 3
+    assert result["calls"] == md.budget_status(db, config)["used"] == 4
     state = db.instrument_state.find_one()
     assert state["listing"] == LISTING
     assert state["listing_resolution"]["name"] == "First named match"
@@ -63,8 +63,8 @@ def test_auto_queues_without_lookup_then_caches_mapping_and_updates_without_sear
     next_job = auto_enqueue(db, config)
     update = Provider()  # Deliberately has no search method.
     assert md.run_acquisition(db, config, next_job["id"], update.factory)["status"] == "succeeded"
-    assert [call[0] for call in update.calls] == ["tickerinfo", "eod"]
-    assert md.budget_status(db, config)["used"] == 5
+    assert [call[0] for call in update.calls] == ["tickerinfo", "eod", "splits"]
+    assert md.budget_status(db, config)["used"] == 7
     assert update.calls[1][3] == "2026-09-16"
 
 
@@ -96,7 +96,7 @@ def test_search_paginates_in_order_and_stops_at_first_match(db, config):
     result = md.run_acquisition(db, config, job["id"], source.factory)
     assert result["status"] == "succeeded"
     assert source.calls[:2] == [("tickerslist", "SXR8", 0), ("tickerslist", "SXR8", 1)]
-    assert result["calls"] == 4
+    assert result["calls"] == 5
     assert db.instrument_state.find_one()["listing"] == LISTING
 
 
@@ -156,7 +156,7 @@ def test_cache_write_interruption_resumes_without_search(db, config, clock, monk
     monkeypatch.setattr(db.instrument_state, "find_one_and_update", real_update)
     clock[0] += timedelta(seconds=md.LEASE_SECONDS + 1)
     result = md.run_acquisition(db, config, job["id"], Provider().factory)
-    assert result["status"] == "succeeded" and result["calls"] == 3
+    assert result["status"] == "succeeded" and result["calls"] == 4
 
 
 def test_stale_resolver_cannot_overwrite_replacement_mapping_or_watermark(db, config, clock, monkeypatch):
@@ -222,7 +222,7 @@ def test_backfill_and_duplicate_delivery_reuse_cached_mapping(db, config):
     source = Provider(pages=[page([])])
     result = md.run_acquisition(db, config, backfill["id"], source.factory)
     assert result["status"] == "succeeded" and result["mode"] == "backfill"
-    assert [call[0] for call in source.calls] == ["tickerinfo", "eod"]
+    assert [call[0] for call in source.calls] == ["tickerinfo", "eod", "splits"]
     assert source.calls[1][3:5] == ("2010-05-19", "2026-09-14")
 
 

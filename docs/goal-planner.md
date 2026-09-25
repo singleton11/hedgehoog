@@ -143,9 +143,13 @@ History selection:
   future collection times. This is current-history analytics, not an `as_of`
   historical model or backtest.
 - Exclude weekend quote dates from daily-return estimation, preserving the raw rows.
-  Use adjusted closes **only when every selected weekday row has a positive finite adjusted
-  close**. Otherwise use unadjusted closes consistently across the entire series,
-  with a corporate-action/distribution warning. Never splice the two bases.
+  With downloaded split history, use `split_adjusted_close`: raw close multiplied
+  by cumulative effective split factors (new shares / old shares). This separate
+  derived series corrects forward/reverse splits without changing candles, applying
+  a split twice to provider-adjusted prices, or mixing adjustment vintages. It is
+  a price return, not a dividend-reinvestment total return. Missing/invalid raw
+  closes still break the chain. Legacy history without splits temporarily prefers
+  complete provider `adj_close`, otherwise raw `close`, with an update warning.
 - Reject missing, nonnumeric, boolean, non-finite and non-positive prices **from
   calculations only**. Invalid rows break the chain: a return never bridges them.
 - Only pairs on adjacent weekdays form daily returns. Friday to Monday is valid;
@@ -208,11 +212,11 @@ an input to the Monte Carlo model.
   year earlier, allowing at most **7 calendar days** for weekends/holidays. February
   29 clamps to February 28. Never annualize shorter coverage or use a much older
   price as if it were a year ago. Actual endpoint dates are available on hover.
-- Use adjusted closes if **both endpoints** have positive finite adjusted prices;
-  otherwise use raw closes at **both** endpoints. Never splice the two bases.
-  The tooltip identifies the basis and warns that unadjusted splits/distributions
-  can distort the price change. Provider adjustments are used as saved; this is
-  not an independently verified dividend-reinvestment total return.
+- With a complete split snapshot, use split-corrected raw closes at both endpoints.
+  For legacy history only, prefer provider-adjusted closes if both are valid,
+  otherwise raw closes at both endpoints. Never splice bases or apply splits to
+  `adj_close`. The tooltip identifies the basis. Split correction does not reinvest
+  cash distributions or claim a total return.
 - Endpoint prices must be positive and finite. Invalid endpoints are not silently
   replaced with earlier valid ones. Sparse or invalid intermediate prices do not
   prevent calculating an endpoint ratio; this does not imply continuous coverage.
@@ -221,7 +225,7 @@ an input to the Monte Carlo model.
   is applied. Non-finite results are unavailable too.
 - API/cache fields are `historical_year_return` (nullable numeric fraction),
   `historical_year_start_date`, `historical_year_end_date` (ISO dates), and
-  `historical_year_price_basis` (`adj_close` or `close`). All four are null when
+  `historical_year_price_basis` (`split_adjusted_close`, `adj_close` or `close`). All four are null when
   unavailable. They share the existing cache invalidation; older cache versions
   refresh from saved data without provider requests or changes to raw observations.
 
