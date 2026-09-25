@@ -10,7 +10,8 @@ import Icon from './Icon.jsx';
 function readRoute() {
   const hash = window.location.hash;
   if (!hash || hash === '#' || hash === '#/') return { isin: null };
-  const portfolios = hash.match(/^#\/goal\/customers\/([^/?#]+)\/portfolios(?:\/([^/?#]+))?(?:\?(.*))?$/);
+  // Opening a customer defaults to Portfolios; Goals has an explicit /goals route.
+  const portfolios = hash.match(/^#\/goal\/customers\/([^/?#]+)(?:\/portfolios(?:\/([^/?#]+))?)?(?:\?(.*))?$/);
   if (portfolios) {
     try {
       const [customerId, portfolioId] = portfolios.slice(1, 3).map((value) => value ? decodeURIComponent(value) : null);
@@ -20,7 +21,7 @@ function readRoute() {
       return { goal: true, portfolios: true, customerId, portfolioId, isin: instrument };
     } catch { return { invalid: true }; }
   }
-  const planner = hash.match(/^#\/goal(?:\/customers\/([^/?#]+)(?:\/goals\/([^/?#]+)(?:\/(new|simulations\/([^/?#]+)))?)?)?(?:\?(.*))?$/);
+  const planner = hash.match(/^#\/goal(?:\/customers\/([^/?#]+)(?:\/goals(?:\/([^/?#]+)(?:\/(new|simulations\/([^/?#]+)))?)?)?)?(?:\?(.*))?$/);
   if (planner) {
     try {
       const ids = [planner[1], planner[2], planner[4]].map((value) => value ? decodeURIComponent(value) : null);

@@ -11,7 +11,7 @@ const instrument = { instrument_id: A, name: 'World ETF', symbol: 'WORLD', excha
 const held = { ...instrument, instrument_id: B, name: 'Retired ETF', symbol: 'HELD' };
 const goal = { id: 'goal-a', customer_id: cid, name: 'Retirement', goal_eur: '100000.00', goal_date: '2036-09-24' };
 const base = `/customers/${cid}/portfolios`, detailPath = `${base}/${pid}`, transactionsPath = `${detailPath}/transactions`;
-const customerRoute = `#/goal/customers/${cid}`, listRoute = `${customerRoute}/portfolios`, detailRoute = `${listRoute}/${pid}`;
+const customerRoute = `#/goal/customers/${cid}`, goalsRoute = `${customerRoute}/goals`, listRoute = `${customerRoute}/portfolios`, detailRoute = `${listRoute}/${pid}`;
 const pagePath = (path, offset = 0, limit = 20) => `${path}?limit=${limit}&offset=${offset}`;
 const metadata = (extra = {}) => ({ id: pid, customer_id: cid, name: 'Long term', goal_id: null, currency: 'EUR', created_at: '2026-09-24T00:00:00Z', revision: 0, ...extra });
 const position = (extra = {}) => ({ instrument, quantity: '1.25000001', average_price_eur: '100.00000001', cost_basis_eur: '125.00', market_price_eur: '110.00', price_date: '2026-09-23', previous_price_date: '2026-09-22', position_value_eur: '137.50', unrealized_pnl_eur: '12.50', daily_unrealized_pnl_eur: '-1.25', warning: null, ...extra });
@@ -75,11 +75,11 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); window.hi
 describe('portfolio routes, creation and optional goals', () => {
   it('links from existing customer goals with Customers active, creates multiple portfolios and attaches, changes or detaches a goal later', async () => {
     const server = mockServer(); server.portfolios = [];
-    await open(customerRoute);
+    await open(goalsRoute);
     expect(screen.getByRole('link', { name: 'Portfolios', exact: true })).toHaveAttribute('href', listRoute);
     expect(screen.getByRole('link', { name: /Retirement/ })).toBeInTheDocument();
     await follow('Portfolios');
-    expect(within(screen.getByRole('navigation', { name: 'Customer sections' })).getByRole('link', { name: 'Goals' })).toHaveAttribute('href', customerRoute);
+    expect(within(screen.getByRole('navigation', { name: 'Customer sections' })).getByRole('link', { name: 'Goals' })).toHaveAttribute('href', goalsRoute);
     expect(screen.getByRole('link', { name: 'Customers', exact: true })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByText(/No portfolios yet/)).toBeInTheDocument(); expect(writes()).toHaveLength(0);
     change('Portfolio name', '  Emergency fund  '); await submit(screen.getByRole('form', { name: 'New portfolio' }));
@@ -89,7 +89,7 @@ describe('portfolio routes, creation and optional goals', () => {
     expect(writes()[1][1].body).toEqual({ name: 'Retirement investments', goal_id: goal.id });
     expect(screen.getByRole('link', { name: /Emergency fund/ })).toBeInTheDocument();
     await follow(/Emergency fund/);
-    expect(screen.getByRole('link', { name: 'Alice · Goals' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Alice · Goals' })).toHaveAttribute('href', goalsRoute);
     expect(screen.getByRole('heading', { name: 'Emergency fund' })).toBeInTheDocument();
     server.goals.push({ ...goal, id: 'goal-b', name: 'Home' });
     // Returning to the route reloads goal choices, as a goal may be created later.
@@ -105,17 +105,13 @@ describe('portfolio routes, creation and optional goals', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it.each(['', `?instrument=${A}`])('switches customer tabs using bookmarkable routes and preserves planning context: %s', async (query) => {
+  it.each(['', `?instrument=${A}`])('defaults to Portfolios and switches bookmarkable tabs preserving planning context: %s', async (query) => {
     mockServer(); const view = await open(`${customerRoute}${query}`);
     const tabs = () => within(screen.getByRole('navigation', { name: 'Customer sections' }));
     expect(tabs().getAllByRole('link').map((link) => link.textContent)).toEqual(['Portfolios', 'Goals']);
-    expect(tabs().getByRole('link', { name: 'Goals' })).toHaveAttribute('aria-current', 'page');
-    expect(tabs().getByRole('link', { name: 'Portfolios' })).not.toHaveAttribute('aria-current');
-    expect(screen.getByRole('heading', { name: 'Alice', level: 2 })).toBeInTheDocument();
-    expect(screen.getByRole('form', { name: 'New goal' })).toBeInTheDocument();
-    expect(screen.queryByRole('form', { name: 'New portfolio' })).not.toBeInTheDocument();
-    await follow('Portfolios');
-    expect(window.location.hash).toBe(`${listRoute}${query}`);
+    expect(tabs().getByRole('link', { name: 'Portfolios' })).toHaveAttribute('href', `${listRoute}${query}`);
+    expect(tabs().getByRole('link', { name: 'Goals' })).toHaveAttribute('href', `${goalsRoute}${query}`);
+    expect(window.location.hash).toBe(`${customerRoute}${query}`);
     expect(tabs().getByRole('link', { name: 'Portfolios' })).toHaveAttribute('aria-current', 'page');
     expect(tabs().getByRole('link', { name: 'Goals' })).not.toHaveAttribute('aria-current');
     expect(screen.getByRole('heading', { name: 'Alice', level: 2 })).toBeInTheDocument();
@@ -126,10 +122,14 @@ describe('portfolio routes, creation and optional goals', () => {
     view.unmount(); await open(`${listRoute}${query}`);
     expect(tabs().getByRole('link', { name: 'Portfolios' })).toHaveAttribute('aria-current', 'page');
     await follow('Goals');
-    expect(window.location.hash).toBe(`${customerRoute}${query}`);
+    expect(window.location.hash).toBe(`${goalsRoute}${query}`);
     expect(tabs().getByRole('link', { name: 'Goals' })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('link', { name: /Retirement/ })).toHaveAttribute('href', `${customerRoute}/goals/${goal.id}${query}`);
     expect(screen.queryByRole('form', { name: 'New portfolio' })).not.toBeInTheDocument();
+    await follow('Portfolios');
+    expect(window.location.hash).toBe(`${listRoute}${query}`);
+    expect(tabs().getByRole('link', { name: 'Portfolios' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('form', { name: 'New portfolio' })).toBeInTheDocument();
     expect(writes()).toHaveLength(0);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });

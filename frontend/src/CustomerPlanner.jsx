@@ -285,7 +285,7 @@ function CustomerPage({ request, customerId, ...props }) {
   const valid = validCustomer(resource.data) && resource.data.id === customerId;
   return <LoadState resource={resource} valid={valid}>
     {valid && (props.goalId ? <>
-      <nav className="planner-breadcrumbs" aria-label="Customer navigation"><a href={`${customerRoute(customerId)}${prefill(props.isin)}`}>← {resource.data.name} · Goals</a></nav>
+      <nav className="planner-breadcrumbs" aria-label="Customer navigation"><a href={`${customerRoute(customerId)}/goals${prefill(props.isin)}`}>← {resource.data.name} · Goals</a></nav>
       <GoalPage request={request} customerId={customerId} {...props} />
     </> : <CustomerGoals request={request} customer={resource.data} isin={props.isin} />)}
   </LoadState>;

@@ -7,7 +7,7 @@ import { BUY_AND_HOLD_ID } from './goalStrategies.js';
 import { POLL_INTERVAL } from './useInstrument.js';
 
 const { request } = vi.hoisted(() => ({ request: vi.fn() }));
-vi.mock('./Auth.jsx', () => ({ useAuth: () => ({ request }) }));
+vi.mock('./Auth.jsx', () => ({ useAuth: () => ({ request, user: { id: 'user-a' }, status: 'authenticated' }) }));
 
 const A = 'IE00B4L5Y983';
 const B = 'IE00B5BMR087';
@@ -77,7 +77,8 @@ function mockServer() {
     if (path === '/goals/simulate') return server.simulate(options.body, options);
     if (path.startsWith('/customers?')) return { items: [customer], total: 1, limit: 20, offset: 0 };
     if (path === '/customers/customer-1') return structuredClone(customer);
-    if (path.startsWith('/customers/customer-1/goals?')) return { items: [structuredClone(goal)], total: 1, limit: 20, offset: 0 };
+    if (path.startsWith('/customers/customer-1/portfolios?')) return { items: [], total: 0, limit: 20, offset: 0 };
+    if (path.startsWith('/customers/customer-1/goals?')) return { items: [structuredClone(goal)], total: 1, limit: Number(new URL(path, 'http://localhost').searchParams.get('limit')), offset: 0 };
     if (path === '/customers/customer-1/goals/goal-1') return structuredClone(goal);
     if (path.startsWith('/customers/customer-1/goals/goal-1/simulations?')) return { items: [], total: 0, limit: 20, offset: 0 };
     if (path === '/customers/customer-1/goals/goal-1/simulate') {
@@ -250,6 +251,10 @@ describe('planner routes and eligibility', () => {
     fireEvent.click(screen.getByRole('link', { name: /Alice/ }));
     await advance(5);
     expect(window.location.hash).toBe(`${customerRoute}?instrument=${A}`);
+    expect(screen.getByRole('link', { name: 'Portfolios', exact: true })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(screen.getByRole('link', { name: 'Goals', exact: true }));
+    await advance(5);
+    expect(window.location.hash).toBe(`${customerRoute}/goals?instrument=${A}`);
     fireEvent.click(screen.getByRole('link', { name: /Retirement/ }));
     await advance(5);
     expect(window.location.hash).toBe(`${goalRoute}?instrument=${A}`);
