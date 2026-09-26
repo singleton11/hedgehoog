@@ -19,11 +19,13 @@ portfolio (including its own saved-close interval); it is not live market data.
 
 The detail view has **Positions** and **Transactions** tabs with the same portfolio
 summary above both. Positions opens by default. Select **Add transaction** from
-either tab to open a single dialog, then choose **Deposit**, **Withdrawal**, **Buy**
-or **Sell**; only the fields for that type are shown. **Save transaction** closes
-the dialog after a successful save and refreshes the server balances and history.
-**Cancel** or Escape closes without submitting. Drafts and uncertain-save retry
-IDs survive closing/reopening, switching types or tabs, and portfolio refreshes
+either tab to expand an inline form above the active table, then choose **Deposit**,
+**Withdrawal**, **Buy** or **Sell**; only the fields for that type are shown. The
+summary and tabs remain accessible while adding a transaction. **Save transaction**
+collapses the form after a successful save and refreshes the server balances and
+history. **Cancel** or Escape within the form collapses it without submitting and
+returns focus to **Add transaction**. Drafts and uncertain-save retry IDs survive
+collapsing/reopening, switching types or tabs, and portfolio refreshes
 while you remain on this portfolio; navigation or session changes reset them.
 Cancellation is disabled while a save is pending. Cash and trade drafts are kept
 separately so funding a purchase does not erase its inputs or retry identity.

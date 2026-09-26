@@ -257,11 +257,8 @@ summary::marker { color: #839a8b; }
 .portfolio-tabs [role='tab'] { min-height: 44px; border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; color: var(--muted); }
 .portfolio-tabs [role='tab']:hover { color: var(--green-hover); background: var(--mint); }
 .portfolio-tabs [aria-selected='true'] { border-bottom-color: var(--green); color: var(--green); }
-.portfolio-transaction-dialog { width: min(44rem, calc(100% - 2rem)); max-width: none; max-height: calc(100dvh - 2rem); padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius); color: var(--ink); background: white; box-shadow: var(--shadow); overflow-y: auto; }
-.portfolio-transaction-dialog::backdrop { background: #17251bb3; }
-.portfolio-transaction-dialog .planner-create { margin: 0; padding: 0; border: 0; box-shadow: none; }
-.portfolio-transaction-dialog .goal-fields { grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); }
-.portfolio-transaction-dialog .button-group { margin-top: 1rem; }
+.portfolio-transaction-form .goal-fields { grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); }
+.portfolio-transaction-form .button-group { margin-top: 1rem; }
 .portfolio-table th:first-child { min-width: 12rem; }
 .portfolio-warning { display: block; margin-top: 0.4rem; color: #795518; font-size: 0.8rem; font-weight: 400; }
 .portfolio-warnings { padding: 1rem 1rem 1rem 2rem; border: 1px solid #e7d6ae; border-radius: var(--radius); background: #fffaf0; color: #795518; font-size: 0.85rem; }

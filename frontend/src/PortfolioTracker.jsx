@@ -327,11 +327,8 @@ function TransactionForm({ request, path, open, onClose, instruments, positions,
   const cash = type === 'deposit' || type === 'withdrawal';
   const [cashDate, setCashDate] = useState(today), [tradeDate, setTradeDate] = useState(today);
   const date = cash ? cashDate : tradeDate, setDate = cash ? setCashDate : setTradeDate;
-  const dialog = useRef(null), typeInput = useRef(null);
-  useEffect(() => {
-    if (open) { dialog.current.showModal(); typeInput.current?.focus(); }
-    else dialog.current.close();
-  }, [open]);
+  const typeInput = useRef(null);
+  useEffect(() => { if (open) typeInput.current?.focus(); }, [open]);
   const [instrumentId, setInstrumentId] = useState('');
   const [amount, setAmount] = useState('');
   const [quantity, setQuantity] = useState('');
@@ -373,10 +370,12 @@ function TransactionForm({ request, path, open, onClose, instruments, positions,
         setDate(today()); onSaved(`${transactionName(type)} saved.`);
       }, null);
   }
-  return <dialog ref={dialog} className="portfolio-transaction-dialog" aria-labelledby="transaction-heading" onCancel={(event) => { event.preventDefault(); if (!mutation.busy) onClose(); }}>
-    <form className="goal-form planner-create" aria-label="Add transaction" aria-describedby={`${prefix}-ledger-notice`} onSubmit={save} noValidate>
-    <h3 id="transaction-heading">Add transaction</h3>
-    <p className="muted">Choose a transaction type. Closing keeps your draft while you stay on this portfolio.</p>
+  // Hide without unmounting so drafts and uncertain-save retry IDs survive cancellation.
+  return <div id="transaction-entry" hidden={!open}>
+    <form className="goal-form planner-create portfolio-transaction-form" aria-label="Add transaction" aria-describedby={`${prefix}-ledger-notice`} onSubmit={save}
+      onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); if (!mutation.busy) onClose(); } }} noValidate>
+    <h3>Add transaction</h3>
+    <p className="muted">Choose a transaction type. Cancel keeps your draft while you stay on this portfolio.</p>
     <fieldset disabled={disabled || mutation.busy}>
       <div className="goal-fields">
         <div><label htmlFor={`${prefix}-type`}>Transaction type</label><select ref={typeInput} id={`${prefix}-type`} value={type} onChange={(event) => { setType(event.target.value); mutation.reset(); }}>
@@ -401,7 +400,7 @@ function TransactionForm({ request, path, open, onClose, instruments, positions,
       <p className="muted">Long only and cash-funded. Deposit cash before buying. Historical transactions must keep cash and holdings non-negative throughout the ledger; the server validates this.</p></>}
     <MutationStatus mutation={mutation} />
     </form>
-  </dialog>;
+  </div>;
 }
 function Transactions({ request, path, revision, onRemoved }) {
   const [offset, setOffset] = useState(0);
@@ -485,13 +484,13 @@ function PortfolioDetail({ request, customerId, portfolioId, goals }) {
         <div className="portfolio-tabs" role="tablist" aria-label="Portfolio sections" onKeyDown={tabKey}>
           {['positions', 'transactions'].map((value) => <button key={value} id={`portfolio-${value}-tab`} type="button" role="tab" aria-selected={tab === value} aria-controls={`portfolio-${value}-panel`} tabIndex={tab === value ? 0 : -1} onClick={() => setTab(value)}>{value === 'positions' ? 'Positions' : 'Transactions'}</button>)}
         </div>
-        <button ref={addButton} type="button" aria-haspopup="dialog" onClick={() => { setAdding(true); setMessage(null); }}>Add transaction</button>
+        <button ref={addButton} type="button" disabled={adding} aria-expanded={adding} aria-controls="transaction-entry" onClick={() => { setAdding(true); setMessage(null); }}>Add transaction</button>
       </div>
       {message && <p role="status">{message}</p>}
-      <div id="portfolio-positions-panel" role="tabpanel" aria-labelledby="portfolio-positions-tab" tabIndex={0} hidden={tab !== 'positions'}><Positions positions={resource.data.positions} /></div>
-      <div id="portfolio-transactions-panel" role="tabpanel" aria-labelledby="portfolio-transactions-tab" tabIndex={0} hidden={tab !== 'transactions'}><Transactions request={request} path={`${path}/transactions`} revision={revision} onRemoved={refresh} /></div>
       <TransactionForm request={request} path={`${path}/transactions`} open={adding} onClose={() => setAdding(false)} instruments={instruments} positions={resource.data.positions}
         onSaved={(success) => { setMessage(success); setAdding(false); refresh(); }} disabled={resource.loading || Boolean(resource.error)} />
+      <div id="portfolio-positions-panel" role="tabpanel" aria-labelledby="portfolio-positions-tab" tabIndex={0} hidden={tab !== 'positions'}><Positions positions={resource.data.positions} /></div>
+      <div id="portfolio-transactions-panel" role="tabpanel" aria-labelledby="portfolio-transactions-tab" tabIndex={0} hidden={tab !== 'transactions'}><Transactions request={request} path={`${path}/transactions`} revision={revision} onRemoved={refresh} /></div>
     </>}
   </>;
 }
