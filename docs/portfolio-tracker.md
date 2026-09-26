@@ -82,6 +82,37 @@ only summed when all open positions have the same closing-date interval; mixed
 intervals are reported as unavailable rather than combined into a false total.
 An empty portfolio has zero position value and zero unrealized PnL.
 
+### Customer summary PnL
+
+The customers table counts every saved goal (including unlinked goals) and sums
+all linked/unlinked portfolios. Realized and unrealized PnL use the accounting
+above; total PnL is their sum **before rounding**, not a sum of rounded displays.
+Customer PnL metrics retain Decimal precision through aggregation and round only
+once per metric, so displayed components can differ from total by a cent.
+No portfolios means zero. Any unpriced holding makes unrealized/total PnL and net
+worth unavailable; realized PnL remains known, never hidden by missing marks.
+
+**Today PnL** is distinct from portfolio **Daily unrealized PnL**: it includes
+shares sold during the latest saved trading-day interval, even full liquidations
+and same-day round trips. Over one common pair of adjacent closing dates it is:
+
+`closing holdings value − opening holdings value + net sales − purchases/fees`
+
+This is equity change excluding external deposits/withdrawals. Historical cost
+realized on a sale is not counted again as daily profit; previously held shares
+are measured against the preceding close. The interval is shown in the table;
+it need not end today and is never a live/intraday quote. Trades on the preceding
+closing date belong to the opening holdings; trades on the ending date are
+inside the interval. Daily rounding happens once after customer aggregation.
+
+Relevant positions across portfolios must have matching latest close intervals,
+valid raw EUR prices, and no trades newer than the ending close. Missing prices,
+currency conflicts, weekday gaps or mixed intervals return unavailable, not a
+partial daily sum. Instruments fully liquidated before the interval need no
+marks and their newer quotes do not choose the interval for unrelated holdings.
+Cash-only customers have zero daily PnL and no date interval. Refreshing is
+read-only and reuses saved prices without provider requests.
+
 ### Quote quality
 
 Valuation is read-only: opening or refreshing a portfolio never requests provider

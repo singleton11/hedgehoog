@@ -123,15 +123,20 @@ def _summary(document):
 def customers(request: Request, user: CurrentUser, limit: Limit = 20, offset: Offset = 0):
     # Portfolio routes use this module's ownership helpers; defer the reverse
     # dependency until request time to reuse the same valuation rules.
-    from portfolio_tracker import customer_net_worth
+    from portfolio_tracker import customer_portfolio_summaries
 
     db, owner = request.app.state.database, str(user["_id"])
     page = _page(db.planner_customers, {"user_id": owner},
                  {field: 1 for field in CUSTOMER_FIELDS}, CREATED_ORDER,
                  lambda row: _public(row, CUSTOMER_FIELDS), limit, offset)
-    totals = customer_net_worth(db, owner, [item["id"] for item in page["items"]])
+    customer_ids = [item["id"] for item in page["items"]]
+    totals = customer_portfolio_summaries(db, owner, customer_ids)
+    counts = {row["_id"]: row["count"] for row in db.planner_goals.aggregate([
+        {"$match": {"user_id": owner, "customer_id": {"$in": customer_ids}}},
+        {"$group": {"_id": "$customer_id", "count": {"$sum": 1}}},
+    ])} if customer_ids else {}
     for item in page["items"]:
-        item["net_worth_eur"] = totals[item["id"]]
+        item.update(totals[item["id"]], goal_count=counts.get(item["id"], 0))
     return page
 
 

@@ -23,6 +23,12 @@ STRATEGY = "buy_and_hold_single_instrument"
 GOAL = {"name": "Retirement", "goal_eur": "100000", "goal_date": "2036-09-17"}
 
 
+def empty_summary(customer, goal_count=0):
+    return {**customer, "net_worth_eur": "0.00", "goal_count": goal_count,
+            "realized_pnl_eur": "0.00", "unrealized_pnl_eur": "0.00", "today_pnl_eur": "0.00", "total_pnl_eur": "0.00",
+            "today_from_date": None, "today_to_date": None}
+
+
 def selection(**changes):
     return {"strategy": {"id": STRATEGY, "parameters": {"instrument": ISIN}},
             "starting_capital_eur": "10000", "reliability": 0.9, **changes}
@@ -77,7 +83,7 @@ def test_creation_normalizes_and_reads_only_public_fields_with_startup_indexes(a
                     "goal_date": GOAL["goal_date"], "created_at": planner_api._timestamp(NOW)}
     assert client.get(f"/customers/{customer['id']}").json() == customer
     assert client.get(url).json() == goal
-    assert client.get("/customers").json()["items"] == [{**customer, "net_worth_eur": "0.00"}]
+    assert client.get("/customers").json()["items"] == [empty_summary(customer, 1)]
     assert client.get(f"/customers/{customer['id']}/goals").json()["items"] == [goal]
     assert client.get(url + "/simulations").json() == {"items": [], "total": 0, "limit": 20, "offset": 0}
     owner = str(db.users.find_one({"login": "admin"})["_id"])
@@ -385,7 +391,7 @@ def test_foreign_owner_and_mismatched_parent_ids_never_expose_or_save(planner, d
         other.cookies.set(COOKIE_NAME, create_token(str(other_id), config))
         assert other.get("/customers").json()["total"] == 0
         other_customer, _, other_url = target(other, "Non-admin user")
-        assert other.get("/customers").json()["items"] == [{**other_customer, "net_worth_eur": "0.00"}]
+        assert other.get("/customers").json()["items"] == [empty_summary(other_customer, 1)]
         assert save(other, other_url, calculate(other, other_url))["saved_at"] is not None
         for endpoint in (f"/customers/{customer['id']}", f"/customers/{customer['id']}/goals", url,
                          url + "/simulations", url + f"/simulations/{saved['id']}"):
@@ -450,7 +456,7 @@ def test_customers_and_goals_pagination_defaults_bounds_and_timestamp_ties(plann
     endpoint = f"/customers/{customer['id']}/goals"
     for name in ("Second", "Third"):
         goals.append(client.post(endpoint, json={**GOAL, "name": name}).json())
-    customer_summaries = [{**item, "net_worth_eur": "0.00"} for item in customers]
+    customer_summaries = [empty_summary(item, 3 if item["id"] == customer["id"] else 1) for item in customers]
     for endpoint, items in (("/customers", customer_summaries), (endpoint, goals)):
         assert client.get(endpoint).json() == {"items": list(reversed(items)), "total": 3, "limit": 20, "offset": 0}
         assert client.get(endpoint, params={"limit": 1, "offset": 1}).json() == {
@@ -463,7 +469,7 @@ def test_customers_and_goals_pagination_defaults_bounds_and_timestamp_ties(plann
             assert client.get(endpoint, params=params).status_code == 422
     clock[0] += timedelta(microseconds=1)
     newer = client.post("/customers", json={"name": "Sub-millisecond newer"}).json()
-    assert client.get("/customers").json()["items"][0] == {**newer, "net_worth_eur": "0.00"}
+    assert client.get("/customers").json()["items"][0] == empty_summary(newer)
 
 
 @pytest.mark.parametrize("delta", [timedelta(hours=24), timedelta(hours=24, seconds=1)])

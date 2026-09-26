@@ -9,6 +9,9 @@ vi.mock('./Auth.jsx', () => ({ useAuth: () => ({ ...auth, request: auth.request 
 const A = 'IE00B4L5Y983', B = 'IE00B5BMR087';
 const uid = (number) => number.toString(16).padStart(24, '0');
 const customer = { id: uid(1), name: 'Alice' };
+const customerSummary = (value) => ({ net_worth_eur: '0.00', goal_count: 0,
+  realized_pnl_eur: '0.00', unrealized_pnl_eur: '0.00', today_pnl_eur: '0.00', total_pnl_eur: '0.00',
+  today_from_date: null, today_to_date: null, ...value });
 const goal = { id: uid(101), customer_id: customer.id, name: 'Retirement', goal_eur: '100000.00', goal_date: '2036-09-24' };
 const buyAndHold = {
   id: BUY_AND_HOLD_ID, name: 'Buy and hold single instrument', description: 'Invest and hold one acquired instrument.',
@@ -100,7 +103,9 @@ function mockServer({ seed = true } = {}) {
   };
   server.customer = async (cid) => server.customers.get(cid);
   server.goal = async (cid, gid) => server.goals.get(gid)?.customer_id === cid ? server.goals.get(gid) : null;
-  server.customerList = async (query) => page([...server.customers.values()].map((item) => ({ net_worth_eur: '0.00', ...item })), query);
+  server.customerList = async (query) => page([...server.customers.values()].map((item) => customerSummary({
+    goal_count: [...server.goals.values()].filter((goal) => goal.customer_id === item.id).length, ...item,
+  })), query);
   server.goalList = async (cid, query) => page([...server.goals.values()].filter((item) => item.customer_id === cid), query);
   server.history = async (cid, gid, query) => page([...server.saved.values()].filter((run) => run.customer_id === cid && run.goal_id === gid)
     .sort((a, b) => b.calculated_at.localeCompare(a.calculated_at) || b.id.localeCompare(a.id)).map(summary), query);
@@ -173,14 +178,14 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); window.history.replaceState(null, '', '#/'); });
 
-describe('customer net-worth table', () => {
+describe('customer portfolio summary table', () => {
   it('shows exact EUR totals, zero and unavailable values with native customer links', async () => {
     const server = mockServer();
     server.customers.set(customer.id, { ...customer, net_worth_eur: '9007199254740993.01' });
     server.customers.set(uid(2), { id: uid(2), name: 'No portfolios', net_worth_eur: '0.00' });
     server.customers.set(uid(3), { id: uid(3), name: 'Missing prices', net_worth_eur: null });
     await open();
-    const table = within(screen.getByRole('table', { name: 'Customer net worth' }));
+    const table = within(screen.getByRole('table', { name: 'Customer portfolio summary' }));
     expect(table.getByRole('columnheader', { name: 'Customer', exact: true })).toBeInTheDocument();
     expect(table.getByRole('columnheader', { name: 'Net worth (EUR)' })).toBeInTheDocument();
     expect(table.getAllByRole('row')).toHaveLength(4);
@@ -188,12 +193,52 @@ describe('customer net-worth table', () => {
     expect(table.getByRole('row', { name: /No portfolios/ })).toHaveTextContent('€0.00');
     const unavailable = within(table.getByRole('row', { name: /Missing prices/ }));
     expect(unavailable.getByText('Unavailable')).toBeInTheDocument();
-    expect(unavailable.queryByText('€0.00')).not.toBeInTheDocument();
+    expect(unavailable.getAllByRole('cell')[1]).not.toHaveTextContent('€0.00');
     expect(unavailable.getByText('Some holdings cannot be valued.')).toBeInTheDocument();
     expect(table.getByRole('link', { name: /Alice/ })).toHaveAttribute('href', customerRoute());
     expect(screen.getByText(/External assets and debts are not included/)).toBeInTheDocument();
     expect(request.mock.calls.map(([path]) => path)).toEqual([pagePath('/customers')]);
     expect(posts()).toHaveLength(0);
+  });
+
+  it('shows goal counts and signed exact P&L with close dates, zeroes and unavailable values', async () => {
+    const server = mockServer();
+    server.customers.set(customer.id, { ...customer, goal_count: 23, realized_pnl_eur: '-9007199254740993.01',
+      unrealized_pnl_eur: '0.00', total_pnl_eur: '-9007199254740993.01', today_pnl_eur: '12.34',
+      today_from_date: '2026-09-22', today_to_date: '2026-09-23' });
+    server.customers.set(uid(2), { id: uid(2), name: 'Unpriced', net_worth_eur: null, unrealized_pnl_eur: null, today_pnl_eur: null, total_pnl_eur: null });
+    await open();
+    const table = within(screen.getByRole('table'));
+    expect(table.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'Customer', 'Goals', 'Net worth (EUR)', 'Realized P&L (EUR)', 'Unrealized P&L (EUR)', 'Today P&L (EUR)', 'Total P&L (EUR)',
+    ]);
+    const row = within(table.getByRole('row', { name: /Alice/ }));
+    expect(row.getAllByRole('cell')[0]).toHaveTextContent(/^23$/);
+    expect(row.getAllByText('-€9,007,199,254,740,993.01')).toHaveLength(2);
+    row.getAllByText('-€9,007,199,254,740,993.01').forEach((value) => expect(value).toHaveClass('return-negative'));
+    expect(row.getByText('€12.34')).toHaveClass('return-positive');
+    expect(row.getAllByRole('cell')[3].firstChild).not.toHaveClass('return-positive', 'return-negative');
+    expect(row.getAllByRole('cell')[4]).toHaveTextContent('2026-09-22 to 2026-09-23');
+    expect(row.getByText('2026-09-23')).toHaveAttribute('datetime', '2026-09-23');
+    const missing = within(table.getByRole('row', { name: /Unpriced/ }));
+    expect(missing.getAllByText('Unavailable')).toHaveLength(4);
+    missing.getAllByText('Unavailable').forEach((value) => expect(value).not.toHaveClass('return-positive', 'return-negative'));
+    expect(screen.getByText(/including sales and fees, excluding deposits and withdrawals/)).toBeInTheDocument();
+    expect(request.mock.calls.map(([path]) => path)).toEqual([pagePath('/customers')]);
+  });
+
+  it.each([
+    { goal_count: -1 }, { goal_count: 1.5 }, { goal_count: '1' }, { goal_count: undefined },
+    { realized_pnl_eur: null }, { realized_pnl_eur: 12.34 }, { unrealized_pnl_eur: 'NaN' },
+    { today_pnl_eur: undefined }, { total_pnl_eur: '1.234' }, { total_pnl_eur: '1e5' },
+    { today_pnl_eur: '1.00' }, { today_from_date: '2026-09-22' },
+    { today_from_date: '2026-02-30', today_to_date: '2026-03-02' },
+    { today_from_date: '2026-09-24', today_to_date: '2026-09-23' },
+  ])('rejects malformed customer metrics %j', async (invalid) => {
+    const server = mockServer(); server.customers.set(customer.id, { ...customer, ...invalid });
+    await open();
+    expect(screen.getByRole('alert')).toHaveTextContent('unexpected response');
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   it.each([undefined, 123.45, 'NaN', '-1.00', '1.234', ''])('rejects malformed net worth %s and supports explicit retry', async (value) => {
@@ -222,12 +267,13 @@ describe('customer net-worth table', () => {
     const server = mockServer(), pending = deferred(); server.customerList = () => pending.promise;
     const view = render(<CustomerPlanner />); await flush();
     const signal = reads(pagePath('/customers'))[0][1].signal;
-    server.customerList = async () => ({ items: [{ id: uid(2), name: 'New session', net_worth_eur: '1.00' }], total: 1, limit: 20, offset: 0 });
+    server.customerList = async () => ({ items: [customerSummary({ id: uid(2), name: 'New session', net_worth_eur: '1.00' })], total: 1, limit: 20, offset: 0 });
     if (identity === 'user') auth.user = { id: 'user-b' }; else auth.request = vi.fn(server.handle);
     view.rerender(<CustomerPlanner />); await flush(); expect(signal.aborted).toBe(true);
-    await act(async () => pending.resolve({ items: [{ ...customer, net_worth_eur: '999.00' }], total: 1, limit: 20, offset: 0 }));
+    await act(async () => pending.resolve({ items: [customerSummary({ ...customer, net_worth_eur: '999.00', total_pnl_eur: '9999.99' })], total: 1, limit: 20, offset: 0 }));
     expect(screen.getByRole('table')).toHaveTextContent('New session');
     expect(screen.queryByText('€999.00')).not.toBeInTheDocument(); expect(screen.queryByText('Alice')).not.toBeInTheDocument();
+    expect(screen.queryByText('€9,999.99')).not.toBeInTheDocument();
   });
 });
 

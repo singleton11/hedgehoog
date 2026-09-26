@@ -158,7 +158,11 @@ def test_customer_net_worth_sums_cash_and_holdings_across_linked_and_unlinked_po
     # 1000 - 201.23 - 50 cash + 220 saved holdings + 250.45 other cash.
     assert summary["net_worth_eur"] == "1219.22"
     assert Decimal(summary["net_worth_eur"]) == sum(Decimal(detail(client, path)["equity_eur"]) for path in (url, other_url))
-    assert set(summary) == {"id", "name", "created_at", "net_worth_eur"}
+    assert {key: summary[key] for key in ("goal_count", "realized_pnl_eur", "unrealized_pnl_eur", "today_pnl_eur", "total_pnl_eur",
+                                        "today_from_date", "today_to_date")} == {
+        "goal_count": 1, "realized_pnl_eur": "0.00", "unrealized_pnl_eur": "18.77", "today_pnl_eur": "20.00",
+        "total_pnl_eur": "18.77", "today_from_date": "2026-09-15", "today_to_date": "2026-09-16",
+    }
     assert list(db.portfolios.find()) == before
     assert "net_worth_eur" not in db.planner_customers.find_one({"_id": customer_id})
     # A refreshed list reflects saved market data without any provider request.
@@ -174,7 +178,10 @@ def test_customer_net_worth_is_exact_and_includes_more_than_one_portfolio_page(t
     for _ in range(21):
         _, other_url = portfolio(client, customer_id)
         record(client, other_url, cash(amount="0.01"))
-    assert client.get("/customers").json()["items"][0]["net_worth_eur"] == "9007199254741893.22"
+    summary = client.get("/customers").json()["items"][0]
+    assert summary["net_worth_eur"] == "9007199254741893.22"
+    assert summary["unrealized_pnl_eur"] == summary["total_pnl_eur"] == "9007199254740893.01"
+    assert summary["today_pnl_eur"] == "9007199254740883.01"
 
 
 @pytest.mark.parametrize("failure", ["missing", "invalid", "currency"])
@@ -190,7 +197,9 @@ def test_customer_net_worth_is_unavailable_rather_than_partial_when_any_holding_
         quote(db, "2026-09-17", "not-a-price")
     else:
         quote(db, "2026-09-17", "110", currency="USD")
-    assert client.get("/customers").json()["items"][0]["net_worth_eur"] is None
+    summary = client.get("/customers").json()["items"][0]
+    assert all(summary[key] is None for key in ("net_worth_eur", "unrealized_pnl_eur", "today_pnl_eur", "total_pnl_eur"))
+    assert summary["realized_pnl_eur"] == "0.00"
     # Once liquidated, there is no missing holding value to conceal the cash.
     record(client, url, trade("sell", day="2026-09-17"))
     assert client.get("/customers").json()["items"][0]["net_worth_eur"] == "1250.00"
@@ -214,6 +223,13 @@ def test_customer_net_worth_reads_only_the_current_owners_customer_page(tracker,
     other_customer = customer(client, "Off-page customer")
     _, other_url = portfolio(client, other_customer)
     record(client, other_url, cash(amount="999.99"))
+    goal(client, customer_id)
+    goal(client, other_customer)
+    foreign_goal = db.planner_goals.find_one({"customer_id": customer_id})
+    foreign_goal.update({"_id": str(ObjectId()), "user_id": "another-owner"})
+    db.planner_goals.insert_one(foreign_goal)
+    goal_counts = Mock(wraps=db.planner_goals.aggregate)
+    monkeypatch.setattr(db.planner_goals, "aggregate", goal_counts)
     foreign = db.portfolios.find_one({"_id": first["id"]})
     foreign.update({"_id": str(ObjectId()), "user_id": "another-owner"})
     db.portfolios.insert_one(foreign)
@@ -230,8 +246,10 @@ def test_customer_net_worth_reads_only_the_current_owners_customer_page(tracker,
     owner = str(db.users.find_one({"login": "admin"})["_id"])
     assert find.call_args.args[0] == {"user_id": owner, "customer_id": {"$in": [customer_id]}}
     assert value.call_args.args[1]["_id"] == first["id"]
+    assert page["items"][0]["goal_count"] == 1
+    assert goal_counts.call_args.args[0][0] == {"$match": {"user_id": owner, "customer_id": {"$in": [customer_id]}}}
     assert client.get("/customers?offset=100").json()["items"] == []
-    assert find.call_count == value.call_count == 1
+    assert find.call_count == value.call_count == goal_counts.call_count == 1
 
 
 def test_owner_customer_and_goal_scoping_cannot_be_crossed(tracker, db):

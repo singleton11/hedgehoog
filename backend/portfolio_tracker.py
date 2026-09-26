@@ -224,15 +224,24 @@ def replay(events, anchors=None):
         return cash, realized, positions
 
 
-def valuation(db, document):
+def _cached_quote_rows(db, instrument, now, cache):
+    key = tuple(instrument[field] for field in ("instrument_id", "symbol", "exchange"))
+    if key not in cache:
+        cache[key] = quote_rows(db, instrument, now)
+    return cache[key]
+
+
+def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
+    """Public rounded totals by default; retain Decimal totals for aggregation."""
     with localcontext() as context:
         context.prec = 80
         cash, realized, positions = replay(document["transactions"])
-        now, quotes, anchors = md.utcnow(), {}, {}
+        now, quotes, anchors = now or md.utcnow(), {}, {}
+        quote_cache = {} if quote_cache is None else quote_cache
         for isin, position in positions.items():
             if not position["quantity"]:
                 continue
-            rows = quote_rows(db, position["instrument"], now)
+            rows = _cached_quote_rows(db, position["instrument"], now, quote_cache)
             quotes[isin] = rows if currency_supported(db, position["instrument"], rows) else []
             if len(quotes[isin]) >= 2 and (previous := price(quotes[isin][-2].get("close"))) is not None:
                 anchors[isin] = (quotes[isin][-2]["date"], previous)
@@ -280,36 +289,117 @@ def valuation(db, document):
             daily = None
             warnings.append("Portfolio daily unrealized PnL unavailable: positions have different closing-date intervals. Update their market data.")
         period = next(iter(periods)) if len(periods) == 1 and daily is not None else (None, None)
-        return {"portfolio": metadata(document), "cash_eur": euros(cash), "positions_value_eur": euros(value),
-                "equity_eur": euros(cash + value) if value is not None else None, "realized_pnl_eur": euros(realized),
-                "unrealized_pnl_eur": euros(unrealized), "daily_unrealized_pnl_eur": euros(daily),
+        amount = (lambda number: number) if exact_totals else euros
+        return {"portfolio": metadata(document), "cash_eur": amount(cash), "positions_value_eur": amount(value),
+                "equity_eur": amount(cash + value) if value is not None else None, "realized_pnl_eur": amount(realized),
+                "unrealized_pnl_eur": amount(unrealized), "daily_unrealized_pnl_eur": amount(daily),
                 "daily_from_date": period[0], "daily_to_date": period[1],
                 "positions": [event_public(item) for item in items], "warnings": warnings}
 
 
-def customer_net_worth(db, owner, customer_ids):
-    """Sum tracked portfolio equity for one customer page, never partial totals.
+def _customer_daily_pnl(db, documents, now, quote_cache):
+    """Equity movement less external cash flows over one shared saved-close interval.
 
-    Use the same rounded EUR equity shown on each portfolio. Goals and simulated
-    capital are not assets. No portfolios means zero; any unpriced holding means
-    the customer's total is unavailable, not just the sum of known assets.
+    Include sales and round trips, not just the shares still held. Select dates
+    before validating prices; never fall back to older valid closes. Instruments
+    liquidated before the interval need no marks and cannot poison the total.
+    The caller supplies an 80-digit Decimal context and a request-local cache.
+    """
+    trades = [event for document in documents for event in document["transactions"]
+              if event["type"] in ("buy", "sell")]
+    if not trades:
+        return {"today_pnl_eur": "0.00", "today_from_date": None, "today_to_date": None}
+    unavailable = {"today_pnl_eur": None, "today_from_date": None, "today_to_date": None}
+    instruments = {tuple(event["instrument"][field] for field in ("instrument_id", "symbol", "exchange")):
+                   event["instrument"] for event in trades}
+    rows = {key: _cached_quote_rows(db, instrument, now, quote_cache) for key, instrument in instruments.items()}
+    last_trades = {key: max(event["date"] for event in trades if tuple(
+        event["instrument"][field] for field in ("instrument_id", "symbol", "exchange")) == key) for key in instruments}
+    open_keys = {tuple(position["instrument"][field] for field in ("instrument_id", "symbol", "exchange"))
+                 for document in documents for position in replay(document["transactions"])[2].values() if position["quantity"]}
+    open_dates = sorted({row["date"] for key in open_keys for row in rows[key]})
+    # A long-liquidated listing's fresh (or malformed) quotes must not choose
+    # the interval for unrelated holdings. Recent liquidations still participate.
+    candidates = {key for key, values in rows.items() if key in open_keys or (
+        (len(values) < 2 or last_trades[key] > values[-2]["date"])
+        and (len(open_dates) < 2 or last_trades[key] > open_dates[-2]))}
+    if not candidates:
+        return {"today_pnl_eur": "0.00", "today_from_date": None, "today_to_date": None}
+    dates = sorted({row["date"] for key in candidates for row in rows[key]})
+    if len(dates) < 2:
+        return unavailable
+    start, end = dates[-2:]
+    if not daily_interval(start, end) or any(event["date"] > end for event in trades):
+        return unavailable
+    total, exposed = ZERO, False
+    for document in documents:
+        events = document["transactions"]
+        _, _, before = replay([event for event in events if event["date"] <= start])
+        _, _, after = replay(events)
+        period_trades = [event for event in events if event["type"] in ("buy", "sell") and start < event["date"] <= end]
+        traded = {event["instrument"]["instrument_id"] for event in period_trades}
+        for isin, position in after.items():
+            opening = before.get(isin, {}).get("quantity", ZERO)
+            closing = position["quantity"]
+            if not opening and not closing and isin not in traded:
+                continue
+            exposed = True
+            instrument = position["instrument"]
+            key = tuple(instrument[field] for field in ("instrument_id", "symbol", "exchange"))
+            marks = rows[key]
+            if (len(marks) < 2 or (marks[-2]["date"], marks[-1]["date"]) != (start, end)
+                    or not currency_supported(db, instrument, marks)):
+                return unavailable
+            previous, latest = price(marks[-2].get("close")), price(marks[-1].get("close"))
+            if previous is None or latest is None:
+                return unavailable
+            total += closing * latest - opening * previous
+        for event in period_trades:
+            gross = (Decimal(event["quantity"]) * Decimal(event["price_eur"])).quantize(CENT, rounding=ROUND_HALF_UP)
+            total += (gross if event["type"] == "sell" else -gross) - Decimal(event["commission_eur"])
+    return {"today_pnl_eur": euros(total), "today_from_date": start if exposed else None,
+            "today_to_date": end if exposed else None}
+
+
+def customer_portfolio_summaries(db, owner, customer_ids):
+    """All portfolios for one owner/customer page; exact totals, never partials.
+
+    Net worth preserves the sum of displayed portfolio equities. PnL totals
+    retain exact Decimal amounts until customer aggregation, then round once;
+    rounded realized and unrealized displays may differ from total by a cent.
+    Daily PnL uses a common close interval across all relevant positions.
+    Goals and simulated capital are not assets; deposits are not profit.
     """
     if not customer_ids:
         return {}
     with localcontext() as context:
         context.prec = 80
-        totals = dict.fromkeys(customer_ids, ZERO)
+        fields = {"net_worth_eur": "equity_eur", "realized_pnl_eur": "realized_pnl_eur",
+                  "unrealized_pnl_eur": "unrealized_pnl_eur"}
+        totals = {customer_id: dict.fromkeys(fields, ZERO) for customer_id in customer_ids}
+        grouped = {customer_id: [] for customer_id in customer_ids}
+        now, quote_cache = md.utcnow(), {}
         documents = db.portfolios.find(
             {"user_id": owner, "customer_id": {"$in": customer_ids}},
             {field: 1 for field in (*META_FIELDS, "transactions")},
         )
         for document in documents:
             customer_id = document["customer_id"]
-            if totals[customer_id] is None:
-                continue
-            equity = valuation(db, document)["equity_eur"]
-            totals[customer_id] = totals[customer_id] + Decimal(equity) if equity is not None else None
-        return {customer_id: euros(total) for customer_id, total in totals.items()}
+            grouped[customer_id].append(document)
+            snapshot = valuation(db, document, now=now, quote_cache=quote_cache, exact_totals=True)
+            for field, source in fields.items():
+                amount = snapshot[source]
+                if field == "net_worth_eur" and amount is not None:
+                    amount = Decimal(euros(amount))
+                current = totals[customer_id][field]
+                totals[customer_id][field] = current + amount if current is not None and amount is not None else None
+        result = {}
+        for customer_id, amounts in totals.items():
+            unrealized = amounts["unrealized_pnl_eur"]
+            amounts["total_pnl_eur"] = amounts["realized_pnl_eur"] + unrealized if unrealized is not None else None
+            result[customer_id] = {**{field: euros(amount) for field, amount in amounts.items()},
+                                   **_customer_daily_pnl(db, grouped[customer_id], now, quote_cache)}
+        return result
 
 
 @router.get("/portfolio-instruments")

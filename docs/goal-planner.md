@@ -1,7 +1,14 @@
 # Customers, goals and return statistics
 
 Open **Customers** in the signed-in workspace (`#/goal`) to see your
-**customers** in a table with their **Net worth (EUR)**. Net worth is the sum of
+**customers** in a table with their **Goals** count, **Net worth (EUR)** and
+**Realized**, **Unrealized**, **Today** and **Total P&L (EUR)** across all portfolios.
+Total P&L is realized plus unrealized, calculated before rounding. Today P&L uses
+the latest saved trading-day interval (shown beside the amount), includes sales
+and fees, and excludes deposits/withdrawals. It is not a live or necessarily
+current-day value; incomplete or mismatched prices show **Unavailable**. See
+[customer P&L accounting](portfolio-tracker.md#customer-summary-pnl) for details.
+Net worth is the sum of
 cash and holdings across all of a customer's tracked portfolios, whether linked
 to a goal or not, using saved prices rather than live quotes. External assets and
 debts, goal targets and simulated capital are not included. Customers without
@@ -324,12 +331,19 @@ Origin protections as other commands. None calls Marketstack or spends quota.
 ### Customers, goals and saved simulations
 
 - `GET /customers`, `POST /customers` (`{name}`), `GET /customers/{customerId}`.
-  Customer list items additionally include `net_worth_eur`, an exact two-decimal
-  EUR string or `null` when any tracked holding cannot be valued. Totals are
-  computed on read only for the current user's requested customer page, using
-  the same rounded equity and saved-price rules as portfolio details. No market
-  data acquisition or simulation is triggered. Creation/detail responses remain
-  name-only metadata; the derived total is not stored on the customer.
+  Customer list items additionally include `goal_count` (nonnegative integer),
+  `net_worth_eur`, `realized_pnl_eur`, `unrealized_pnl_eur`, `today_pnl_eur`,
+  `total_pnl_eur`, `today_from_date` and `today_to_date`. Money is an exact signed
+  two-decimal EUR string; net worth is nonnegative. Unavailable valuations/daily
+  P&L are `null`, never partial sums; realized P&L remains known. Empty customers
+  have zero counts/amounts. Daily dates are ISO dates, or both `null` when daily
+  P&L is unavailable or there is no market exposure in the interval. Totals are
+  computed on read only for the current user's requested customer page, including
+  all goals and portfolios, not just the first page. Net worth uses the same
+  rounded equities as portfolio details; P&L retains unrounded Decimal values
+  until customer aggregation. No acquisition or simulation is triggered.
+  Creation/detail responses remain name-only metadata; derived fields are not
+  stored on the customer.
 - `GET /customers/{customerId}/goals`, `POST /customers/{customerId}/goals`
   (`{name, goal_eur, goal_date}`), and `GET /customers/{customerId}/goals/{goalId}`.
 - `PATCH /customers/{customerId}/goals/{goalId}` updates one or more of

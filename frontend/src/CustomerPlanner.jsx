@@ -10,7 +10,17 @@ const id = (value) => typeof value === 'string' && /^[a-zA-Z0-9_-]+$/.test(value
 const text = (value) => typeof value === 'string' && value.trim().length > 0;
 const money = (value) => typeof value === 'string' && /^\d+\.\d{2}$/.test(value);
 const validCustomer = (value) => id(value?.id) && text(value.name);
-const validCustomerSummary = (value) => validCustomer(value) && (value.net_worth_eur === null || money(value.net_worth_eur));
+const pnlMoney = (value) => typeof value === 'string' && /^-?\d+\.\d{2}$/.test(value);
+const pnlClass = (value) => !pnlMoney(value) || !/[1-9]/.test(value) ? '' : value.startsWith('-') ? 'return-negative' : 'return-positive';
+const pnlColumns = [['Realized P&L (EUR)', 'realized_pnl_eur'], ['Unrealized P&L (EUR)', 'unrealized_pnl_eur'],
+  ['Today P&L (EUR)', 'today_pnl_eur'], ['Total P&L (EUR)', 'total_pnl_eur']];
+const validDate = (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+  && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+const validCustomerSummary = (value) => validCustomer(value) && (value.net_worth_eur === null || money(value.net_worth_eur))
+  && Number.isSafeInteger(value.goal_count) && value.goal_count >= 0 && pnlMoney(value.realized_pnl_eur)
+  && ['unrealized_pnl_eur', 'today_pnl_eur', 'total_pnl_eur'].every((key) => value[key] === null || pnlMoney(value[key]))
+  && ((value.today_from_date === null && value.today_to_date === null && [null, '0.00'].includes(value.today_pnl_eur))
+    || (value.today_pnl_eur !== null && validDate(value.today_from_date) && validDate(value.today_to_date) && value.today_from_date < value.today_to_date));
 const validGoal = (value, customerId) => validCustomer(value) && value.customer_id === customerId && money(value.goal_eur)
   && typeof value.goal_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.goal_date);
 const customerPath = (customerId) => `/customers/${encodeURIComponent(customerId)}`;
@@ -185,14 +195,22 @@ function Customers({ request, isin }) {
     {isin && <p className="planner-prefill">Planning with {isin}. Choose a customer and goal first; this instrument will be preselected for the new simulation.</p>}
     <PagedList key={revision} request={request} path="/customers" label="Customers" validate={validCustomerSummary} empty="No customers yet. Create your first customer below.">
       {(items) => <>
-        <p className="muted" id="customer-net-worth-note">Net worth is cash plus holdings across tracked EUR portfolios, using saved prices—not live prices. External assets and debts are not included.</p>
+        <p className="muted" id="customer-net-worth-note">Net worth is cash plus holdings across all tracked EUR portfolios, using saved prices—not live prices. External assets and debts are not included. Total P&L is realized plus unrealized P&L.</p>
+        <p className="muted" id="customer-pnl-note">Today P&L covers the latest saved trading-day interval shown, including sales and fees, excluding deposits and withdrawals. It is not live or necessarily today. Missing or mismatched prices are unavailable.</p>
         <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Customers table">
-          <table className="planner-table customers-table" aria-describedby="customer-net-worth-note">
-            <caption>Customer net worth</caption>
-            <thead><tr><th scope="col">Customer</th><th scope="col">Net worth (EUR)</th></tr></thead>
+          <table className="planner-table customers-table" aria-describedby="customer-net-worth-note customer-pnl-note">
+            <caption>Customer portfolio summary</caption>
+            <thead><tr><th scope="col">Customer</th><th scope="col">Goals</th><th scope="col">Net worth (EUR)</th>
+              {pnlColumns.map(([label, key]) => <th key={key} scope="col">{label}</th>)}
+            </tr></thead>
             <tbody>{items.map((customer) => <tr key={customer.id}>
               <th scope="row"><a href={`${customerRoute(customer.id)}${prefill(isin)}`}>{customer.name}<span className="simulation-parameter">View portfolios and goals →</span></a></th>
+              <td>{customer.goal_count}</td>
               <td>{formatEuros(customer.net_worth_eur)}{customer.net_worth_eur === null && <span className="simulation-parameter">Some holdings cannot be valued.</span>}</td>
+              {pnlColumns.map(([, key]) => <td key={key}>
+                <span className={pnlClass(customer[key])}>{formatEuros(customer[key])}</span>
+                {key === 'today_pnl_eur' && customer.today_to_date && <span className="simulation-parameter"><time dateTime={customer.today_from_date}>{customer.today_from_date}</time> to <time dateTime={customer.today_to_date}>{customer.today_to_date}</time></span>}
+              </td>)}
             </tr>)}</tbody>
           </table>
         </div>

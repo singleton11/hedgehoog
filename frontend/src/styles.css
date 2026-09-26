@@ -132,8 +132,8 @@ button.sign-out { min-height: 34px; padding: 0.4rem 0.65rem; font-size: 0.74rem;
 .acquired-table thead th { padding-top: 0.65rem; padding-bottom: 0.65rem; font-weight: 500; }
 .acquired-table thead th[rowspan] { vertical-align: middle; }
 .acquired-table .statistic-group { text-align: center; font-size: 0.61rem; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; }
-.acquired-table .return-positive, .return-statistics .return-positive, .portfolio-tracker .return-positive { color: #228065; }
-.acquired-table .return-negative, .return-statistics .return-negative, .portfolio-tracker .return-negative { color: #b34452; }
+.acquired-table .return-positive, .return-statistics .return-positive, .portfolio-tracker .return-positive, .customers-table .return-positive { color: #228065; }
+.acquired-table .return-negative, .return-statistics .return-negative, .portfolio-tracker .return-negative, .customers-table .return-negative { color: #b34452; }
 .acquired-table th[scope='row'] { width: 26%; font-weight: 500; }
 .fund-identity { display: flex; align-items: center; gap: 0.8rem; }
 .fund-identity > div { min-width: 0; }
@@ -268,9 +268,14 @@ summary::marker { color: #839a8b; }
 .planner-table caption { text-align: left; margin-bottom: 1rem; color: var(--muted); }
 .planner-table th, .planner-table td { padding: 0.85rem; text-align: left; border-bottom: 1px solid var(--line); min-width: 8rem; }
 .planner-table thead { color: var(--muted); font-size: 0.75rem; }
-.customers-table { table-layout: fixed; }
-.customers-table th, .customers-table td { min-width: 0; overflow-wrap: anywhere; }
-.customers-table th:last-child, .customers-table td { text-align: right; font-variant-numeric: tabular-nums; }
+.customers-table { min-width: 66rem; }
+.customers-table th, .customers-table td { font-variant-numeric: tabular-nums; }
+.customers-table th:first-child { min-width: 12rem; max-width: 22rem; overflow-wrap: anywhere; }
+.customers-table th:nth-child(2), .customers-table td:nth-child(2) { min-width: 3rem; }
+.customers-table thead th:not(:first-child), .customers-table td { text-align: right; }
+.customers-table td { white-space: nowrap; }
+.customers-table .simulation-parameter { white-space: normal; }
+.customers-table time { white-space: nowrap; }
 .customers-table tbody tr:hover { background: #f4f8f3; }
 .customers-table tbody a { display: block; }
 .simulation-parameter { display: block; color: var(--muted); font-size: 0.8rem; overflow-wrap: anywhere; }
