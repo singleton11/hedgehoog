@@ -271,7 +271,6 @@ function PortfolioList({ request, customerId, goals }) {
   const valid = validPage(resource.data, offset, PAGE_SIZE, (item) => validPortfolioSummary(item, customerId));
   return <>
     <div className="section-heading page-heading">
-      <p className="muted">Track separate EUR portfolios with manual cash movements and trades. Goals can be linked whenever you are ready.</p>
       <button ref={addButton} type="button" disabled={creating} aria-expanded={creating} aria-controls={creating ? 'new-portfolio-form' : undefined} onClick={() => setCreating(true)}>Add portfolio</button>
     </div>
     {creating && <MetadataForm request={request} customerId={customerId} goals={goals} onCancel={() => setCreating(false)}

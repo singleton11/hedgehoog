@@ -201,7 +201,7 @@ function Customers({ request, isin }) {
     wasCreating.current = creating;
   }, [creating]);
   return <>
-    <div className="section-heading page-heading"><div><h2 className="instrument-name">Customers</h2><p className="muted">Choose a customer to manage portfolios, goals and saved simulations.</p></div>
+    <div className="section-heading page-heading"><div><h2 className="instrument-name">Customers</h2></div>
       <button ref={addButton} type="button" disabled={creating} aria-expanded={creating} aria-controls={creating ? 'new-customer-form' : undefined} onClick={() => setCreating(true)}>Add customer</button>
     </div>
     {isin && <p className="planner-prefill">Planning with {isin}. Choose a customer and goal first; this instrument will be preselected for the new simulation.</p>}
