@@ -210,7 +210,7 @@ function Customers({ request, isin }) {
     <PagedList key={revision} request={request} path="/customers" label="Customers" validate={validCustomerSummary} empty="No customers yet. Select Add customer to create your first customer.">
       {(items) => <>
         <p className="muted" id="customer-net-worth-note">Net worth is cash plus holdings across all tracked EUR portfolios, using saved prices—not live prices. External assets and debts are not included. Total P&L is realized plus unrealized P&L.</p>
-        <p className="muted" id="customer-pnl-note">Today P&L covers the latest saved trading-day interval shown, including sales and fees, excluding deposits and withdrawals. It is not live or necessarily today. Missing or mismatched prices are unavailable.</p>
+        <p className="muted" id="customer-pnl-note">Today P&L uses the latest saved closes, not necessarily today’s prices. It includes all buys, sales and fees after the prior close, even trades newer than the latest price; deposits and withdrawals are excluded. This is a saved-price estimate, not live P&L. Missing or mismatched prices are unavailable.</p>
         <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Customers table">
           <table className="planner-table planner-summary-table customers-table" aria-describedby="customer-net-worth-note customer-pnl-note">
             <caption>Customer portfolio summary</caption>
@@ -221,9 +221,8 @@ function Customers({ request, isin }) {
               <th scope="row"><a href={`${customerRoute(customer.id)}${prefill(isin)}`}>{customer.name}</a></th>
               <td>{customer.goal_count}</td>
               <td>{formatEuros(customer.net_worth_eur)}{customer.net_worth_eur === null && <span className="simulation-parameter">Some holdings cannot be valued.</span>}</td>
-              {pnlColumns.map(([, key]) => <td key={key}>
+              {pnlColumns.map(([, key]) => <td key={key} title={key === 'today_pnl_eur' && customer.today_to_date ? `Price date: ${customer.today_to_date}` : undefined}>
                 <span className={pnlClass(customer[key])}>{formatEuros(customer[key])}</span>
-                {key === 'today_pnl_eur' && customer.today_to_date && <span className="simulation-parameter"><time dateTime={customer.today_from_date}>{customer.today_from_date}</time> to <time dateTime={customer.today_to_date}>{customer.today_to_date}</time></span>}
               </td>)}
             </tr>)}</tbody>
           </table>

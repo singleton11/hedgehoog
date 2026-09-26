@@ -87,7 +87,7 @@ def test_intraday_round_trip_counts_fees_but_not_deposits(tracker):
     assert result["net_worth_eur"] == result["unrealized_pnl_eur"] == "0.00"
 
 
-@pytest.mark.parametrize("failure", ["missing-prior", "invalid-prior", "invalid-latest", "currency", "gap", "weekend", "newer-trade"])
+@pytest.mark.parametrize("failure", ["missing-prior", "invalid-prior", "invalid-latest", "currency", "gap", "weekend"])
 def test_incomplete_daily_prices_never_return_partial_totals(tracker, db, failure):
     client, cid, _, url = tracker
     record(client, url, cash())
@@ -107,8 +107,6 @@ def test_incomplete_daily_prices_never_return_partial_totals(tracker, db, failur
         db.quotes.delete_many({})
         quote(db, "2026-09-14" if failure == "gap" else "2026-09-13", "100")
         quote(db, "2026-09-16", "110")
-    else:
-        record(client, url, trade(day="2026-09-17"))
     result = summary(client)
     assert result["today_pnl_eur"] is result["today_from_date"] is result["today_to_date"] is None
     assert result["realized_pnl_eur"] == "10.00"

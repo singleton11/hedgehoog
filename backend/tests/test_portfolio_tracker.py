@@ -547,7 +547,8 @@ def test_latest_two_distinct_raw_closes_not_adjusted_revisions_or_future_evidenc
     assert result["unrealized_pnl_eur"] == result["daily_unrealized_pnl_eur"] == "24.25"
     assert result["equity_eur"] == "1024.25"
     assert result["daily_from_date"] == "2026-09-15" and result["daily_to_date"] == "2026-09-16"
-    assert "not a live price" in position["warning"]
+    assert position["warning"] is None
+    assert result["warnings"] == []
     assert list(db.quotes.find()) == before
     assert db.marketstack_usage.count_documents({}) == 0
     api[1].assert_not_called()
@@ -568,7 +569,8 @@ def test_invalid_latest_raw_close_never_falls_back_to_adjusted_or_older_close(tr
     for field in ("positions_value_eur", "equity_eur", "unrealized_pnl_eur", "daily_unrealized_pnl_eur"):
         assert result[field] is None
     assert result["cash_eur"] == "900.00" and result["realized_pnl_eur"] == "0.00"
-    assert "unavailable" in position["warning"]
+    assert position["warning"] == "EUR valuation unavailable: latest saved raw close is missing, invalid, or currency is unconfirmed/conflicting."
+    assert result["warnings"] == [f"{ISIN}: {position['warning']}"]
 
 
 @pytest.mark.parametrize("mode", ["no-quotes", "missing-close", "one-date", "invalid-previous"])
@@ -614,7 +616,7 @@ def test_daily_reference_allocates_new_buys_and_sales_to_remaining_shares(tracke
     assert result["daily_unrealized_pnl_eur"] == "22.50"
 
 
-@pytest.mark.parametrize("kind,expected", [("buy", "8.00"), ("sell", "10.00")])
+@pytest.mark.parametrize("kind,expected", [("buy", "10.00"), ("sell", "10.00")])
 def test_trade_newer_than_latest_quote_uses_last_saved_close(tracker, db, api, monkeypatch, kind, expected):
     client, _, _, url = tracker
     record(client, url, cash())
@@ -626,14 +628,15 @@ def test_trade_newer_than_latest_quote_uses_last_saved_close(tracker, db, api, m
     result = detail(client, url)
     position = result["positions"][0]
     assert result["positions_value_eur"] == ("330.00" if kind == "buy" else "110.00")
-    # New purchases use actual cost (122), not a fictional prior-close purchase;
+    # New purchases use actual cost (120), with the fee expensed in realized PnL;
     # sales only reduce the reference for the shares still held.
     assert result["daily_unrealized_pnl_eur"] == position["daily_unrealized_pnl_eur"] == expected
+    assert result["realized_pnl_eur"] == ("-2.00" if kind == "buy" else "18.00")
     assert position["market_price_eur"] == "110"
     assert result["daily_from_date"] == position["previous_price_date"] == "2026-09-15"
     assert result["daily_to_date"] == position["price_date"] == "2026-09-16"
-    assert position["warning"] == "Uses saved close from 2026-09-16, not a live price."
-    assert result["warnings"] == [f"{ISIN}: {position['warning']}"]
+    assert position["warning"] is None
+    assert result["warnings"] == []
     assert list(db.quotes.find()) == before
     assert db.marketstack_usage.count_documents({}) == 0
     api[1].assert_not_called()
@@ -651,10 +654,11 @@ def test_new_position_after_latest_close_uses_actual_cost_and_saved_price(tracke
     result = detail(client, url)
     position = result["positions"][0]
     assert position["quantity"] == "2"
-    assert position["cost_basis_eur"] == "232.00"
+    assert position["cost_basis_eur"] == "230.00"
     assert result["positions_value_eur"] == "220.00"
-    assert result["unrealized_pnl_eur"] == result["daily_unrealized_pnl_eur"] == "-12.00"
-    assert position["daily_unrealized_pnl_eur"] == "-12.00"
+    assert result["unrealized_pnl_eur"] == result["daily_unrealized_pnl_eur"] == "-10.00"
+    assert position["daily_unrealized_pnl_eur"] == "-10.00"
+    assert result["realized_pnl_eur"] == "-2.00"
     assert result["daily_from_date"] == "2026-09-15"
     assert result["daily_to_date"] == "2026-09-16"
 

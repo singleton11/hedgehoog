@@ -204,7 +204,7 @@ describe('customer portfolio summary table', () => {
     expect(posts()).toHaveLength(0);
   });
 
-  it('shows goal counts and signed exact P&L with close dates, zeroes and unavailable values', async () => {
+  it('shows goal counts and signed exact P&L with latest-date tooltips, zeroes and unavailable values', async () => {
     const server = mockServer();
     server.customers.set(customer.id, { ...customer, goal_count: 23, realized_pnl_eur: '-9007199254740993.01',
       unrealized_pnl_eur: '0.00', total_pnl_eur: '-9007199254740993.01', today_pnl_eur: '12.34',
@@ -221,12 +221,14 @@ describe('customer portfolio summary table', () => {
     row.getAllByText('-€9,007,199,254,740,993.01').forEach((value) => expect(value).toHaveClass('return-negative'));
     expect(row.getByText('€12.34')).toHaveClass('return-positive');
     expect(row.getAllByRole('cell')[3].firstChild).not.toHaveClass('return-positive', 'return-negative');
-    expect(row.getAllByRole('cell')[4]).toHaveTextContent('2026-09-22 to 2026-09-23');
-    expect(row.getByText('2026-09-23')).toHaveAttribute('datetime', '2026-09-23');
+    expect(row.getAllByRole('cell')[4]).toHaveTextContent(/^€12\.34$/);
+    expect(row.getAllByRole('cell')[4]).toHaveAttribute('title', 'Price date: 2026-09-23');
+    expect(row.queryByText(/2026-09-2[23]/)).not.toBeInTheDocument();
     const missing = within(table.getByRole('row', { name: /Unpriced/ }));
     expect(missing.getAllByText('Unavailable')).toHaveLength(4);
+    expect(missing.getAllByRole('cell')[4]).not.toHaveAttribute('title');
     missing.getAllByText('Unavailable').forEach((value) => expect(value).not.toHaveClass('return-positive', 'return-negative'));
-    expect(screen.getByText(/including sales and fees, excluding deposits and withdrawals/)).toBeInTheDocument();
+    expect(screen.getByRole('table')).toHaveAccessibleDescription(/latest saved closes.*all buys, sales and fees after the prior close, even trades newer than the latest price.*deposits and withdrawals are excluded/);
     expect(request.mock.calls.map(([path]) => path)).toEqual([pagePath('/customers')]);
   });
 

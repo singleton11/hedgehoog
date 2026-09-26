@@ -277,13 +277,15 @@ describe('portfolio list creation and financial summary', () => {
     expect(within(rows[1]).getByText('€12.34')).toHaveClass('return-positive');
     expect(within(rows[1]).getAllByText('-€12.34').every((cell) => cell.classList.contains('return-negative'))).toBe(true);
     expect(within(rows[1]).getByText('€0.00')).not.toHaveClass('return-positive', 'return-negative');
-    expect(within(rows[1]).getByText('2026-09-22')).toHaveAttribute('datetime', '2026-09-22');
-    expect(within(rows[1]).getByText('2026-09-23')).toHaveAttribute('datetime', '2026-09-23');
+    expect(within(rows[1]).queryByText(/2026-09-2[23]/)).not.toBeInTheDocument();
+    expect(within(rows[1]).getAllByRole('cell')[4]).toHaveTextContent(/^€12\.34$/);
+    expect(within(rows[1]).getAllByRole('cell')[4]).toHaveAttribute('title', 'Price date: 2026-09-23');
     expect(within(rows[2]).getByText('No goal')).toBeInTheDocument();
     expect(within(rows[2]).getAllByText('Unavailable')).toHaveLength(4);
+    expect(within(rows[2]).getAllByRole('cell')[4]).not.toHaveAttribute('title');
     expect(within(rows[2]).getByText('Some holdings cannot be valued.')).toBeInTheDocument();
     expect(within(rows[2]).getByText('€0.00')).toBeInTheDocument();
-    expect(table()).toHaveAccessibleDescription(/saved prices—not live prices.*including sales and fees, excluding deposits and withdrawals/);
+    expect(table()).toHaveAccessibleDescription(/saved prices—not live prices.*latest saved closes.*all buys, sales and fees after the prior close, even trades newer than the latest price.*deposits and withdrawals are excluded/);
     expect(screen.getByRole('region', { name: 'Portfolios table' })).toHaveAttribute('tabindex', '0');
     expect(screen.getByRole('region', { name: 'Portfolios table' })).toHaveAccessibleDescription('Scroll horizontally to view all columns.');
     expect(request.mock.calls.some(([path]) => path.startsWith(`${base}/`))).toBe(false);
@@ -514,6 +516,24 @@ describe('portfolio detail interactions', () => {
     expect(screen.getByText('Buy saved.')).toBeVisible(); expect(writes()).toHaveLength(1);
   });
 
+  it('shows statement import only on Transactions and preserves its draft across tabs', async () => {
+    mockServer(); await open();
+    expect(screen.queryByRole('button', { name: 'Import DEGIRO CSV' })).not.toBeInTheDocument();
+    transactionsTab();
+    const panel = screen.getByRole('tabpanel', { name: 'Transactions' });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Import DEGIRO CSV' }));
+    const file = within(panel).getByLabelText(/DEGIRO CSV file/);
+    expect(file).toBeVisible();
+    fireEvent.click(screen.getByRole('tab', { name: 'Positions' }));
+    expect(screen.queryByRole('button', { name: 'Import DEGIRO CSV' })).not.toBeInTheDocument();
+    expect(file).not.toBeVisible();
+    transactionsTab();
+    expect(within(panel).getByLabelText(/DEGIRO CSV file/)).toBe(file);
+    expect(file).toBeVisible();
+    expect(within(panel).getByRole('button', { name: 'Cancel import' })).toBeVisible();
+    expect(writes()).toHaveLength(0);
+  });
+
   it('uses keyboard-operable tabs with shared summary and mounted but hidden panels', async () => {
     const server = mockServer(); server.transactions = [cashEvent(1)]; await open();
     const positions = screen.getByRole('tab', { name: 'Positions' }), transactions = screen.getByRole('tab', { name: 'Transactions' });
@@ -732,8 +752,9 @@ describe('valuation, transaction pagination and read failures', () => {
     expect(summaryValue('Realized P&L (incl. fees)')).toHaveClass('return-negative');
     expect(summaryValue('Total unrealized P&L')).toHaveTextContent('€0.00');
     expect(summaryValue('Daily unrealized P&L')).toHaveTextContent('€0.00');
-    expect(screen.getByText(/Weighted-average cost excludes commissions/)).toHaveTextContent(
-      'Buy and sell commissions reduce realized P&L immediately on the trade date.');
+    expect(screen.queryByText(/Daily price comparison/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Weighted-average cost excludes commissions/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Values are calculated by the server/)).not.toBeInTheDocument();
     expect(writes()).toHaveLength(0);
   });
 
@@ -750,10 +771,47 @@ describe('valuation, transaction pagination and read failures', () => {
     expect(screen.getByText('Valuation incomplete.')).toBeInTheDocument(); expect(screen.getByText('No market price.')).toBeInTheDocument();
     const table = screen.getByRole('table', { name: 'Current holdings · EUR' });
     expect(within(table).getAllByText('Unavailable')).toHaveLength(4); expect(within(table).getByText('1.25000001')).toBeInTheDocument();
-    expect(within(table).getByText('€100.00000001')).toBeInTheDocument();
+    expect(within(table).getByText('€100.00')).toBeInTheDocument();
+    expect(within(table).getAllByTitle('Price date unavailable')).toHaveLength(2);
+    expect(within(table).queryByText(/Date unavailable/)).not.toBeInTheDocument();
   });
 
-  it('trims only insignificant display decimals and provides scroll cues for both wide tables', async () => {
+  it('keeps Positions price dates only in market-price and daily-P&L tooltips', async () => {
+    const server = mockServer();
+    server.details.set(pid, snapshot(metadata(), { positions: [position({
+      previous_price_date: '2026-09-23', price_date: '2026-09-24',
+    })] }));
+    await open();
+    const table = screen.getByRole('table', { name: 'Current holdings · EUR' });
+    const cells = within(within(table).getAllByRole('row')[1]).getAllByRole('cell');
+    expect(cells[3]).toHaveTextContent(/^€110\.00$/);
+    expect(cells[6]).toHaveTextContent(/^-€1\.25$/);
+    for (const cell of [cells[3], cells[6]]) {
+      expect(cell).toHaveAttribute('title', 'Price date: 2026-09-24');
+      expect(cell).toHaveAccessibleDescription('Price date: 2026-09-24');
+    }
+    expect(within(table).getByRole('columnheader', { name: 'Market price' })).toBeInTheDocument();
+    expect(within(table).queryByText(/2026-09-2[34]/)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['100.12345678', '€100.12'], ['100.12500000', '€100.13'], ['1.00500000', '€1.01'],
+    ['999.99999999', '€1,000.00'], ['9007199254740993.12500000', '€9,007,199,254,740,993.13'],
+    ['0.00000001', '€0.00'], ['12', '€12.00'],
+  ])('rounds average cost %s to two display decimals without changing source values', async (average, expected) => {
+    const server = mockServer();
+    const data = snapshot(metadata(), { positions: [position({ average_price_eur: average })] });
+    const before = JSON.stringify(data);
+    server.details.set(pid, data);
+    await open();
+    const table = screen.getByRole('table', { name: 'Current holdings · EUR' });
+    const row = within(table).getAllByRole('row')[1];
+    expect(within(row).getAllByRole('cell')[1].textContent).toBe(expected);
+    expect(JSON.stringify(data)).toBe(before);
+    expect(writes()).toHaveLength(0);
+  });
+
+  it('trims only insignificant display decimals for other prices and provides scroll cues for both wide tables', async () => {
     const server = mockServer(); server.details.set(pid, snapshot(metadata(), {
       positions: [position({ average_price_eur: '100.20000000', market_price_eur: '9007199254740993.12345678', cost_basis_eur: '123.45670000' })],
     })); server.transactions = [{ ...cashEvent(1), amount_eur: '123.40000000' }];

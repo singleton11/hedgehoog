@@ -68,8 +68,9 @@ catalogue/profile is removed. Such removal does not erase balances or history.
 
 ## Import a DEGIRO account statement
 
-Open a portfolio and select **Import DEGIRO CSV**, choose the broker's **Account**
-CSV export, then **Preview statement**. Nothing is saved until you check the
+Open a portfolio's **Transactions** tab and select **Import DEGIRO CSV**, choose
+the broker's **Account** CSV export, then **Preview statement**. The import panel
+is hidden on **Positions**; switching tabs preserves an open import draft. Nothing is saved until you check the
 chosen EUR listings and transactions and select **Import transactions**. For an
 initial import, use a separate empty portfolio and export the complete funding
 history. Acquire each required EUR-priced instrument first; the preview reports
@@ -134,6 +135,8 @@ Portfolio totals are rounded after aggregation; summing individually rounded
 position rows may differ by a cent.
 
 - **Average price** = remaining purchase cost (excluding commissions) / remaining quantity.
+  The holdings table displays Average cost rounded half-up to two decimals only;
+  API values and accounting calculations retain their full precision.
 - **Position value** = remaining quantity × latest saved unadjusted EUR close.
 - **Total unrealized PnL** = position value − remaining purchase cost.
 - **Realized PnL (incl. fees)** = gross sale proceeds − weighted-average purchase
@@ -158,8 +161,9 @@ only the realized/unrealized split and displayed purchase cost change.
 
 This is the closing-price movement attributable to **shares still held**, not
 cash flow, realized PnL, or a change in total account equity. The interval is the
-two latest distinct saved closing dates, displayed in the UI. These are saved
-observations, not live prices or necessarily today/yesterday. Daily values require
+two latest distinct saved closing dates; the UI keeps only the latest date in
+market-price and daily-PnL value tooltips, without inline date labels.
+These are saved observations, not live prices or necessarily today/yesterday. Daily values require
 adjacent weekdays (Friday → Monday is allowed); gaps spanning missing weekdays or
 weekend-dated prices make daily PnL unavailable. No exchange calendar is assumed,
 so a holiday gap is conservatively unavailable too. Inspect the shown dates.
@@ -171,14 +175,15 @@ basis (consistent with average-cost accounting). Daily unrealized PnL equals
 current open position value minus this remaining reference basis. This avoids
 counting a new contribution or an already-sold position as unrealized profit.
 Commissions do not reduce daily unrealized PnL; they reduce realized PnL instead.
-**Today PnL** below still includes all commissions within its saved-close interval.
+**Today PnL** below includes all commissions after its prior-close reference date.
 
 If a trade is newer than the latest saved close, daily and total unrealized PnL
 still mark the **current holdings** using that last available saved close; they do
-not require today's close. New purchases retain their actual fee-inclusive cost
-in the daily reference basis, and sales reduce it proportionally. This is a
+not require today's close. New purchases retain their actual purchase cost
+excluding commissions in the daily reference basis, and sales reduce it proportionally. This is a
 saved-price estimate, not a historical holdings snapshot at the ending close or
-a live return. The saved closing dates and non-live-price warning remain visible.
+a live return. The latest saved closing date is available in a tooltip, without
+an inline date label or repeated saved-close notice.
 Portfolio daily unrealized PnL is only summed when all open positions have the
 same closing-date interval; mixed intervals are reported as unavailable rather
 than combined into a false total. An empty portfolio has zero position value and
@@ -195,21 +200,26 @@ No portfolios means zero. Any unpriced holding makes unrealized/total PnL and ne
 worth unavailable; realized PnL remains known, never hidden by missing marks.
 
 **Today PnL** is distinct from portfolio **Daily unrealized PnL**: it includes
-shares sold during the latest saved trading-day interval, even full liquidations
-and same-day round trips. Over one common pair of adjacent closing dates it is:
+shares sold after the prior saved close, even full liquidations and same-day round
+trips. Using one common pair of adjacent saved closing dates as price references:
 
-`closing holdings value − opening holdings value + net sales − purchases/fees`
+`current holdings × latest saved close − prior-close holdings × prior close + net sales − purchases/fees`
 
 This is equity change excluding external deposits/withdrawals. Historical cost
 realized on a sale is not counted again as daily profit; previously held shares
-are measured against the preceding close. The interval is shown in the table;
-it need not end today and is never a live/intraday quote. Trades on the preceding
-closing date belong to the opening holdings; trades on the ending date are
-inside the interval. Daily rounding happens once after customer aggregation.
+are measured against the preceding close. The Today PnL value's tooltip shows
+only the latest saved closing date, with no inline date or reference-date range;
+it need not be today and is never a live/intraday quote. Both reference dates remain in the API response. Trades on
+the preceding closing date belong to the opening holdings. **All later active
+trades are included**, even when newer than the latest saved close: purchases
+subtract their actual cost and fees, sales add their proceeds less fees, and
+current remaining holdings use the latest saved mark. Today's close is not
+required. This is a saved-price estimate, not a historical holdings snapshot at
+the ending quote date. Daily rounding happens once after customer aggregation.
 
-Relevant positions across portfolios must have matching latest close intervals,
-valid raw EUR prices, and no trades newer than the ending close. Missing prices,
-currency conflicts, weekday gaps or mixed intervals return unavailable, not a
+Relevant positions across portfolios must have matching latest close intervals
+and valid raw EUR prices. Missing prices, currency conflicts, weekday gaps or
+mixed intervals return unavailable, not a
 partial daily sum. Instruments fully liquidated before the interval need no
 marks and their newer quotes do not choose the interval for unrelated holdings.
 Cash-only customers have zero daily PnL and no date interval. Refreshing is
@@ -227,8 +237,9 @@ older valid close, and adjusted closes are never substituted for raw closes.
 A missing, invalid or unconfirmed/non-EUR price yields **Unavailable**, not zero.
 A missing prior close leaves total valuation available but daily PnL unavailable.
 If any open position lacks a valuation, portfolio position value, equity and total
-unrealized PnL are also unavailable; cash and realized PnL remain known. Stale-price
-warnings and quote dates accompany saved historical marks.
+unrealized PnL are also unavailable; cash and realized PnL remain known. Quote
+dates remain visible for saved historical marks; warnings are reserved for
+missing/invalid prices, currency conflicts and incompatible daily intervals.
 
 ## API and persistence
 

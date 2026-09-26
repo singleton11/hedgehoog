@@ -49,6 +49,15 @@ function formatEuros(value) {
   // Display only: retain every significant decimal without floating-point rounding.
   return formatExactEuros(`${whole}.${fraction.replace(/0+$/, '').padEnd(2, '0')}`);
 }
+function formatAverageCost(value) {
+  if (!decimal(value)) return 'Unavailable';
+  const [whole, fraction = ''] = value.replace(/^-/, '').split('.');
+  // Display-only half-up rounding: BigInt preserves exact cents for large values.
+  const cents = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0').slice(0, 2))
+    + (fraction[2] >= '5' ? 1n : 0n);
+  const sign = value.startsWith('-') && cents > 0n ? '-' : '';
+  return formatExactEuros(`${sign}${cents / 100n}.${String(cents % 100n).padStart(2, '0')}`);
+}
 function validDate(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const timestamp = Date.parse(`${value}T00:00:00Z`);
@@ -272,7 +281,7 @@ function PortfolioList({ request, customerId, goals }) {
       <ReadStatus resource={resource} label="portfolios" invalid={!valid} />
       {!resource.loading && !resource.error && valid && <>{resource.data.total === 0 ? <p className="empty-state">No portfolios yet. Select Add portfolio to create your first portfolio.</p> : <>
         <p className="muted" id="portfolio-net-worth-note">Net worth is cash plus holdings in each tracked EUR portfolio, using saved prices—not live prices. External assets and debts are not included. Total P&L is realized plus unrealized P&L.</p>
-        <p className="muted" id="portfolio-pnl-note">Today P&L covers the latest saved trading-day interval shown, including sales and fees, excluding deposits and withdrawals. It is not live or necessarily today. Missing or mismatched prices are unavailable.</p>
+        <p className="muted" id="portfolio-pnl-note">Today P&L uses the latest saved closes, not necessarily today’s prices. It includes all buys, sales and fees after the prior close, even trades newer than the latest price; deposits and withdrawals are excluded. This is a saved-price estimate, not live P&L. Missing or mismatched prices are unavailable.</p>
         <p id="portfolio-summary-scroll" className="portfolio-scroll-hint">Scroll horizontally to view all columns.</p>
         <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Portfolios table" aria-describedby="portfolio-summary-scroll">
           <table className="planner-table planner-summary-table portfolios-table" aria-describedby="portfolio-net-worth-note portfolio-pnl-note">
@@ -284,9 +293,8 @@ function PortfolioList({ request, customerId, goals }) {
               <th scope="row"><a href={portfoliosRoute(customerId, portfolio.id)}>{portfolio.name}</a></th>
               <td>{portfolio.goal_id ? goals.data?.find((goal) => goal.id === portfolio.goal_id)?.name || 'Linked goal' : 'No goal'}</td>
               <td>{formatEuros(portfolio.net_worth_eur)}{portfolio.net_worth_eur === null && <span className="simulation-parameter">Some holdings cannot be valued.</span>}</td>
-              {pnlColumns.map(([, key]) => <td key={key}>
+              {pnlColumns.map(([, key]) => <td key={key} title={key === 'today_pnl_eur' && portfolio.today_to_date ? `Price date: ${portfolio.today_to_date}` : undefined}>
                 <span className={pnlClass(portfolio[key])}>{formatEuros(portfolio[key])}</span>
-                {key === 'today_pnl_eur' && portfolio.today_to_date && <span className="simulation-parameter"><time dateTime={portfolio.today_from_date}>{portfolio.today_from_date}</time> to <time dateTime={portfolio.today_to_date}>{portfolio.today_to_date}</time></span>}
               </td>)}
             </tr>)}</tbody>
           </table>
@@ -301,8 +309,6 @@ function Summary({ data }) {
   const metrics = [['Cash', 'cash_eur'], ['Positions value', 'positions_value_eur'], ['Equity', 'equity_eur'], ['Realized P&L (incl. fees)', 'realized_pnl_eur'], ['Total unrealized P&L', 'unrealized_pnl_eur'], ['Daily unrealized P&L', 'daily_unrealized_pnl_eur']];
   return <section aria-label="Portfolio summary"><h3>Portfolio summary</h3>
     <dl className="facts">{metrics.map(([label, key]) => <div key={key}><dt>{label}</dt><dd className={key.includes('pnl') ? pnlClass(data[key]) : undefined}>{formatEuros(data[key])}</dd></div>)}</dl>
-    <p className="muted">Daily price comparison (UTC): {data.daily_from_date && data.daily_to_date ? `${data.daily_from_date} to ${data.daily_to_date}` : 'Unavailable'}.</p>
-    <p className="muted">Weighted-average cost excludes commissions. Buy and sell commissions reduce realized P&amp;L immediately on the trade date. Values are calculated by the server, not this browser.</p>
     {data.warnings.length > 0 && <ul className="portfolio-warnings" aria-label="Valuation warnings">{data.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
   </section>;
 }
@@ -312,13 +318,13 @@ function Positions({ positions }) {
       <p id="portfolio-positions-scroll" className="portfolio-scroll-hint">Scroll horizontally to view all columns.</p>
       <div className="planner-table-scroll" role="region" tabIndex={0} aria-label="Positions table" aria-describedby="portfolio-positions-scroll">
       <table className="planner-table portfolio-table"><caption>Current holdings · EUR</caption><thead><tr>
-        {['Instrument', 'Quantity', 'Average cost', 'Cost basis', 'Market price / date', 'Position value', 'Total unrealized P&L', 'Daily unrealized P&L'].map((label) => <th key={label} scope="col">{label}</th>)}
+        {['Instrument', 'Quantity', 'Average cost', 'Cost basis', 'Market price', 'Position value', 'Total unrealized P&L', 'Daily unrealized P&L'].map((label) => <th key={label} scope="col">{label}</th>)}
       </tr></thead><tbody>{positions.map((position) => <tr key={position.instrument.instrument_id}>
         <th scope="row">{instrumentName(position.instrument)}<span className="simulation-parameter">{position.instrument.instrument_id}</span>{position.warning && <span className="portfolio-warning">{position.warning}</span>}</th>
-        <td>{position.quantity}</td><td>{formatEuros(position.average_price_eur)}</td><td>{formatEuros(position.cost_basis_eur)}</td>
-        <td>{formatEuros(position.market_price_eur)}<span className="simulation-parameter">{position.price_date || 'Date unavailable'}</span></td>
+        <td>{position.quantity}</td><td>{formatAverageCost(position.average_price_eur)}</td><td>{formatEuros(position.cost_basis_eur)}</td>
+        <td title={position.price_date ? `Price date: ${position.price_date}` : 'Price date unavailable'}>{formatEuros(position.market_price_eur)}</td>
         <td>{formatEuros(position.position_value_eur)}</td><td className={pnlClass(position.unrealized_pnl_eur)}>{formatEuros(position.unrealized_pnl_eur)}</td>
-        <td className={pnlClass(position.daily_unrealized_pnl_eur)}>{formatEuros(position.daily_unrealized_pnl_eur)}<span className="simulation-parameter">{position.previous_price_date && position.price_date ? `${position.previous_price_date} to ${position.price_date}` : 'Dates unavailable'}</span></td>
+        <td className={pnlClass(position.daily_unrealized_pnl_eur)} title={position.price_date ? `Price date: ${position.price_date}` : 'Price date unavailable'}>{formatEuros(position.daily_unrealized_pnl_eur)}</td>
       </tr>)}</tbody></table>
     </div></>}
   </section>;
@@ -487,12 +493,14 @@ function PortfolioDetail({ request, customerId, portfolioId, goals }) {
         </div>
         <button ref={addButton} type="button" disabled={adding} aria-expanded={adding} aria-controls="transaction-entry" onClick={() => { setAdding(true); setMessage(null); }}>Add transaction</button>
       </div>
-      <DegiroImport request={request} portfolioPath={path} onImported={refresh} disabled={resource.loading || Boolean(resource.error)} />
       {message && <p role="status">{message}</p>}
       <TransactionForm request={request} path={`${path}/transactions`} open={adding} onClose={() => setAdding(false)} instruments={instruments} positions={resource.data.positions}
         onSaved={(success) => { setMessage(success); setAdding(false); refresh(); }} disabled={resource.loading || Boolean(resource.error)} />
       <div id="portfolio-positions-panel" role="tabpanel" aria-labelledby="portfolio-positions-tab" tabIndex={0} hidden={tab !== 'positions'}><Positions positions={resource.data.positions} /></div>
-      <div id="portfolio-transactions-panel" role="tabpanel" aria-labelledby="portfolio-transactions-tab" tabIndex={0} hidden={tab !== 'transactions'}><Transactions request={request} path={`${path}/transactions`} revision={revision} onRemoved={refresh} /></div>
+      <div id="portfolio-transactions-panel" role="tabpanel" aria-labelledby="portfolio-transactions-tab" tabIndex={0} hidden={tab !== 'transactions'}>
+        <DegiroImport request={request} portfolioPath={path} onImported={refresh} disabled={resource.loading || Boolean(resource.error)} />
+        <Transactions request={request} path={`${path}/transactions`} revision={revision} onRemoved={refresh} />
+      </div>
     </>}
   </>;
 }

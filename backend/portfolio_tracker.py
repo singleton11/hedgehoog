@@ -272,11 +272,8 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
                 warning = "Daily unrealized PnL unavailable: saved closes span missing weekdays or non-trading dates."
             else:
                 # Mark current holdings even when trades postdate the saved close.
-                # Replay retains actual fee-inclusive cost for buys after the anchor.
+                # Replay retains actual purchase cost for buys after the anchor.
                 daily = value - position["reference"]
-            if latest.get("date") and latest["date"] < now.date().isoformat():
-                stale = f"Uses saved close from {latest['date']}, not a live price."
-                warning = f"{warning} {stale}" if warning else stale
             if warning:
                 warnings.append(f"{isin}: {warning}")
             items.append({"instrument": position["instrument"], "quantity": decimal_string(quantity),
@@ -304,9 +301,10 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
 
 
 def _daily_pnl(db, documents, now, quote_cache):
-    """Equity movement less external cash flows over one shared saved-close interval.
+    """Current equity movement from a shared prior close, using latest saved marks.
 
-    Include sales and round trips, not just the shares still held. Select dates
+    Include all trades after the prior close, even newer than the latest mark,
+    with sales, round trips and fees, but without external cash flows. Select dates
     before validating prices; never fall back to older valid closes. Instruments
     liquidated before the interval need no marks and cannot poison the total.
     The caller supplies an 80-digit Decimal context and a request-local cache.
@@ -335,14 +333,17 @@ def _daily_pnl(db, documents, now, quote_cache):
     if len(dates) < 2:
         return unavailable
     start, end = dates[-2:]
-    if not daily_interval(start, end) or any(event["date"] > end for event in trades):
+    if not daily_interval(start, end):
         return unavailable
     total, exposed = ZERO, False
     for document in documents:
         events = active_events(document["transactions"])
         _, _, before = replay([event for event in events if event["date"] <= start])
         _, _, after = replay(events)
-        period_trades = [event for event in events if event["type"] in ("buy", "sell") and start < event["date"] <= end]
+        # `after` is the current ledger, not a snapshot at the saved close.
+        # Include matching trade cash flows through the current ledger too;
+        # omitting newer trades would turn their principal into apparent PnL.
+        period_trades = [event for event in events if event["type"] in ("buy", "sell") and start < event["date"]]
         traded = {event["instrument"]["instrument_id"] for event in period_trades}
         for isin, position in after.items():
             opening = before.get(isin, {}).get("quantity", ZERO)

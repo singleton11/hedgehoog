@@ -68,7 +68,7 @@ def test_empty_and_cash_only_portfolios_have_zero_pnl_without_dates(tracker, amo
     assert result["today_from_date"] is result["today_to_date"] is None
 
 
-@pytest.mark.parametrize("failure", ["missing", "invalid", "currency", "prior", "newer-trade"])
+@pytest.mark.parametrize("failure", ["missing", "invalid", "currency", "prior"])
 def test_missing_marks_never_hide_realized_pnl_or_return_partial_values(tracker, db, failure):
     client, cid, _, url = tracker
     record(client, url, cash())
@@ -82,8 +82,6 @@ def test_missing_marks_never_hide_realized_pnl_or_return_partial_values(tracker,
         db.quotes.update_many({}, {"$set": {"data.price_currency": "USD"}})
     elif failure == "prior":
         db.quotes.delete_many({"date": "2026-09-15"})
-    else:
-        record(client, url, trade(day="2026-09-17"))
     result = summaries(client, cid)["items"][0]
     assert result["realized_pnl_eur"] == "10.00"
     assert result["today_pnl_eur"] is result["today_from_date"] is result["today_to_date"] is None
