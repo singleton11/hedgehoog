@@ -133,15 +133,26 @@ A full sale removes the exact remaining cost basis so there is no residual lot.
 Portfolio totals are rounded after aggregation; summing individually rounded
 position rows may differ by a cent.
 
-- **Average price** = remaining fee-inclusive purchase cost / remaining quantity.
+- **Average price** = remaining purchase cost (excluding commissions) / remaining quantity.
 - **Position value** = remaining quantity × latest saved unadjusted EUR close.
 - **Total unrealized PnL** = position value − remaining purchase cost.
-- **Realized PnL** = sum of net sale proceeds (after sell fees) − weighted-average
-  purchase cost allocated to the sold shares. Buy fees are capitalized in cost.
+- **Realized PnL (incl. fees)** = gross sale proceeds − weighted-average purchase
+  cost allocated to sold shares − all buy and sell commissions. Each commission
+  is expensed immediately on its trade date, even if no shares have been sold;
+  it is excluded from cost basis and unrealized PnL.
 - **Portfolio cash** = deposits − withdrawals − purchases/fees + net sale proceeds.
 - **Portfolio equity** = cash + open position values. Deposits and withdrawals
   are not profit or loss. A fully closed position is omitted from holdings but
   its realized profit/loss and transactions remain.
+
+For example, buying €1,000 of shares with a €6 commission spends €1,006 in cash,
+sets cost basis to €1,000 and immediately records −€6 realized PnL. If the market
+price is unchanged, unrealized PnL is €0 and total PnL is −€6.
+
+This policy applies to all active manual and imported transactions, including
+existing history: balances are derived by replay, without rewriting stored trades.
+Compared with capitalizing buy commissions, cash, equity and total PnL are unchanged;
+only the realized/unrealized split and displayed purchase cost change.
 
 ### Daily unrealized PnL
 
@@ -154,11 +165,13 @@ weekend-dated prices make daily PnL unavailable. No exchange calendar is assumed
 so a holiday gap is conservatively unavailable too. Inspect the shown dates.
 
 For shares held at the previous closing date, the reference basis is quantity ×
-previous close. Purchases after that date add their actual fee-inclusive cost to
+previous close. Purchases after that date add their actual cost excluding commissions to
 the reference basis; partial sales remove a proportional share of the reference
 basis (consistent with average-cost accounting). Daily unrealized PnL equals
 current open position value minus this remaining reference basis. This avoids
 counting a new contribution or an already-sold position as unrealized profit.
+Commissions do not reduce daily unrealized PnL; they reduce realized PnL instead.
+**Today PnL** below still includes all commissions within its saved-close interval.
 
 If a trade is newer than the latest saved close, daily PnL is unavailable until
 prices catch up. Total unrealized PnL can still use the last saved close, with its

@@ -31,8 +31,8 @@ def test_all_portfolios_include_losses_sales_fees_and_ignore_external_flows(trac
     record(client, other, trade(price="120", day="2026-09-16", commission_eur="2"))
     before = deepcopy(list(db.portfolios.find()))
     result = summary(client)
-    assert result["realized_pnl_eur"] == "23.00"
-    assert result["unrealized_pnl_eur"] == "75.00"
+    assert result["realized_pnl_eur"] == "18.00"  # Sale gain 25 minus all 7 in commissions.
+    assert result["unrealized_pnl_eur"] == "80.00"
     assert result["total_pnl_eur"] == "98.00"
     # First portfolio: 3*110 - 4*100 + 104 = 34; second: 110 - 122 = -12.
     assert result["today_pnl_eur"] == "22.00"

@@ -185,8 +185,9 @@ def replay(events, anchors=None):
 
     Each same-day transaction follows its immutable insertion sequence. Backdated
     insertion or removal replays ALL active events and fails at the first negative balance.
-    Sell allocation uses the same average-cost proportion for the daily reference.
-    A full liquidation removes the exact remaining basis (no rounding residual).
+    Commissions are realized expenses on the trade date, never part of cost or
+    daily reference basis. Sell allocation uses the same average-cost proportion
+    for the daily reference. A full liquidation removes the exact remaining basis.
     """
     with localcontext() as context:
         context.prec = 80
@@ -208,12 +209,12 @@ def replay(events, anchors=None):
                 gross = (quantity * unit_price).quantize(CENT, rounding=ROUND_HALF_UP)
                 position["last_trade_date"] = event["date"]
                 anchor_date, anchor_price = anchors.get(isin, (None, None))
+                realized -= commission
                 if kind == "buy":
-                    cost = gross + commission
-                    cash -= cost
+                    cash -= gross + commission
                     position["quantity"] += quantity
-                    position["cost"] += cost
-                    position["reference"] += (quantity * anchor_price if anchor_date and event["date"] <= anchor_date else cost)
+                    position["cost"] += gross
+                    position["reference"] += (quantity * anchor_price if anchor_date and event["date"] <= anchor_date else gross)
                 else:
                     if quantity > position["quantity"]:
                         raise md.DataError(422, f"Insufficient holdings on {event['date']} for {isin}; short positions are not supported.")
@@ -221,7 +222,7 @@ def replay(events, anchors=None):
                     cost = position["cost"] if all_shares else position["cost"] * quantity / position["quantity"]
                     reference = position["reference"] if all_shares else position["reference"] * quantity / position["quantity"]
                     cash += gross - commission
-                    realized += gross - commission - cost
+                    realized += gross - cost
                     position["quantity"] -= quantity
                     position["cost"] -= cost
                     position["reference"] -= reference

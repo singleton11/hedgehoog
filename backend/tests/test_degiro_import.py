@@ -75,7 +75,7 @@ def test_preview_is_read_only_and_atomic_import_reconciles_exactly(tracker, db):
     assert [item["date"] for item in plan["transactions"]] == ["2026-09-16"] * 3 + ["2026-09-17"]
     assert plan["summary"] == {"new_count": 4, "duplicate_count": 0, "cash_eur": "357.00", "deposits_eur": "1100.00",
                                "withdrawals_eur": "0.00", "commission_eur": "3.00", "positions": [
-                                   {"instrument_id": ISIN, "quantity": "7", "cost_basis_eur": "743.00"}]}
+                                   {"instrument_id": ISIN, "quantity": "7", "cost_basis_eur": "740.00"}]}
     assert plan["transactions"][2]["instrument"]["symbol"] == LISTING["symbol"]
     response = commit(client, url, content, plan)
     assert response.status_code == 200, response.text
@@ -88,7 +88,10 @@ def test_preview_is_read_only_and_atomic_import_reconciles_exactly(tracker, db):
     saved = detail(client, url)
     assert saved["cash_eur"] == plan["summary"]["cash_eur"]
     assert saved["positions"][0]["quantity"] == "7"
-    assert saved["positions"][0]["cost_basis_eur"] == "743.00"
+    assert saved["positions"][0]["cost_basis_eur"] == "740.00"
+    assert saved["realized_pnl_eur"] == "-3.00"
+    assert saved["unrealized_pnl_eur"] == "30.00"
+    assert saved["equity_eur"] == "1127.00"
     # Original token retries even after revision increment; no duplicate writes.
     assert commit(client, url, content, plan).json() == {"imported_count": 0, "duplicate_count": 4}
     again = preview(client, url, "\ufeff" + statement(sample_rows(), ";"))

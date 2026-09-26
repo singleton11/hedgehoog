@@ -3,6 +3,8 @@
 Open **Customers** in the signed-in workspace (`#/goal`) to see your
 **customers** in a table with their **Goals** count, **Net worth (EUR)** and
 **Realized**, **Unrealized**, **Today** and **Total P&L (EUR)** across all portfolios.
+Realized P&L includes all buy and sell commissions as expenses on their trade dates;
+unrealized P&L and average purchase cost exclude commissions.
 Total P&L is realized plus unrealized, calculated before rounding. Today P&L uses
 the latest saved trading-day interval (shown beside the amount), includes sales
 and fees, and excludes deposits/withdrawals. It is not a live or necessarily

@@ -165,7 +165,7 @@ def test_customer_net_worth_sums_cash_and_holdings_across_linked_and_unlinked_po
     assert Decimal(summary["net_worth_eur"]) == sum(Decimal(detail(client, path)["equity_eur"]) for path in (url, other_url))
     assert {key: summary[key] for key in ("goal_count", "realized_pnl_eur", "unrealized_pnl_eur", "today_pnl_eur", "total_pnl_eur",
                                         "today_from_date", "today_to_date")} == {
-        "goal_count": 1, "realized_pnl_eur": "0.00", "unrealized_pnl_eur": "18.77", "today_pnl_eur": "20.00",
+        "goal_count": 1, "realized_pnl_eur": "-1.23", "unrealized_pnl_eur": "20.00", "today_pnl_eur": "20.00",
         "total_pnl_eur": "18.77", "today_from_date": "2026-09-15", "today_to_date": "2026-09-16",
     }
     assert list(db.portfolios.find()) == before
@@ -426,6 +426,44 @@ def test_backdating_replays_later_holdings_and_same_day_sequence(tracker, db):
     assert client.post(url + "/transactions", json=trade("sell", day="2026-09-15")).status_code == 422
 
 
+@pytest.mark.parametrize("commission", ["0.00", "6.00"])
+@pytest.mark.parametrize("day", ["2026-09-14", "2026-09-16"])
+def test_buy_commission_is_realized_immediately_without_changing_equity_or_total_pnl(tracker, db, commission, day):
+    client, customer_id, metadata, url = tracker
+    db.quotes.update_many({}, {"$set": {"data.close": "100"}})
+    record(client, url, cash(amount="1006"))
+    purchase = trade(quantity="10", price="100", commission_eur=commission, day=day)
+    bought = record(client, url, purchase)
+    before = db.portfolios.find_one({"_id": metadata["id"]})
+    # Stored historical trades are replayed, not rewritten; a retry cannot expense the fee twice.
+    assert record(client, url, purchase) == bought
+    fee = Decimal(commission)
+    realized = tracker_api.euros(-fee)
+    equity = tracker_api.euros(Decimal("1006") - fee)
+    result = detail(client, url)
+    assert result["cash_eur"] == tracker_api.euros(Decimal("6") - fee)
+    assert result["equity_eur"] == equity
+    assert result["positions_value_eur"] == result["positions"][0]["cost_basis_eur"] == "1000.00"
+    assert result["positions"][0]["average_price_eur"] == "100.00000000"
+    assert result["realized_pnl_eur"] == realized
+    assert result["unrealized_pnl_eur"] == result["daily_unrealized_pnl_eur"] == "0.00"
+    assert result == tracker_api.valuation(db, before)
+    for endpoint in ("/customers", f"/customers/{customer_id}/portfolios"):
+        summary = client.get(endpoint).json()["items"][0]
+        assert summary["net_worth_eur"] == equity
+        assert summary["realized_pnl_eur"] == summary["total_pnl_eur"] == realized
+        assert summary["unrealized_pnl_eur"] == "0.00"
+        # Daily total includes the commission exactly once, only in the trade's interval.
+        assert summary["today_pnl_eur"] == (realized if day == "2026-09-16" else "0.00")
+    assert db.portfolios.find_one({"_id": metadata["id"]}) == before
+    db.quotes.delete_many({})
+    assert detail(client, url)["realized_pnl_eur"] == realized
+    for endpoint in ("/customers", f"/customers/{customer_id}/portfolios"):
+        summary = client.get(endpoint).json()["items"][0]
+        assert summary["realized_pnl_eur"] == realized
+        assert summary["net_worth_eur"] is summary["unrealized_pnl_eur"] is summary["total_pnl_eur"] is None
+
+
 def test_average_cost_commissions_partial_sale_rebuy_and_full_liquidation(tracker, db):
     client, _, _, url = tracker
     record(client, url, cash())
@@ -433,22 +471,24 @@ def test_average_cost_commissions_partial_sale_rebuy_and_full_liquidation(tracke
     record(client, url, trade(price="160", commission_eur="1"))
     result = detail(client, url)
     assert result["cash_eur"] == "637.00"
-    assert result["positions"][0]["cost_basis_eur"] == "363.00"
-    assert result["positions"][0]["average_price_eur"] == "121.00000000"
+    assert result["positions"][0]["cost_basis_eur"] == "360.00"
+    assert result["positions"][0]["average_price_eur"] == "120.00000000"
+    assert result["realized_pnl_eur"] == "-3.00"
     record(client, url, trade("sell", price="150", commission_eur="2", day="2026-09-16"))
     result = detail(client, url)
     assert result["cash_eur"] == "785.00"
-    assert result["realized_pnl_eur"] == "27.00"
+    assert result["realized_pnl_eur"] == "25.00"
     assert result["positions"][0]["quantity"] == "2"
-    assert result["positions"][0]["cost_basis_eur"] == "242.00"
+    assert result["positions"][0]["cost_basis_eur"] == "240.00"
     assert result["daily_unrealized_pnl_eur"] == "20.00"  # Remaining two shares only.
     record(client, url, trade(price="130", commission_eur="1", day="2026-09-16"))
     result = detail(client, url)
     assert result["cash_eur"] == "654.00"
-    assert result["positions"][0]["cost_basis_eur"] == "373.00"
-    assert result["positions"][0]["average_price_eur"] == "124.33333333"
-    assert result["unrealized_pnl_eur"] == "-43.00"
-    assert result["daily_unrealized_pnl_eur"] == "-1.00"  # 330 - (200 prior-close basis + 131 new cost).
+    assert result["positions"][0]["cost_basis_eur"] == "370.00"
+    assert result["positions"][0]["average_price_eur"] == "123.33333333"
+    assert result["realized_pnl_eur"] == "24.00"
+    assert result["unrealized_pnl_eur"] == "-40.00"
+    assert result["daily_unrealized_pnl_eur"] == "0.00"  # 330 - (200 prior-close basis + 130 new cost).
     record(client, url, trade("sell", quantity="3", price="120", commission_eur="1", day="2026-09-16"))
     db.quotes.delete_many({})  # Closed positions do not depend on market data.
     result = detail(client, url)
@@ -564,13 +604,13 @@ def test_daily_reference_allocates_new_buys_and_sales_to_remaining_shares(tracke
     record(client, url, trade(quantity="2", price="105", commission_eur="2", day="2026-09-16"))
     record(client, url, trade("sell", quantity="1", price="120", commission_eur="1", day="2026-09-16"))
     result = detail(client, url)
-    # Reference: (2 * prior close 100 + new purchase 212) * 3/4 = 309.
-    # Average-cost basis: (182 + 212) * 3/4 = 295.50. Sale realizes 119 - 98.50.
+    # Reference: (2 * prior close 100 + new purchase 210) * 3/4 = 307.50.
+    # Average-cost basis: (180 + 210) * 3/4 = 292.50. Realized: 120 - 97.50 - all 5 in fees.
     assert result["positions"][0]["quantity"] == "3"
-    assert result["positions"][0]["cost_basis_eur"] == "295.50"
-    assert result["realized_pnl_eur"] == "20.50"
-    assert result["unrealized_pnl_eur"] == "34.50"
-    assert result["daily_unrealized_pnl_eur"] == "21.00"
+    assert result["positions"][0]["cost_basis_eur"] == "292.50"
+    assert result["realized_pnl_eur"] == "17.50"
+    assert result["unrealized_pnl_eur"] == "37.50"
+    assert result["daily_unrealized_pnl_eur"] == "22.50"
 
 
 @pytest.mark.parametrize("kind", ["buy", "sell"])

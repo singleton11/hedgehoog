@@ -9,7 +9,7 @@ const preview = (extra = {}) => ({ can_import: true, preview_token: 'exact-token
   transactions: [{ date: '2026-01-01', type: 'deposit', amount_eur: '100.00', source_rows: [2], status: 'duplicate' },
     { date: '2026-01-02', type: 'buy', instrument_id: 'IE00B4L5Y983', instrument: { name: 'World', symbol: 'WORLD', exchange: 'XETR', currency: 'EUR' }, quantity: '0.12345678', price_eur: '10.12345678', commission_eur: '1.00', source_rows: [3, 4], status: 'new' }],
   ignored_rows: [{ row: 5, description: 'Reserved iDEAL', reason: 'Not final deposit' }], errors: [], warnings: ['Check acquired listing'],
-  summary: { new_count: 1, duplicate_count: 1, cash_eur: '97.75', deposits_eur: '100.00', withdrawals_eur: '0.00', commission_eur: '1.00', positions: [{ instrument_id: 'IE00B4L5Y983', quantity: '0.12345678', cost_basis_eur: '2.25' }] }, ...extra });
+  summary: { new_count: 1, duplicate_count: 1, cash_eur: '97.75', deposits_eur: '100.00', withdrawals_eur: '0.00', commission_eur: '1.00', positions: [{ instrument_id: 'IE00B4L5Y983', quantity: '0.12345678', cost_basis_eur: '1.25' }] }, ...extra });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 let readers;
 class Reader {

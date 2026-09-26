@@ -28,10 +28,10 @@ def test_remove_all_transaction_types_recalculates_balances_and_net_worth(tracke
     sell = record(client, url, trade("sell", price="120", day="2026-09-16", commission_eur="1"))
     withdrawal = record(client, url, cash("withdrawal", "50", "2026-09-17"))
     assert detail(client, url)["cash_eur"] == "867.00"
-    assert detail(client, url)["realized_pnl_eur"] == "18.00"
+    assert detail(client, url)["realized_pnl_eur"] == "17.00"
     for event, expected_cash, quantity, realized, equity in [
-        (withdrawal, "917.00", "1", "18.00", "1027.00"),
-        (sell, "798.00", "2", "0.00", "1018.00"),
+        (withdrawal, "917.00", "1", "17.00", "1027.00"),
+        (sell, "798.00", "2", "-2.00", "1018.00"),
         (buy, "1000.00", None, "0.00", "1000.00"),
         (deposit, "0.00", None, "0.00", "0.00"),
     ]:
