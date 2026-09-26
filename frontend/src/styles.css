@@ -113,6 +113,7 @@ button.sign-out { min-height: 34px; padding: 0.4rem 0.65rem; font-size: 0.74rem;
 .workspace-content > nav a { text-decoration: none; }
 .workspace > [role='alert'] { margin: 1rem 2rem 0 calc(var(--sidebar-width) + 2rem); }
 .page-heading { margin-bottom: 1.8rem; }
+.portfolio-list-actions { justify-content: flex-end; }
 .page-heading h2, .instrument-name { margin: 0; font-size: clamp(1.7rem, 2.5vw, 2.15rem); font-weight: 750; line-height: 1.25; letter-spacing: -0.05em; overflow-wrap: anywhere; }
 .page-heading .muted { margin: 0.65rem 0 0; font-size: 0.88rem; }
 .page-heading > .button-link { margin-left: auto; }

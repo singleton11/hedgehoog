@@ -199,7 +199,8 @@ describe('customer portfolio summary table', () => {
     expect(unavailable.getAllByRole('cell')[1]).not.toHaveTextContent('€0.00');
     expect(unavailable.getByText('Some holdings cannot be valued.')).toBeInTheDocument();
     expect(table.getByRole('link', { name: /Alice/ })).toHaveAttribute('href', customerRoute());
-    expect(screen.getByText(/External assets and debts are not included/)).toBeInTheDocument();
+    expect(screen.queryByText(/External assets and debts are not included/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Today P&L uses the latest saved closes/)).not.toBeInTheDocument();
     expect(request.mock.calls.map(([path]) => path)).toEqual([pagePath('/customers')]);
     expect(posts()).toHaveLength(0);
   });
@@ -228,7 +229,7 @@ describe('customer portfolio summary table', () => {
     expect(missing.getAllByText('Unavailable')).toHaveLength(4);
     expect(missing.getAllByRole('cell')[4]).not.toHaveAttribute('title');
     missing.getAllByText('Unavailable').forEach((value) => expect(value).not.toHaveClass('return-positive', 'return-negative'));
-    expect(screen.getByRole('table')).toHaveAccessibleDescription(/latest saved closes.*all buys, sales and fees after the prior close, even trades newer than the latest price.*deposits and withdrawals are excluded/);
+    expect(screen.getByRole('table')).not.toHaveAttribute('aria-describedby');
     expect(request.mock.calls.map(([path]) => path)).toEqual([pagePath('/customers')]);
   });
 

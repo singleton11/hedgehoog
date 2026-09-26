@@ -285,7 +285,9 @@ describe('portfolio list creation and financial summary', () => {
     expect(within(rows[2]).getAllByRole('cell')[4]).not.toHaveAttribute('title');
     expect(within(rows[2]).getByText('Some holdings cannot be valued.')).toBeInTheDocument();
     expect(within(rows[2]).getByText('€0.00')).toBeInTheDocument();
-    expect(table()).toHaveAccessibleDescription(/saved prices—not live prices.*latest saved closes.*all buys, sales and fees after the prior close, even trades newer than the latest price.*deposits and withdrawals are excluded/);
+    expect(table()).not.toHaveAttribute('aria-describedby');
+    expect(screen.queryByText(/External assets and debts are not included/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Today P&L uses the latest saved closes/)).not.toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Portfolios table' })).toHaveAttribute('tabindex', '0');
     expect(screen.getByRole('region', { name: 'Portfolios table' })).toHaveAccessibleDescription('Scroll horizontally to view all columns.');
     expect(request.mock.calls.some(([path]) => path.startsWith(`${base}/`))).toBe(false);

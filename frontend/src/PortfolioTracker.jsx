@@ -270,7 +270,7 @@ function PortfolioList({ request, customerId, goals }) {
   const resource = useRead(request, `${portfoliosPath(customerId)}?limit=${PAGE_SIZE}&offset=${offset}`, { revision });
   const valid = validPage(resource.data, offset, PAGE_SIZE, (item) => validPortfolioSummary(item, customerId));
   return <>
-    <div className="section-heading page-heading">
+    <div className="section-heading page-heading portfolio-list-actions">
       <button ref={addButton} type="button" disabled={creating} aria-expanded={creating} aria-controls={creating ? 'new-portfolio-form' : undefined} onClick={() => setCreating(true)}>Add portfolio</button>
     </div>
     {creating && <MetadataForm request={request} customerId={customerId} goals={goals} onCancel={() => setCreating(false)}
@@ -279,11 +279,9 @@ function PortfolioList({ request, customerId, goals }) {
       <div className="section-heading"><h3>Portfolios</h3><button className="secondary" type="button" onClick={resource.retry}>Refresh portfolios</button></div>
       <ReadStatus resource={resource} label="portfolios" invalid={!valid} />
       {!resource.loading && !resource.error && valid && <>{resource.data.total === 0 ? <p className="empty-state">No portfolios yet. Select Add portfolio to create your first portfolio.</p> : <>
-        <p className="muted" id="portfolio-net-worth-note">Net worth is cash plus holdings in each tracked EUR portfolio, using saved prices—not live prices. External assets and debts are not included. Total P&L is realized plus unrealized P&L.</p>
-        <p className="muted" id="portfolio-pnl-note">Today P&L uses the latest saved closes, not necessarily today’s prices. It includes all buys, sales and fees after the prior close, even trades newer than the latest price; deposits and withdrawals are excluded. This is a saved-price estimate, not live P&L. Missing or mismatched prices are unavailable.</p>
         <p id="portfolio-summary-scroll" className="portfolio-scroll-hint">Scroll horizontally to view all columns.</p>
         <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Portfolios table" aria-describedby="portfolio-summary-scroll">
-          <table className="planner-table planner-summary-table portfolios-table" aria-describedby="portfolio-net-worth-note portfolio-pnl-note">
+          <table className="planner-table planner-summary-table portfolios-table">
             <caption>Portfolio summary</caption>
             <thead><tr><th scope="col">Portfolio</th><th scope="col">Linked goal</th><th scope="col">Net worth (EUR)</th>
               {pnlColumns.map(([label, key]) => <th key={key} scope="col">{label}</th>)}

@@ -209,10 +209,8 @@ function Customers({ request, isin }) {
       onCreated={() => { setRevision((value) => value + 1); setCreating(false); }} />}
     <PagedList key={revision} request={request} path="/customers" label="Customers" validate={validCustomerSummary} empty="No customers yet. Select Add customer to create your first customer.">
       {(items) => <>
-        <p className="muted" id="customer-net-worth-note">Net worth is cash plus holdings across all tracked EUR portfolios, using saved prices—not live prices. External assets and debts are not included. Total P&L is realized plus unrealized P&L.</p>
-        <p className="muted" id="customer-pnl-note">Today P&L uses the latest saved closes, not necessarily today’s prices. It includes all buys, sales and fees after the prior close, even trades newer than the latest price; deposits and withdrawals are excluded. This is a saved-price estimate, not live P&L. Missing or mismatched prices are unavailable.</p>
         <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Customers table">
-          <table className="planner-table planner-summary-table customers-table" aria-describedby="customer-net-worth-note customer-pnl-note">
+          <table className="planner-table planner-summary-table customers-table">
             <caption>Customer portfolio summary</caption>
             <thead><tr><th scope="col">Customer</th><th scope="col">Goals</th><th scope="col">Net worth (EUR)</th>
               {pnlColumns.map(([label, key]) => <th key={key} scope="col">{label}</th>)}
