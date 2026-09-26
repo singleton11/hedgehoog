@@ -268,17 +268,18 @@ summary::marker { color: #839a8b; }
 .planner-table caption { text-align: left; margin-bottom: 1rem; color: var(--muted); }
 .planner-table th, .planner-table td { padding: 0.85rem; text-align: left; border-bottom: 1px solid var(--line); min-width: 8rem; }
 .planner-table thead { color: var(--muted); font-size: 0.75rem; }
-.customers-table { min-width: 66rem; }
+.planner-summary-table { min-width: 66rem; }
 .goals-table { min-width: 48rem; }
-:is(.customers-table, .goals-table) th, :is(.customers-table, .goals-table) td { font-variant-numeric: tabular-nums; }
-:is(.customers-table, .goals-table) th:first-child { min-width: 12rem; max-width: 22rem; overflow-wrap: anywhere; }
-.customers-table th:nth-child(2), .customers-table td:nth-child(2) { min-width: 3rem; }
-:is(.customers-table, .goals-table) thead th:not(:first-child), :is(.customers-table, .goals-table) td { text-align: right; }
-:is(.customers-table, .goals-table) td { white-space: nowrap; }
-.customers-table .simulation-parameter { white-space: normal; }
-:is(.customers-table, .goals-table) time { white-space: nowrap; }
-:is(.customers-table, .goals-table) tbody tr:hover { background: #f4f8f3; }
-:is(.customers-table, .goals-table) tbody a { display: block; }
+:is(.planner-summary-table, .goals-table) th, :is(.planner-summary-table, .goals-table) td { font-variant-numeric: tabular-nums; }
+:is(.planner-summary-table, .goals-table) th:first-child { min-width: 12rem; max-width: 22rem; overflow-wrap: anywhere; }
+.planner-summary-table th:nth-child(2), .planner-summary-table td:nth-child(2) { min-width: 3rem; }
+:is(.planner-summary-table, .goals-table) thead th:not(:first-child), :is(.planner-summary-table, .goals-table) td { text-align: right; }
+:is(.planner-summary-table, .goals-table) td { white-space: nowrap; }
+.planner-summary-table .simulation-parameter { white-space: normal; }
+:is(.planner-summary-table, .goals-table) time { white-space: nowrap; }
+:is(.planner-summary-table, .goals-table) tbody tr:hover { background: #f4f8f3; }
+:is(.planner-summary-table, .goals-table) tbody a { display: block; }
+.portfolios-table thead th:nth-child(2), .portfolios-table td:nth-child(2) { min-width: 8rem; max-width: 16rem; text-align: left; white-space: normal; overflow-wrap: anywhere; }
 .goals-heading { margin-top: 1.5rem; }
 .goals-heading p { margin: 0; font-size: 0.88rem; }
 .goals-scroll-hint { display: none; font-size: 0.75rem; }

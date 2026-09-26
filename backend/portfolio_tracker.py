@@ -303,7 +303,7 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
                 "positions": [event_public(item) for item in items], "warnings": warnings}
 
 
-def _customer_daily_pnl(db, documents, now, quote_cache):
+def _daily_pnl(db, documents, now, quote_cache):
     """Equity movement less external cash flows over one shared saved-close interval.
 
     Include sales and round trips, not just the shares still held. Select dates
@@ -404,8 +404,21 @@ def customer_portfolio_summaries(db, owner, customer_ids):
             unrealized = amounts["unrealized_pnl_eur"]
             amounts["total_pnl_eur"] = amounts["realized_pnl_eur"] + unrealized if unrealized is not None else None
             result[customer_id] = {**{field: euros(amount) for field, amount in amounts.items()},
-                                   **_customer_daily_pnl(db, grouped[customer_id], now, quote_cache)}
+                                   **_daily_pnl(db, grouped[customer_id], now, quote_cache)}
         return result
+
+
+def portfolio_summary(db, document, now, quote_cache):
+    """List-only metrics with the same accounting as customer summaries."""
+    with localcontext() as context:
+        context.prec = 80
+        snapshot = valuation(db, document, now=now, quote_cache=quote_cache, exact_totals=True)
+        unrealized = snapshot["unrealized_pnl_eur"]
+        total = snapshot["realized_pnl_eur"] + unrealized if unrealized is not None else None
+        return {**metadata(document), "net_worth_eur": euros(snapshot["equity_eur"]),
+                "realized_pnl_eur": euros(snapshot["realized_pnl_eur"]),
+                "unrealized_pnl_eur": euros(unrealized), "total_pnl_eur": euros(total),
+                **_daily_pnl(db, [document], now, quote_cache)}
 
 
 @router.get("/portfolio-instruments")
@@ -424,7 +437,9 @@ def instruments(request: Request, user: CurrentUser, limit: Limit = 20, offset: 
 def portfolios(customer_id: str, request: Request, user: CurrentUser, limit: Limit = 20, offset: Offset = 0):
     db, owner = request.app.state.database, str(user["_id"])
     _customer(db, owner, customer_id)
-    return _page(db.portfolios, scope(owner, customer_id), {key: 1 for key in META_FIELDS}, CREATED_ORDER, metadata, limit, offset)
+    now, quote_cache = md.utcnow(), {}
+    return _page(db.portfolios, scope(owner, customer_id), {key: 1 for key in (*META_FIELDS, "transactions")},
+                 CREATED_ORDER, lambda document: portfolio_summary(db, document, now, quote_cache), limit, offset)
 
 
 @router.post(BASE, status_code=201)

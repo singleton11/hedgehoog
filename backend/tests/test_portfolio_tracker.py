@@ -141,7 +141,10 @@ def test_named_multiple_portfolios_attach_detach_and_independent_balances(tracke
     assert db.portfolios.index_information()["portfolios_owner_customer_order"]["key"] == [
         ("user_id", 1), ("customer_id", 1), ("created_at", -1), ("_id", -1),
     ]
-    assert set(client.get(f"/customers/{customer_id}/portfolios").json()["items"][0]) == set(first)
+    listed = client.get(f"/customers/{customer_id}/portfolios").json()["items"][0]
+    assert {key: listed[key] for key in second} == second
+    assert set(listed) == set(first) | {"net_worth_eur", "realized_pnl_eur", "unrealized_pnl_eur", "today_pnl_eur",
+                                        "total_pnl_eur", "today_from_date", "today_to_date"}
 
 
 def test_customer_net_worth_sums_cash_and_holdings_across_linked_and_unlinked_portfolios(tracker, db):
@@ -773,7 +776,9 @@ def test_portfolio_transaction_and_instrument_pagination_are_stable(tracker, db)
     # Equal created_at timestamps must still have a deterministic ID tie-breaker.
     for offset, item in enumerate((third, second, first)):
         assert client.get(base, params={"limit": 1, "offset": offset}).json() == {
-            "items": [item], "total": 3, "limit": 1, "offset": offset,
+            "items": [{**item, "net_worth_eur": "0.00", "realized_pnl_eur": "0.00", "unrealized_pnl_eur": "0.00",
+                       "today_pnl_eur": "0.00", "total_pnl_eur": "0.00", "today_from_date": None, "today_to_date": None}],
+            "total": 3, "limit": 1, "offset": offset,
         }
     events = [record(client, url, cash(day=day, amount="10")) for day in
               ("2026-09-15", "2026-09-01", "2026-09-15", "2026-09-14")]

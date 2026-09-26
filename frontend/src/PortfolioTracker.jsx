@@ -9,6 +9,9 @@ const identifier = (value) => typeof value === 'string' && /^[a-zA-Z0-9_-]+$/.te
 const text = (value) => typeof value === 'string' && value.trim().length > 0;
 const decimal = (value) => typeof value === 'string' && /^-?\d+(?:\.\d+)?$/.test(value);
 const nullableDecimal = (value) => value === null || decimal(value);
+const money = (value) => typeof value === 'string' && /^-?\d+\.\d{2}$/.test(value);
+const pnlColumns = [['Realized P&L (EUR)', 'realized_pnl_eur'], ['Unrealized P&L (EUR)', 'unrealized_pnl_eur'],
+  ['Today P&L (EUR)', 'today_pnl_eur'], ['Total P&L (EUR)', 'total_pnl_eur']];
 const pnlClass = (value) => !decimal(value) || !/[1-9]/.test(value) ? '' : value.startsWith('-') ? 'return-negative' : 'return-positive';
 const today = () => new Date().toISOString().slice(0, 10);
 const customerPath = (cid) => `/customers/${encodeURIComponent(cid)}`;
@@ -20,6 +23,12 @@ const validGoal = (item) => identifier(item?.id) && text(item.name);
 const validInstrument = (item) => typeof item?.instrument_id === 'string' && /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(item.instrument_id) && item.currency === 'EUR';
 const validPortfolio = (item, cid) => identifier(item?.id) && item.customer_id === cid && text(item.name)
   && item.currency === 'EUR' && (item.goal_id === null || identifier(item.goal_id));
+const validPortfolioSummary = (item, cid) => validPortfolio(item, cid)
+  && (item.net_worth_eur === null || (money(item.net_worth_eur) && !item.net_worth_eur.startsWith('-')))
+  && money(item.realized_pnl_eur)
+  && ['unrealized_pnl_eur', 'today_pnl_eur', 'total_pnl_eur'].every((key) => item[key] === null || money(item[key]))
+  && ((item.today_from_date === null && item.today_to_date === null && [null, '0.00'].includes(item.today_pnl_eur))
+    || (item.today_pnl_eur !== null && validDate(item.today_from_date) && validDate(item.today_to_date) && item.today_from_date < item.today_to_date));
 const validPosition = (item) => validInstrument(item?.instrument) && ['quantity', 'average_price_eur', 'cost_basis_eur'].every((key) => decimal(item[key]))
   && ['market_price_eur', 'position_value_eur', 'unrealized_pnl_eur', 'daily_unrealized_pnl_eur'].every((key) => nullableDecimal(item[key]));
 const validDetail = (data, cid, pid) => validPortfolio(data?.portfolio, cid) && data.portfolio.id === pid
@@ -146,7 +155,7 @@ function GoalChoice({ goals, value, onChange, prefix }) {
     <p className="muted">A goal is optional. Attach, change or detach it later without changing transactions.</p>
   </div>;
 }
-function MetadataForm({ request, customerId, portfolio, goals, onSaved }) {
+function MetadataForm({ request, customerId, portfolio, goals, onSaved, onCancel }) {
   const editing = Boolean(portfolio);
   const [name, setName] = useState(portfolio?.name || '');
   const [goalId, setGoalId] = useState(portfolio?.goal_id || '');
@@ -160,14 +169,17 @@ function MetadataForm({ request, customerId, portfolio, goals, onSaved }) {
       { name: name.trim(), goal_id: goalId || null }, (data) => validPortfolio(data, customerId) && (!editing || data.id === portfolio.id),
       (data) => { if (!editing) { setName(''); setGoalId(''); } onSaved(data); }, editing ? 'Portfolio settings saved.' : 'Portfolio created.');
   }
-  return <form className="goal-form planner-create" aria-label={editing ? 'Portfolio settings' : 'New portfolio'} onSubmit={save} noValidate>
+  return <form id={`${prefix}-form`} className="goal-form planner-create" aria-label={editing ? 'Portfolio settings' : 'New portfolio'} onSubmit={save} noValidate>
     <h3>{editing ? 'Portfolio settings' : 'New portfolio'}</h3>
     <fieldset disabled={mutation.busy}>
       <div className="goal-fields"><div><label htmlFor={`${prefix}-name`}>Portfolio name</label>
-        <input id={`${prefix}-name`} value={name} required maxLength={200} autoComplete="off" onChange={(event) => setName(event.target.value)} /></div>
+        <input id={`${prefix}-name`} value={name} required maxLength={200} autoComplete="off" autoFocus={Boolean(onCancel)} onChange={(event) => setName(event.target.value)} /></div>
         <GoalChoice goals={goals} value={goalId} onChange={setGoalId} prefix={prefix} />
       </div>
-      <button type="submit">{mutation.busy ? 'Saving…' : editing ? 'Save portfolio settings' : 'Create portfolio'}</button>
+      <div className="button-group">
+        <button type="submit">{mutation.busy ? 'Saving…' : editing ? 'Save portfolio settings' : 'Create portfolio'}</button>
+        {onCancel && <button type="button" className="secondary" onClick={onCancel}>Cancel</button>}
+      </div>
     </fieldset>
     <ReadStatus resource={goals} label="goals" />
     <MutationStatus mutation={mutation} />
@@ -176,21 +188,50 @@ function MetadataForm({ request, customerId, portfolio, goals, onSaved }) {
 function PortfolioList({ request, customerId, goals }) {
   const [offset, setOffset] = useState(0);
   const [revision, setRevision] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const addButton = useRef(null);
+  const wasCreating = useRef(false);
+  useEffect(() => {
+    if (wasCreating.current && !creating) addButton.current?.focus();
+    wasCreating.current = creating;
+  }, [creating]);
   const resource = useRead(request, `${portfoliosPath(customerId)}?limit=${PAGE_SIZE}&offset=${offset}`, { revision });
-  const valid = validPage(resource.data, offset, PAGE_SIZE, (item) => validPortfolio(item, customerId));
+  const valid = validPage(resource.data, offset, PAGE_SIZE, (item) => validPortfolioSummary(item, customerId));
   return <>
-    <p className="muted">Track separate EUR portfolios with manual cash movements and trades. Goals can be linked whenever you are ready.</p>
+    <div className="section-heading page-heading">
+      <p className="muted">Track separate EUR portfolios with manual cash movements and trades. Goals can be linked whenever you are ready.</p>
+      <button ref={addButton} type="button" disabled={creating} aria-expanded={creating} aria-controls={creating ? 'new-portfolio-form' : undefined} onClick={() => setCreating(true)}>Add portfolio</button>
+    </div>
+    {creating && <MetadataForm request={request} customerId={customerId} goals={goals} onCancel={() => setCreating(false)}
+      onSaved={() => { setOffset(0); setRevision((value) => value + 1); setCreating(false); }} />}
     <section className="planner-list" aria-label="Portfolios">
       <div className="section-heading"><h3>Portfolios</h3><button className="secondary" type="button" onClick={resource.retry}>Refresh portfolios</button></div>
       <ReadStatus resource={resource} label="portfolios" invalid={!valid} />
-      {valid && <>{resource.data.total === 0 ? <p className="empty-state">No portfolios yet. Create your first portfolio below.</p>
-        : <ul className="planner-cards">{resource.data.items.map((portfolio) => <li key={portfolio.id}>
-          <a href={portfoliosRoute(customerId, portfolio.id)}>{portfolio.name}<span>EUR · {portfolio.goal_id ? goals.data?.find((goal) => goal.id === portfolio.goal_id)?.name || 'Linked goal' : 'No goal'}</span></a>
-        </li>)}</ul>}
+      {!resource.loading && !resource.error && valid && <>{resource.data.total === 0 ? <p className="empty-state">No portfolios yet. Select Add portfolio to create your first portfolio.</p> : <>
+        <p className="muted" id="portfolio-net-worth-note">Net worth is cash plus holdings in each tracked EUR portfolio, using saved prices—not live prices. External assets and debts are not included. Total P&L is realized plus unrealized P&L.</p>
+        <p className="muted" id="portfolio-pnl-note">Today P&L covers the latest saved trading-day interval shown, including sales and fees, excluding deposits and withdrawals. It is not live or necessarily today. Missing or mismatched prices are unavailable.</p>
+        <p id="portfolio-summary-scroll" className="portfolio-scroll-hint">Scroll horizontally to view all columns.</p>
+        <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Portfolios table" aria-describedby="portfolio-summary-scroll">
+          <table className="planner-table planner-summary-table portfolios-table" aria-describedby="portfolio-net-worth-note portfolio-pnl-note">
+            <caption>Portfolio summary</caption>
+            <thead><tr><th scope="col">Portfolio</th><th scope="col">Linked goal</th><th scope="col">Net worth (EUR)</th>
+              {pnlColumns.map(([label, key]) => <th key={key} scope="col">{label}</th>)}
+            </tr></thead>
+            <tbody>{resource.data.items.map((portfolio) => <tr key={portfolio.id}>
+              <th scope="row"><a href={portfoliosRoute(customerId, portfolio.id)}>{portfolio.name}</a></th>
+              <td>{portfolio.goal_id ? goals.data?.find((goal) => goal.id === portfolio.goal_id)?.name || 'Linked goal' : 'No goal'}</td>
+              <td>{formatEuros(portfolio.net_worth_eur)}{portfolio.net_worth_eur === null && <span className="simulation-parameter">Some holdings cannot be valued.</span>}</td>
+              {pnlColumns.map(([, key]) => <td key={key}>
+                <span className={pnlClass(portfolio[key])}>{formatEuros(portfolio[key])}</span>
+                {key === 'today_pnl_eur' && portfolio.today_to_date && <span className="simulation-parameter"><time dateTime={portfolio.today_from_date}>{portfolio.today_from_date}</time> to <time dateTime={portfolio.today_to_date}>{portfolio.today_to_date}</time></span>}
+              </td>)}
+            </tr>)}</tbody>
+          </table>
+        </div>
+      </>}
         {resource.data.total > 0 && <Pagination label="Portfolios" offset={offset} total={resource.data.total} count={resource.data.items.length} setOffset={setOffset} loading={resource.loading} />}
       </>}
     </section>
-    <MetadataForm request={request} customerId={customerId} goals={goals} onSaved={() => { setOffset(0); setRevision((value) => value + 1); }} />
   </>;
 }
 function Summary({ data }) {
