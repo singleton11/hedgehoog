@@ -12,7 +12,7 @@ const money = (value) => typeof value === 'string' && /^\d+\.\d{2}$/.test(value)
 const validCustomer = (value) => id(value?.id) && text(value.name);
 const pnlMoney = (value) => typeof value === 'string' && /^-?\d+\.\d{2}$/.test(value);
 const pnlClass = (value) => !pnlMoney(value) || !/[1-9]/.test(value) ? '' : value.startsWith('-') ? 'return-negative' : 'return-positive';
-const pnlColumns = [['Realized P&L (EUR)', 'realized_pnl_eur'], ['Unrealized P&L (EUR)', 'unrealized_pnl_eur'],
+const pnlColumns = [['Realized P&L (incl. fees, EUR)', 'realized_pnl_eur'], ['Unrealized P&L (EUR)', 'unrealized_pnl_eur'],
   ['Today P&L (EUR)', 'today_pnl_eur'], ['Total P&L (EUR)', 'total_pnl_eur']];
 const validDate = (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
   && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;

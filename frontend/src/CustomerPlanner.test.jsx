@@ -213,7 +213,7 @@ describe('customer portfolio summary table', () => {
     await open();
     const table = within(screen.getByRole('table'));
     expect(table.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
-      'Customer', 'Goals', 'Net worth (EUR)', 'Realized P&L (EUR)', 'Unrealized P&L (EUR)', 'Today P&L (EUR)', 'Total P&L (EUR)',
+      'Customer', 'Goals', 'Net worth (EUR)', 'Realized P&L (incl. fees, EUR)', 'Unrealized P&L (EUR)', 'Today P&L (EUR)', 'Total P&L (EUR)',
     ]);
     const row = within(table.getByRole('row', { name: /Alice/ }));
     expect(row.getAllByRole('cell')[0]).toHaveTextContent(/^23$/);

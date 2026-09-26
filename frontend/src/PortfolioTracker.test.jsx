@@ -268,7 +268,7 @@ describe('portfolio list creation and financial summary', () => {
       today_pnl_eur: null, total_pnl_eur: null, today_from_date: null, today_to_date: null })];
     await open(listRoute);
     expect(within(table()).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
-      'Portfolio', 'Linked goal', 'Net worth (EUR)', 'Realized P&L (EUR)', 'Unrealized P&L (EUR)', 'Today P&L (EUR)', 'Total P&L (EUR)',
+      'Portfolio', 'Linked goal', 'Net worth (EUR)', 'Realized P&L (incl. fees, EUR)', 'Unrealized P&L (EUR)', 'Today P&L (EUR)', 'Total P&L (EUR)',
     ]);
     const rows = within(table()).getAllByRole('row');
     expect(within(rows[1]).getByRole('link', { name: 'Linked investments' })).toHaveAttribute('href', detailRoute);
@@ -650,7 +650,7 @@ describe('transaction removal', () => {
     expect(history().getByText('Transaction removed.')).toHaveAttribute('role', 'status');
     expect(history().getByRole('heading', { name: 'Transaction history' })).toHaveFocus();
     expect(history().getByText(/No transactions yet/)).toBeInTheDocument();
-    expect(summaryValue('Cash')).toHaveTextContent('€42.00'); expect(summaryValue('Realized P&L')).toHaveTextContent('€3.00');
+    expect(summaryValue('Cash')).toHaveTextContent('€42.00'); expect(summaryValue('Realized P&L (incl. fees)')).toHaveTextContent('€3.00');
     fireEvent.click(screen.getByRole('tab', { name: 'Positions' }));
     expect(screen.getByText('No open positions.')).toBeVisible();
     addTransaction(); expect(screen.getByLabelText('Amount (EUR)')).toHaveValue('25');
@@ -720,14 +720,31 @@ describe('transaction removal', () => {
 });
 
 describe('valuation, transaction pagination and read failures', () => {
+  it('shows an immediate commission loss separately from unchanged holdings', async () => {
+    const server = mockServer(); server.details.set(pid, snapshot(metadata(), {
+      cash_eur: '0.00', positions_value_eur: '1000.00', equity_eur: '1000.00',
+      realized_pnl_eur: '-6.00', unrealized_pnl_eur: '0.00', daily_unrealized_pnl_eur: '0.00',
+      positions: [position({ quantity: '10', average_price_eur: '100.00000000', cost_basis_eur: '1000.00',
+        market_price_eur: '100', position_value_eur: '1000.00', unrealized_pnl_eur: '0.00', daily_unrealized_pnl_eur: '0.00' })],
+    }));
+    await open();
+    expect(summaryValue('Realized P&L (incl. fees)')).toHaveTextContent('-€6.00');
+    expect(summaryValue('Realized P&L (incl. fees)')).toHaveClass('return-negative');
+    expect(summaryValue('Total unrealized P&L')).toHaveTextContent('€0.00');
+    expect(summaryValue('Daily unrealized P&L')).toHaveTextContent('€0.00');
+    expect(screen.getByText(/Weighted-average cost excludes commissions/)).toHaveTextContent(
+      'Buy and sell commissions reduce realized P&L immediately on the trade date.');
+    expect(writes()).toHaveLength(0);
+  });
+
   it('distinguishes unavailable, zero and negative P&L and shows price dates and warnings', async () => {
     const server = mockServer(); server.details.set(pid, snapshot(metadata(), { cash_eur: '0.00', equity_eur: null, positions_value_eur: null,
       realized_pnl_eur: '-12.34', unrealized_pnl_eur: '0.00', daily_unrealized_pnl_eur: null, daily_from_date: null, daily_to_date: null,
       positions: [position({ market_price_eur: null, price_date: null, previous_price_date: null, position_value_eur: null, unrealized_pnl_eur: null, daily_unrealized_pnl_eur: null, warning: 'No market price.' })], warnings: ['Valuation incomplete.'] }));
     await open(); expect(summaryValue('Cash')).toHaveTextContent('€0.00'); expect(summaryValue('Equity')).toHaveTextContent('Unavailable');
-    expect(summaryValue('Realized P&L')).toHaveTextContent('-€12.34'); expect(summaryValue('Total unrealized P&L')).toHaveTextContent('€0.00');
+    expect(summaryValue('Realized P&L (incl. fees)')).toHaveTextContent('-€12.34'); expect(summaryValue('Total unrealized P&L')).toHaveTextContent('€0.00');
     expect(summaryValue('Daily unrealized P&L')).toHaveTextContent('Unavailable');
-    expect(summaryValue('Realized P&L')).toHaveClass('return-negative');
+    expect(summaryValue('Realized P&L (incl. fees)')).toHaveClass('return-negative');
     expect(summaryValue('Total unrealized P&L')).not.toHaveClass('return-positive', 'return-negative');
     expect(summaryValue('Daily unrealized P&L')).not.toHaveClass('return-positive', 'return-negative');
     expect(screen.getByText('Valuation incomplete.')).toBeInTheDocument(); expect(screen.getByText('No market price.')).toBeInTheDocument();

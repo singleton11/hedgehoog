@@ -128,8 +128,9 @@ buys and sells manually; dates default to today (UTC). Only confirmed EUR-priced
 acquired listings are supported. Cash must be funded and positions cannot be short,
 including throughout a backdated transaction's full timeline.
 
-Holdings show quantity, fee-inclusive average cost, saved-price value and daily/total
-unrealized PnL; portfolio totals include cash, equity and realized PnL. Missing prices
+Holdings show quantity, average cost excluding commissions, saved-price value and daily/total
+unrealized PnL; portfolio totals include cash, equity and realized PnL. Buy and sell
+commissions reduce realized PnL immediately on the trade date. Missing prices
 remain unavailable, and quote dates/staleness are explicit. Transactions use
 weighted-average cost, with idempotent retries and atomic concurrency protection.
 Use **Remove** in transaction history to correct an entry after confirmation;

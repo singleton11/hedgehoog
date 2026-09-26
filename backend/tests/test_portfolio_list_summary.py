@@ -41,12 +41,12 @@ def test_list_shows_separate_linked_and_unlinked_totals_and_is_read_only(tracker
     assert rows[first["id"]]["goal_id"] is None
     assert rows[second["id"]]["goal_id"] == target
     assert {key: rows[first["id"]][key] for key in FIELDS} == {
-        "net_worth_eur": "1410.00", "realized_pnl_eur": "23.00", "unrealized_pnl_eur": "87.00",
+        "net_worth_eur": "1410.00", "realized_pnl_eur": "20.00", "unrealized_pnl_eur": "90.00",
         "today_pnl_eur": "34.00", "total_pnl_eur": "110.00",
         "today_from_date": "2026-09-15", "today_to_date": "2026-09-16",
     }
     assert {key: rows[second["id"]][key] for key in FIELDS} == {
-        "net_worth_eur": "188.00", "realized_pnl_eur": "0.00", "unrealized_pnl_eur": "-12.00",
+        "net_worth_eur": "188.00", "realized_pnl_eur": "-2.00", "unrealized_pnl_eur": "-10.00",
         "today_pnl_eur": "-12.00", "total_pnl_eur": "-12.00",
         "today_from_date": "2026-09-15", "today_to_date": "2026-09-16",
     }

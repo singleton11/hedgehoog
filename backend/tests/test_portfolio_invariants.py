@@ -39,7 +39,8 @@ def test_random_fractional_ledger_reconciles_against_rational_oracle():
             holdings[instrument["instrument_id"]] = [held - quantity, basis - allocation]
         else:
             cash -= gross + fee_amount
-            holdings[instrument["instrument_id"]] = [held + quantity, basis + gross + fee_amount]
+            realized -= fee_amount
+            holdings[instrument["instrument_id"]] = [held + quantity, basis + gross]
         append("sell" if sell else "buy", instrument=instrument, quantity=exact_decimal(quantity),
                price_eur=exact_decimal(Fraction(cents, 100)), commission_eur=exact_decimal(fee_amount))
 

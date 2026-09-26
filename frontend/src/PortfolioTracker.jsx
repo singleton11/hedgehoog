@@ -12,7 +12,7 @@ const text = (value) => typeof value === 'string' && value.trim().length > 0;
 const decimal = (value) => typeof value === 'string' && /^-?\d+(?:\.\d+)?$/.test(value);
 const nullableDecimal = (value) => value === null || decimal(value);
 const money = (value) => typeof value === 'string' && /^-?\d+\.\d{2}$/.test(value);
-const pnlColumns = [['Realized P&L (EUR)', 'realized_pnl_eur'], ['Unrealized P&L (EUR)', 'unrealized_pnl_eur'],
+const pnlColumns = [['Realized P&L (incl. fees, EUR)', 'realized_pnl_eur'], ['Unrealized P&L (EUR)', 'unrealized_pnl_eur'],
   ['Today P&L (EUR)', 'today_pnl_eur'], ['Total P&L (EUR)', 'total_pnl_eur']];
 const pnlClass = (value) => !decimal(value) || !/[1-9]/.test(value) ? '' : value.startsWith('-') ? 'return-negative' : 'return-positive';
 const today = () => new Date().toISOString().slice(0, 10);
@@ -298,11 +298,11 @@ function PortfolioList({ request, customerId, goals }) {
   </>;
 }
 function Summary({ data }) {
-  const metrics = [['Cash', 'cash_eur'], ['Positions value', 'positions_value_eur'], ['Equity', 'equity_eur'], ['Realized P&L', 'realized_pnl_eur'], ['Total unrealized P&L', 'unrealized_pnl_eur'], ['Daily unrealized P&L', 'daily_unrealized_pnl_eur']];
+  const metrics = [['Cash', 'cash_eur'], ['Positions value', 'positions_value_eur'], ['Equity', 'equity_eur'], ['Realized P&L (incl. fees)', 'realized_pnl_eur'], ['Total unrealized P&L', 'unrealized_pnl_eur'], ['Daily unrealized P&L', 'daily_unrealized_pnl_eur']];
   return <section aria-label="Portfolio summary"><h3>Portfolio summary</h3>
     <dl className="facts">{metrics.map(([label, key]) => <div key={key}><dt>{label}</dt><dd className={key.includes('pnl') ? pnlClass(data[key]) : undefined}>{formatEuros(data[key])}</dd></div>)}</dl>
     <p className="muted">Daily price comparison (UTC): {data.daily_from_date && data.daily_to_date ? `${data.daily_from_date} to ${data.daily_to_date}` : 'Unavailable'}.</p>
-    <p className="muted">Weighted-average cost includes buy commissions; sell commissions reduce realized P&amp;L. Values are calculated by the server, not this browser.</p>
+    <p className="muted">Weighted-average cost excludes commissions. Buy and sell commissions reduce realized P&amp;L immediately on the trade date. Values are calculated by the server, not this browser.</p>
     {data.warnings.length > 0 && <ul className="portfolio-warnings" aria-label="Valuation warnings">{data.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
   </section>;
 }
