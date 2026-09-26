@@ -22,7 +22,7 @@ const validCustomerSummary = (value) => validCustomer(value) && (value.net_worth
   && ((value.today_from_date === null && value.today_to_date === null && [null, '0.00'].includes(value.today_pnl_eur))
     || (value.today_pnl_eur !== null && validDate(value.today_from_date) && validDate(value.today_to_date) && value.today_from_date < value.today_to_date));
 const validGoal = (value, customerId) => validCustomer(value) && value.customer_id === customerId && money(value.goal_eur)
-  && typeof value.goal_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.goal_date);
+  && validDate(value.goal_date);
 const customerPath = (customerId) => `/customers/${encodeURIComponent(customerId)}`;
 const goalPath = (customerId, goalId) => `${customerPath(customerId)}/goals/${encodeURIComponent(goalId)}`;
 export const customerRoute = (customerId) => `#/goal/customers/${encodeURIComponent(customerId)}`;
@@ -232,17 +232,53 @@ function Customers({ request, isin }) {
     </PagedList>
   </>;
 }
+function timeRemaining(date) {
+  // Compare calendar days in UTC, independent of local timezone and time of day.
+  const today = new Date().toISOString().slice(0, 10);
+  const days = Math.round((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86400000);
+  if (days === 0) return 'Today';
+  const duration = `${Math.abs(days).toLocaleString('en-GB')} ${Math.abs(days) === 1 ? 'day' : 'days'}`;
+  return days > 0 ? `${duration} left` : `${duration} past target`;
+}
+function CreatedDate({ value }) {
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) return 'Unavailable';
+  return <time dateTime={value}>{new Date(value).toISOString().slice(0, 10)}</time>;
+}
 function CustomerGoals({ request, customer, isin }) {
   const [revision, setRevision] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const addButton = useRef(null);
+  const wasCreating = useRef(false);
+  useEffect(() => {
+    if (wasCreating.current && !creating) addButton.current?.focus();
+    wasCreating.current = creating;
+  }, [creating]);
   return <>
     <CustomerTabs customer={customer} active="goals" isin={isin} />
-    <p className="muted">Each goal has a target and date you can edit. Explore different ways to fund it with separate simulations.</p>
-    <PagedList key={revision} request={request} path={`${customerPath(customer.id)}/goals`} label="Goals" validate={(item) => validGoal(item, customer.id)} empty="No goals yet. Create a goal below.">
-      {(items) => <ul className="planner-cards">{items.map((goal) => <li key={goal.id}>
-        <a href={`${goalRoute(customer.id, goal.id)}${prefill(isin)}`}>{goal.name}<span>{formatEuros(goal.goal_eur)} · {goal.goal_date}</span></a>
-      </li>)}</ul>}
+    <div className="section-heading goals-heading">
+      <p className="muted">Choose a goal to review saved simulations or explore ways to fund it.</p>
+      <button ref={addButton} type="button" disabled={creating} aria-expanded={creating} aria-controls={creating ? 'new-goal-form' : undefined} onClick={() => setCreating(true)}>Add goal</button>
+    </div>
+    {creating && <CreateForm request={request} customerId={customer.id} onCancel={() => setCreating(false)}
+      onCreated={() => { setRevision((value) => value + 1); setCreating(false); }} />}
+    <PagedList key={revision} request={request} path={`${customerPath(customer.id)}/goals`} label="Goals" validate={(item) => validGoal(item, customer.id)} empty="No goals yet. Select Add goal to create your first goal.">
+      {(items) => <>
+        <p className="goals-scroll-hint muted" id="goals-scroll-note">Scroll horizontally to see all goal details.</p>
+        <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Goals table" aria-describedby="goals-scroll-note">
+          <table className="planner-table goals-table">
+            <caption>Goal summary for {customer.name}</caption>
+            <thead><tr>{['Goal', 'Target (EUR)', 'Goal date (UTC)', 'Time remaining', 'Created (UTC)'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+            <tbody>{items.map((goal) => <tr key={goal.id}>
+              <th scope="row"><a href={`${goalRoute(customer.id, goal.id)}${prefill(isin)}`}>{goal.name}</a></th>
+              <td>{formatEuros(goal.goal_eur)}</td>
+              <td><time dateTime={goal.goal_date}>{goal.goal_date}</time></td>
+              <td>{timeRemaining(goal.goal_date)}</td>
+              <td><CreatedDate value={goal.created_at} /></td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+      </>}
     </PagedList>
-    <CreateForm request={request} customerId={customer.id} onCreated={() => setRevision((value) => value + 1)} />
   </>;
 }
 function Time({ value }) {

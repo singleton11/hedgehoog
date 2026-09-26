@@ -12,7 +12,7 @@ const customer = { id: uid(1), name: 'Alice' };
 const customerSummary = (value) => ({ net_worth_eur: '0.00', goal_count: 0,
   realized_pnl_eur: '0.00', unrealized_pnl_eur: '0.00', today_pnl_eur: '0.00', total_pnl_eur: '0.00',
   today_from_date: null, today_to_date: null, ...value });
-const goal = { id: uid(101), customer_id: customer.id, name: 'Retirement', goal_eur: '100000.00', goal_date: '2036-09-24' };
+const goal = { id: uid(101), customer_id: customer.id, name: 'Retirement', goal_eur: '100000.00', goal_date: '2036-09-24', created_at: '2026-08-01T12:00:00.000000Z' };
 const buyAndHold = {
   id: BUY_AND_HOLD_ID, name: 'Buy and hold single instrument', description: 'Invest and hold one acquired instrument.',
   parameters: [{ key: 'instrument', type: 'instrument', label: 'Instrument', required: true, universe: 'acquired' }],
@@ -92,7 +92,7 @@ function mockServer({ seed = true } = {}) {
     server.customers.set(value.id, structuredClone(value)); return value;
   };
   server.createGoal = async (cid, body) => {
-    const value = { id: uid(nextGoal++), customer_id: cid, ...body };
+    const value = { id: uid(nextGoal++), customer_id: cid, created_at: new Date().toISOString(), ...body };
     server.goals.set(value.id, structuredClone(value)); return value;
   };
   server.updateGoal = async (cid, gid, body) => {
@@ -106,7 +106,8 @@ function mockServer({ seed = true } = {}) {
   server.customerList = async (query) => page([...server.customers.values()].map((item) => customerSummary({
     goal_count: [...server.goals.values()].filter((goal) => goal.customer_id === item.id).length, ...item,
   })), query);
-  server.goalList = async (cid, query) => page([...server.goals.values()].filter((item) => item.customer_id === cid), query);
+  server.goalList = async (cid, query) => page([...server.goals.values()].filter((item) => item.customer_id === cid)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id)), query);
   server.history = async (cid, gid, query) => page([...server.saved.values()].filter((run) => run.customer_id === cid && run.goal_id === gid)
     .sort((a, b) => b.calculated_at.localeCompare(a.calculated_at) || b.id.localeCompare(a.id)).map(summary), query);
   server.report = async (cid, gid, sid) => {
@@ -155,6 +156,7 @@ const calculate = () => screen.getByRole('button', { name: 'Calculate monthly co
 const saveButton = () => screen.queryByRole('button', { name: 'Save simulation' });
 function change(label, value) { fireEvent.change(screen.getByLabelText(label), { target: { value } }); }
 function addCustomer() { fireEvent.click(screen.getByRole('button', { name: 'Add customer' })); }
+function addGoal() { fireEvent.click(screen.getByRole('button', { name: 'Add goal' })); }
 async function flush() { await act(async () => {}); }
 async function advance(ms = 5) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
 async function open(route = '#/goal') {
@@ -278,6 +280,130 @@ describe('customer portfolio summary table', () => {
   });
 });
 
+describe('goal summary table and on-demand creation', () => {
+  it('shows exact targets, UTC dates and time remaining with native goal links and no extra requests', async () => {
+    const server = mockServer(); server.goals.set(goal.id, { ...goal, goal_eur: '9007199254740993.01' });
+    await open(`${customerRoute()}/goals?instrument=${A}`);
+    const table = within(screen.getByRole('table', { name: 'Goal summary for Alice' }));
+    expect(table.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'Goal', 'Target (EUR)', 'Goal date (UTC)', 'Time remaining', 'Created (UTC)',
+    ]);
+    const row = within(table.getByRole('row', { name: /Retirement/ }));
+    expect(row.getByText('€9,007,199,254,740,993.01')).toBeInTheDocument();
+    expect(row.getByText('2036-09-24')).toHaveAttribute('datetime', '2036-09-24');
+    expect(row.getByText('3,653 days left')).toBeInTheDocument();
+    expect(row.getByText('2026-08-01')).toHaveAttribute('datetime', goal.created_at);
+    expect(row.getByRole('link', { name: 'Retirement' })).toHaveAttribute('href', `${goalRoute()}?instrument=${A}`);
+    expect(screen.getByRole('region', { name: 'Goals table' })).toHaveAttribute('tabindex', '0');
+    expect(screen.queryByRole('form', { name: 'New goal' })).not.toBeInTheDocument();
+    expect(request.mock.calls.map(([path]) => path)).toEqual([customerPath(), pagePath(`${customerPath()}/goals`)]);
+    expect(posts()).toHaveLength(0);
+  });
+
+  it.each([
+    ['2026-09-25', '1 day left'], ['2026-09-26', '2 days left'], ['2026-09-24', 'Today'],
+    ['2026-09-23', '1 day past target'], ['2026-09-22', '2 days past target'],
+  ])('compares %s against the UTC calendar day, not local time or partial days', async (date, expected) => {
+    vi.setSystemTime(new Date('2026-09-24T23:59:59Z'));
+    const server = mockServer(); server.goals.set(goal.id, { ...goal, goal_date: date, created_at: '2026-08-01T23:30:00-02:00' });
+    await open(`${customerRoute()}/goals`);
+    const table = within(screen.getByRole('table'));
+    expect(table.getByText(expected)).toBeInTheDocument();
+    expect(table.getByText('2026-08-02')).toBeInTheDocument();
+  });
+
+  it.each([undefined, null, 'invalid'])('shows unavailable rather than a fabricated creation date for %s', async (created_at) => {
+    const server = mockServer(); server.goals.set(goal.id, { ...goal, created_at });
+    await open(`${customerRoute()}/goals`);
+    expect(within(screen.getByRole('table')).getByText('Unavailable')).toBeInTheDocument();
+  });
+
+  it.each(['2026-02-30', 'not-a-date', undefined])('rejects malformed goal dates before calculating time remaining: %s', async (goal_date) => {
+    const server = mockServer(); server.goals.set(goal.id, { ...goal, goal_date });
+    await open(`${customerRoute()}/goals`);
+    expect(screen.getByRole('alert')).toHaveTextContent('unexpected response');
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  });
+
+  it('opens creation only on demand, focuses it and discards cancelled drafts and errors', async () => {
+    mockServer(); await open(`${customerRoute()}/goals`);
+    const trigger = screen.getByRole('button', { name: 'Add goal' });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    addGoal();
+    expect(trigger).toBeDisabled(); expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('form', { name: 'New goal' })).toHaveAttribute('id', trigger.getAttribute('aria-controls'));
+    expect(screen.getByLabelText('Goal name')).toHaveFocus();
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    change('Goal name', '   '); fireEvent.submit(screen.getByRole('form', { name: 'New goal' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a goal name.');
+    change('Goal name', 'Discard me'); change('Target (EUR)', '123'); change('Goal date (UTC)', '2031-01-01');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('form', { name: 'New goal' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus(); expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    addGoal();
+    expect(screen.getByLabelText('Goal name')).toHaveValue('');
+    expect(screen.getByLabelText('Target (EUR)')).toHaveValue('100000');
+    expect(screen.getByLabelText('Goal date (UTC)')).toHaveValue('2036-09-24');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(posts()).toHaveLength(0); expect(reads(pagePath(`${customerPath()}/goals`))).toHaveLength(1);
+  });
+
+  it('closes creation, restores focus and returns to the first page after adding a goal', async () => {
+    const server = mockServer();
+    for (let n = 200; n < 220; n++) server.goals.set(uid(n), { ...goal, id: uid(n), name: `Goal ${n}` });
+    await open(`${customerRoute()}/goals`);
+    fireEvent.click(screen.getByRole('button', { name: 'Next' })); await flush();
+    expect(screen.getByText('21–21 of 21')).toBeInTheDocument();
+    addGoal(); change('Goal name', '  New goal  '); change('Target (EUR)', '012345.67');
+    fireEvent.click(screen.getByRole('button', { name: 'Create goal' })); await flush();
+    expect(posts()[0][1].body).toEqual({ name: 'New goal', goal_eur: '12345.67', goal_date: '2036-09-24' });
+    expect(screen.queryByRole('form', { name: 'New goal' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add goal' })).toHaveFocus();
+    expect(screen.getByText('1–20 of 22')).toBeInTheDocument();
+    expect(screen.getByRole('row', { name: /New goal/ })).toHaveTextContent('€12,345.67');
+    expect(reads(pagePath(`${customerPath()}/goals`))).toHaveLength(2);
+    expectNoPlannerReads();
+  });
+
+  it('locks goal creation while busy and retains the draft after failure for explicit retry', async () => {
+    const server = mockServer(), pending = deferred(), createGoal = server.createGoal;
+    server.createGoal = () => pending.promise;
+    await open(`${customerRoute()}/goals`); addGoal(); change('Goal name', 'Home');
+    fireEvent.click(screen.getByRole('button', { name: 'Create goal' })); await flush();
+    for (const label of ['Goal name', 'Target (EUR)', 'Goal date (UTC)']) expect(screen.getByLabelText(label)).toBeDisabled();
+    for (const name of ['Creating…', 'Cancel', 'Add goal']) expect(screen.getByRole('button', { name })).toBeDisabled();
+    fireEvent.submit(screen.getByRole('form', { name: 'New goal' })); expect(posts()).toHaveLength(1);
+    await act(async () => pending.reject(new Error('Could not create goal.')));
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not create goal');
+    expect(screen.getByLabelText('Goal name')).toHaveValue('Home');
+    await advance(10000); expect(posts()).toHaveLength(1);
+    server.createGoal = createGoal;
+    fireEvent.click(screen.getByRole('button', { name: 'Create goal' })); await flush();
+    expect(screen.getByRole('link', { name: 'Home' })).toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'New goal' })).not.toBeInTheDocument();
+    expect(posts()).toHaveLength(2);
+  });
+
+  it.each(['route', 'user', 'request'].flatMap((identity) => ['resolve', 'reject'].map((outcome) => [identity, outcome])))('ignores late goal creation after %s changes (%s)', async (identity, outcome) => {
+    const server = mockServer(), pending = deferred(); server.createGoal = () => pending.promise;
+    const view = await open(`${customerRoute()}/goals`); addGoal(); change('Goal name', 'Private goal');
+    fireEvent.click(screen.getByRole('button', { name: 'Create goal' })); await flush();
+    const options = posts()[0][1];
+    if (identity === 'route') await navigate(customerRoute());
+    else {
+      if (identity === 'user') auth.user = { id: 'user-b' }; else auth.request = vi.fn(server.handle);
+      view.rerender(<InstrumentWorkspace />); await flush();
+    }
+    expect(options.signal.aborted).toBe(true);
+    const readCount = request.mock.calls.length;
+    await act(async () => outcome === 'resolve' ? pending.resolve({ ...goal, id: uid(102), name: 'Private goal' }) : pending.reject(new Error('Stale goal error')));
+    expect(screen.queryByRole('form', { name: 'New goal' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Private goal' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(request.mock.calls).toHaveLength(readCount);
+  });
+});
+
 describe('customers, fixed goals and instrument shortcuts', () => {
   it('only opens customer creation on demand and discards cancelled drafts and errors', async () => {
     mockServer(); await open();
@@ -327,8 +453,10 @@ describe('customers, fixed goals and instrument shortcuts', () => {
     expect(screen.getByRole('link', { name: 'Portfolios', exact: true })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByText(/No portfolios yet/)).toBeInTheDocument();
     await follow('Goals');
-    expect(screen.getByText(/No goals yet/)).toBeInTheDocument();
+    expect(screen.getByText('No goals yet. Select Add goal to create your first goal.')).toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'New goal' })).not.toBeInTheDocument();
     for (const [name, amount, date] of [['Retirement', '0100000.00', '2036-09-24'], ['Home deposit', '999999999999.99', '2031-09-24']]) {
+      addGoal();
       change('Goal name', name); change('Target (EUR)', amount); change('Goal date (UTC)', date);
       fireEvent.click(screen.getByRole('button', { name: 'Create goal' })); await flush();
     }

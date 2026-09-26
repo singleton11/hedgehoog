@@ -145,7 +145,9 @@ describe('portfolio routes, creation and optional goals', () => {
     await follow('Goals');
     expect(signal.aborted).toBe(true);
     await act(async () => pending.resolve(page([metadata()], new URLSearchParams('limit=20&offset=0'))));
-    expect(screen.getByRole('form', { name: 'New goal' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add goal' })).toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'New goal' })).not.toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Goal summary for Alice' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Long term/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });

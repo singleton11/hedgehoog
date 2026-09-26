@@ -269,15 +269,22 @@ summary::marker { color: #839a8b; }
 .planner-table th, .planner-table td { padding: 0.85rem; text-align: left; border-bottom: 1px solid var(--line); min-width: 8rem; }
 .planner-table thead { color: var(--muted); font-size: 0.75rem; }
 .customers-table { min-width: 66rem; }
-.customers-table th, .customers-table td { font-variant-numeric: tabular-nums; }
-.customers-table th:first-child { min-width: 12rem; max-width: 22rem; overflow-wrap: anywhere; }
+.goals-table { min-width: 48rem; }
+:is(.customers-table, .goals-table) th, :is(.customers-table, .goals-table) td { font-variant-numeric: tabular-nums; }
+:is(.customers-table, .goals-table) th:first-child { min-width: 12rem; max-width: 22rem; overflow-wrap: anywhere; }
 .customers-table th:nth-child(2), .customers-table td:nth-child(2) { min-width: 3rem; }
-.customers-table thead th:not(:first-child), .customers-table td { text-align: right; }
-.customers-table td { white-space: nowrap; }
+:is(.customers-table, .goals-table) thead th:not(:first-child), :is(.customers-table, .goals-table) td { text-align: right; }
+:is(.customers-table, .goals-table) td { white-space: nowrap; }
 .customers-table .simulation-parameter { white-space: normal; }
-.customers-table time { white-space: nowrap; }
-.customers-table tbody tr:hover { background: #f4f8f3; }
-.customers-table tbody a { display: block; }
+:is(.customers-table, .goals-table) time { white-space: nowrap; }
+:is(.customers-table, .goals-table) tbody tr:hover { background: #f4f8f3; }
+:is(.customers-table, .goals-table) tbody a { display: block; }
+.goals-heading { margin-top: 1.5rem; }
+.goals-heading p { margin: 0; font-size: 0.88rem; }
+.goals-scroll-hint { display: none; font-size: 0.75rem; }
+@media (max-width: 1100px) {
+  .goals-scroll-hint { display: block; }
+}
 .simulation-parameter { display: block; color: var(--muted); font-size: 0.8rem; overflow-wrap: anywhere; }
 .simulation-save { margin: 1.5rem 0; padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius); background: #f4f8f3; }
 .simulation-save .muted, .planner-prefill { font-size: 0.8rem; }

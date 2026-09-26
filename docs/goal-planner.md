@@ -14,9 +14,17 @@ to a goal or not, using saved prices rather than live quotes. External assets an
 debts, goal targets and simulated capital are not included. Customers without
 portfolios show €0.00; if any open holding cannot be valued, the total shows
 **Unavailable**, never a partial sum. **Refresh customers** reloads these totals.
-Create a customer with a name, then create one or more named
-**goals**, each with a EUR target and goal date. Open a goal and choose **Edit
-goal** to change its name, target or date, then **Save changes**. **Cancel**
+Choose **Add customer** to create a customer with a name. Inside a customer,
+open the **Goals** tab to see a table of goal names, exact **Target (EUR)** amounts,
+**Goal date (UTC)**, **Time remaining**, and **Created (UTC)** dates. Time remaining
+uses UTC calendar days; **Today** and **days past target** describe the date, not
+whether a goal has been funded or achieved. Missing creation dates show
+**Unavailable**. The table supports pagination, **Refresh goals**, and horizontal
+scrolling on narrow screens. Choose **Add goal** to open the creation form;
+**Cancel** discards the draft, while **Create goal** closes the form and refreshes
+the first page. Each goal has a name, EUR target and goal date.
+Open a goal and choose **Edit goal** to change its name, target or date, then
+**Save changes**. **Cancel**
 discards your edits. Open **New simulation** to calculate using the current goal
 settings. Starting capital, target reliability (50–99%), strategy and strategy
 parameters vary per simulation; the goal's target and date are read-only within
