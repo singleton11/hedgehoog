@@ -87,8 +87,10 @@ case IDs and reasons. UI pagination limits rendered rows, not metric inputs.
 - Forecast at the first recorded weekday of each month. Origin-date bounds do not
   filter training or outcome dates. Fit only the trailing window ending at the
   origin, with a full calendar lookback and at least 60 usable daily returns.
-- Complete downloaded split snapshots supply a separate `split_adjusted_close`
-  series for both training and realized cash-flow ratios. Multiply raw closes by
+- Saved provider split snapshots plus [manual split corrections](on-demand-market-data.md#manual-splits)
+  supply a separate `split_adjusted_close` series for both training and realized
+  cash-flow ratios. Manual-only legacy histories explicitly warn about incomplete
+  coverage; conflicting manual/provider factors block calculations. Multiply raw closes by
   cumulative effective split factors; future actions do not alter earlier prefixes.
   Cash distributions are not reinvested. Legacy history without splits retains
   training-selected adjusted/raw basis with a download warning. The training

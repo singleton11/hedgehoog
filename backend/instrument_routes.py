@@ -1,6 +1,7 @@
 """Authenticated catalogue reads and explicit acquisition commands."""
 
 from datetime import datetime
+from uuid import UUID
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request
@@ -9,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from auth import CurrentUser
 from return_statistics import instrument_statistics
 from celery_app import enqueue_acquisition
+from manual_splits import ManualSplitRequest, add_split, read_splits, remove_split
 from market_data import acquired_instruments, budget_status, instrument_detail, read_quotes, request_acquisition, search_catalogue, set_price_currency
 
 router = APIRouter(prefix="/instruments", tags=["instruments"])
@@ -110,6 +112,21 @@ def statistics(isin: InstrumentId, request: Request, user: CurrentUser):
 @router.patch("/{isin}/price-currency")
 def update_price_currency(isin: InstrumentId, body: PriceCurrencyRequest, request: Request, user: CurrentUser):
     return set_price_currency(request.app.state.database, isin, body.price_currency)
+
+
+@router.get("/{isin}/splits")
+def splits(isin: InstrumentId, request: Request, user: CurrentUser, as_of: datetime | None = None):
+    return read_splits(request.app.state.database, isin, knowledge_time(as_of))
+
+
+@router.post("/{isin}/splits", status_code=201)
+def create_manual_split(isin: InstrumentId, body: ManualSplitRequest, request: Request, user: CurrentUser):
+    return add_split(request.app.state.database, isin, body, str(user["_id"]))
+
+
+@router.delete("/{isin}/splits/{split_id}", status_code=204)
+def delete_manual_split(isin: InstrumentId, split_id: UUID, request: Request, user: CurrentUser):
+    remove_split(request.app.state.database, isin, split_id, str(user["_id"]))
 
 
 @router.get("/{isin}/quotes", response_model=QuotesResponse, response_model_exclude_unset=True)

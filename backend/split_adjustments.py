@@ -50,7 +50,7 @@ def split_events(pages, listing, start, end):
     return [{"date": day, "factor": str(factor)} for day, factor in sorted(events.items())]
 
 
-def load_split_snapshot(db, isin, listing, cutoff):
+def load_provider_split_snapshot(db, isin, listing, cutoff):
     if not listing:
         return None
     snapshot = db.split_snapshots.find_one({
@@ -66,6 +66,33 @@ def load_split_snapshot(db, isin, listing, cutoff):
     if attempt and attempt.get("calls", 0) > 0 and not attempt.get("active") and (snapshot is None or attempt["_id"] != snapshot["_id"]):
         return {"_id": attempt["_id"], "error": "Split history download is incomplete. Request market data again before using derived statistics."}
     return snapshot
+
+
+def load_split_snapshot(db, isin, listing, cutoff):
+    """Overlay manual evidence without mutating or replacing provider snapshots."""
+    from manual_splits import manual_events
+
+    snapshot = load_provider_split_snapshot(db, isin, listing, cutoff)
+    manual = manual_events(db, isin, listing, cutoff)
+    if not manual:
+        return snapshot
+    # Immutable manual IDs make add/remove/replacement invalidate cached estimates.
+    identity = {"provider": snapshot["_id"] if snapshot else None, "manual": [event["_id"] for event in manual]}
+    if snapshot and snapshot.get("error"):
+        return {**snapshot, "_id": identity}
+    merged = dict(snapshot) if snapshot else {
+        "date_from": "0001-01-01", "date_to": cutoff.date().isoformat(), "events": [],
+    }
+    events = {event["date"]: event["factor"] for event in merged["events"]}
+    for event in manual:
+        day, factor = event["date"], event["factor"]
+        if day in events and Decimal(events[day]) != Decimal(factor):
+            return {"_id": identity, "error": f"Manual and provider split factors conflict on {day}. Remove the manual entry or correct provider history before using derived statistics."}
+        events[day] = factor  # Matching provider/manual entries apply exactly once.
+    merged.update(_id=identity, events=[{"date": day, "factor": factor} for day, factor in sorted(events.items())], manual=True)
+    if snapshot is None:
+        merged["manual_only"] = True
+    return merged
 
 
 def adjusted_rows(rows, snapshot):
@@ -111,4 +138,9 @@ def adjusted_rows(rows, snapshot):
             except (DecimalException, ValueError, TypeError, OverflowError):
                 pass
             result.append({**row, BASIS: price})
-    return result, ["Derived returns use raw closes corrected for downloaded splits only; cash distributions are not reinvested. Candles and quotes remain unadjusted."]
+    evidence = ("manually supplied splits" if snapshot.get("manual_only") else
+                "downloaded and manually supplied splits" if snapshot.get("manual") else "downloaded splits")
+    warnings = [f"Derived returns use raw closes corrected for {evidence} only; cash distributions are not reinvested. Candles and quotes remain unadjusted."]
+    if snapshot.get("manual_only"):
+        warnings.append("Provider split history has not been downloaded; only manually supplied splits are applied. Other actions may be missing.")
+    return result, warnings

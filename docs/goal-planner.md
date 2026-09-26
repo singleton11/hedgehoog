@@ -156,12 +156,15 @@ History selection:
   future collection times. This is current-history analytics, not an `as_of`
   historical model or backtest.
 - Exclude weekend quote dates from daily-return estimation, preserving the raw rows.
-  With downloaded split history, use `split_adjusted_close`: raw close multiplied
+  With saved provider or manually supplied split history, use `split_adjusted_close`: raw close multiplied
   by cumulative effective split factors (new shares / old shares). This separate
   derived series corrects forward/reverse splits without changing candles, applying
   a split twice to provider-adjusted prices, or mixing adjustment vintages. It is
   a price return, not a dividend-reinvestment total return. Missing/invalid raw
-  closes still break the chain. Legacy history without splits temporarily prefers
+  closes still break the chain. Manual corrections survive provider refreshes; matching
+  actions count once and conflicting factors block calculations. Manual-only legacy
+  history carries an incomplete-history warning. See [manual splits](on-demand-market-data.md#manual-splits).
+  Legacy history without splits temporarily prefers
   complete provider `adj_close`, otherwise raw `close`, with an update warning.
 - Reject missing, nonnumeric, boolean, non-finite and non-positive prices **from
   calculations only**. Invalid rows break the chain: a return never bridges them.
