@@ -212,7 +212,7 @@ function Customers({ request, isin }) {
         <p className="muted" id="customer-net-worth-note">Net worth is cash plus holdings across all tracked EUR portfolios, using saved prices—not live prices. External assets and debts are not included. Total P&L is realized plus unrealized P&L.</p>
         <p className="muted" id="customer-pnl-note">Today P&L covers the latest saved trading-day interval shown, including sales and fees, excluding deposits and withdrawals. It is not live or necessarily today. Missing or mismatched prices are unavailable.</p>
         <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Customers table">
-          <table className="planner-table customers-table" aria-describedby="customer-net-worth-note customer-pnl-note">
+          <table className="planner-table planner-summary-table customers-table" aria-describedby="customer-net-worth-note customer-pnl-note">
             <caption>Customer portfolio summary</caption>
             <thead><tr><th scope="col">Customer</th><th scope="col">Goals</th><th scope="col">Net worth (EUR)</th>
               {pnlColumns.map(([label, key]) => <th key={key} scope="col">{label}</th>)}

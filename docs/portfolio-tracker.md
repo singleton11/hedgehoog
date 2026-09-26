@@ -6,6 +6,13 @@ or detach a goal later in portfolio settings. A linked goal must belong to the
 same customer and account. Linking is organizational: it neither changes a goal
 nor funds/recalculates its simulations.
 
+Select **Add portfolio** to open the creation form; **Cancel** discards the draft.
+The portfolio list mirrors the customers table: portfolio name, linked goal,
+net worth, realized, unrealized, Today and total PnL in EUR. Select a portfolio
+name to open its ledger. Net worth is that portfolio's cash plus holdings.
+Summary PnL follows the customer accounting below, calculated separately for each
+portfolio (including its own saved-close interval); it is not live market data.
+
 ## Manual ledger
 
 - Portfolios and cash movements are **EUR only**. Record a deposit before buying.
@@ -141,7 +148,7 @@ protection. Browser requests use the `/api` prefix.
 | Endpoint | Behavior |
 | --- | --- |
 | `GET /portfolio-instruments?limit=20&offset=0` | Eligible acquired EUR listing snapshots |
-| `GET /customers/{cid}/portfolios?limit=20&offset=0` | Customer-scoped portfolio metadata |
+| `GET /customers/{cid}/portfolios?limit=20&offset=0` | Customer-scoped portfolio metadata plus net worth, realized/unrealized/Today/total PnL and Today interval dates |
 | `POST /customers/{cid}/portfolios` | `{name, goal_id?: string|null}` |
 | `GET /customers/{cid}/portfolios/{pid}` | Metadata, balances, positions, PnL and warnings |
 | `PATCH /customers/{cid}/portfolios/{pid}` | `{name, goal_id?: string|null}`; null/omission detaches goal |
@@ -149,7 +156,11 @@ protection. Browser requests use the `/api` prefix.
 | `POST /customers/{cid}/portfolios/{pid}/transactions` | Append a validated transaction |
 | `DELETE /customers/{cid}/portfolios/{pid}/transactions/{tid}` | Remove one entry after validating the remaining timeline; returns `{id, removed: true}` |
 
-Pagination supports `limit` 1–100 and nonnegative `offset`.
+Pagination supports `limit` 1–100 and nonnegative `offset`. Portfolio list metrics
+are calculated only for the requested page, sharing a request-local saved-quote
+cache. Amounts are two-decimal strings or null when unavailable; date fields are
+`today_from_date` / `today_to_date`. Creation, settings and detail metadata remain
+unchanged; list summaries are derived, never stored or accepted as editable data.
 
 Cash transaction example:
 

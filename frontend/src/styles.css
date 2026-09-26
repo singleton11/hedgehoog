@@ -268,16 +268,17 @@ summary::marker { color: #839a8b; }
 .planner-table caption { text-align: left; margin-bottom: 1rem; color: var(--muted); }
 .planner-table th, .planner-table td { padding: 0.85rem; text-align: left; border-bottom: 1px solid var(--line); min-width: 8rem; }
 .planner-table thead { color: var(--muted); font-size: 0.75rem; }
-.customers-table { min-width: 66rem; }
-.customers-table th, .customers-table td { font-variant-numeric: tabular-nums; }
-.customers-table th:first-child { min-width: 12rem; max-width: 22rem; overflow-wrap: anywhere; }
-.customers-table th:nth-child(2), .customers-table td:nth-child(2) { min-width: 3rem; }
-.customers-table thead th:not(:first-child), .customers-table td { text-align: right; }
-.customers-table td { white-space: nowrap; }
-.customers-table .simulation-parameter { white-space: normal; }
-.customers-table time { white-space: nowrap; }
-.customers-table tbody tr:hover { background: #f4f8f3; }
-.customers-table tbody a { display: block; }
+.planner-summary-table { min-width: 66rem; }
+.planner-summary-table th, .planner-summary-table td { font-variant-numeric: tabular-nums; }
+.planner-summary-table th:first-child { min-width: 12rem; max-width: 22rem; overflow-wrap: anywhere; }
+.planner-summary-table th:nth-child(2), .planner-summary-table td:nth-child(2) { min-width: 3rem; }
+.planner-summary-table thead th:not(:first-child), .planner-summary-table td { text-align: right; }
+.planner-summary-table td { white-space: nowrap; }
+.planner-summary-table .simulation-parameter { white-space: normal; }
+.planner-summary-table time { white-space: nowrap; }
+.planner-summary-table tbody tr:hover { background: #f4f8f3; }
+.planner-summary-table tbody a { display: block; }
+.portfolios-table thead th:nth-child(2), .portfolios-table td:nth-child(2) { min-width: 8rem; max-width: 16rem; text-align: left; white-space: normal; overflow-wrap: anywhere; }
 .simulation-parameter { display: block; color: var(--muted); font-size: 0.8rem; overflow-wrap: anywhere; }
 .simulation-save { margin: 1.5rem 0; padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius); background: #f4f8f3; }
 .simulation-save .muted, .planner-prefill { font-size: 0.8rem; }

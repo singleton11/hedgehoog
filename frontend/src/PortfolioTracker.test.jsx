@@ -14,6 +14,8 @@ const base = `/customers/${cid}/portfolios`, detailPath = `${base}/${pid}`, tran
 const customerRoute = `#/goal/customers/${cid}`, goalsRoute = `${customerRoute}/goals`, listRoute = `${customerRoute}/portfolios`, detailRoute = `${listRoute}/${pid}`;
 const pagePath = (path, offset = 0, limit = 20) => `${path}?limit=${limit}&offset=${offset}`;
 const metadata = (extra = {}) => ({ id: pid, customer_id: cid, name: 'Long term', goal_id: null, currency: 'EUR', created_at: '2026-09-24T00:00:00Z', revision: 0, ...extra });
+const portfolioSummary = (extra = {}) => ({ ...metadata(), net_worth_eur: '1137.50', realized_pnl_eur: '0.00',
+  unrealized_pnl_eur: '12.50', today_pnl_eur: '-1.25', total_pnl_eur: '12.50', today_from_date: '2026-09-22', today_to_date: '2026-09-23', ...extra });
 const position = (extra = {}) => ({ instrument, quantity: '1.25000001', average_price_eur: '100.00000001', cost_basis_eur: '125.00', market_price_eur: '110.00', price_date: '2026-09-23', previous_price_date: '2026-09-22', position_value_eur: '137.50', unrealized_pnl_eur: '12.50', daily_unrealized_pnl_eur: '-1.25', warning: null, ...extra });
 const snapshot = (portfolio = metadata(), extra = {}) => ({ portfolio, cash_eur: '1000.00', positions_value_eur: '137.50', equity_eur: '1137.50', realized_pnl_eur: '0.00', unrealized_pnl_eur: '12.50', daily_unrealized_pnl_eur: '-1.25', daily_from_date: '2026-09-22', daily_to_date: '2026-09-23', positions: [position()], warnings: [], ...extra });
 const cashEvent = (id) => ({ id: `transaction-${id}`, client_id: crypto.randomUUID(), type: 'deposit', date: '2026-09-23', amount_eur: '100.00', created_at: '2026-09-24T00:00:00Z', sequence: id });
@@ -22,7 +24,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
 function mockServer() {
   const server = { portfolios: [metadata()], goals: [goal], instruments: [instrument], transactions: [], details: new Map([[pid, snapshot()]]) };
   server.customer = async () => ({ id: cid, name: 'Alice' });
-  server.portfolioList = async (query) => page(server.portfolios, query);
+  server.portfolioList = async (query) => page(server.portfolios.map(portfolioSummary), query);
   server.goalList = async (query) => page(server.goals, query);
   server.instrumentList = async (query) => page(server.instruments, query);
   server.transactionList = async (query) => page(server.transactions, query);
@@ -84,8 +86,12 @@ describe('portfolio routes, creation and optional goals', () => {
     expect(within(screen.getByRole('navigation', { name: 'Customer sections' })).getByRole('link', { name: 'Goals' })).toHaveAttribute('href', goalsRoute);
     expect(screen.getByRole('link', { name: 'Customers', exact: true })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByText(/No portfolios yet/)).toBeInTheDocument(); expect(writes()).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Add portfolio' }));
     change('Portfolio name', '  Emergency fund  '); await submit(screen.getByRole('form', { name: 'New portfolio' }));
     expect(writes()[0]).toEqual([base, expect.objectContaining({ method: 'POST', body: { name: 'Emergency fund', goal_id: null }, signal: expect.any(AbortSignal) })]);
+    expect(screen.queryByRole('form', { name: 'New portfolio' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add portfolio' })).toHaveFocus();
+    fireEvent.click(screen.getByRole('button', { name: 'Add portfolio' }));
     expect(screen.getByLabelText('Portfolio name')).toHaveValue('');
     change('Portfolio name', 'Retirement investments'); change('Linked goal (optional)', goal.id); await submit(screen.getByRole('form', { name: 'New portfolio' }));
     expect(writes()[1][1].body).toEqual({ name: 'Retirement investments', goal_id: goal.id });
@@ -117,7 +123,8 @@ describe('portfolio routes, creation and optional goals', () => {
     expect(tabs().getByRole('link', { name: 'Portfolios' })).toHaveAttribute('aria-current', 'page');
     expect(tabs().getByRole('link', { name: 'Goals' })).not.toHaveAttribute('aria-current');
     expect(screen.getByRole('heading', { name: 'Alice', level: 2 })).toBeInTheDocument();
-    expect(screen.getByRole('form', { name: 'New portfolio' })).toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'New portfolio' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add portfolio' })).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('form', { name: 'New goal' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Retirement/ })).not.toBeInTheDocument();
     // A reload opens the same tab without relying on local component state.
@@ -131,7 +138,8 @@ describe('portfolio routes, creation and optional goals', () => {
     await follow('Portfolios');
     expect(window.location.hash).toBe(`${listRoute}${query}`);
     expect(tabs().getByRole('link', { name: 'Portfolios' })).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByRole('form', { name: 'New portfolio' })).toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'New portfolio' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add portfolio' })).toBeEnabled();
     expect(writes()).toHaveLength(0);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
@@ -159,6 +167,7 @@ describe('portfolio routes, creation and optional goals', () => {
     server.portfolios = Array.from({ length: 21 }, (_, i) => metadata({ id: `p-${i}`, name: `Portfolio ${i}` }));
     server.goals = Array.from({ length: 101 }, (_, i) => ({ ...goal, id: `g-${i}`, name: `Goal ${i}` }));
     await open(listRoute);
+    fireEvent.click(screen.getByRole('button', { name: 'Add portfolio' }));
     expect(screen.getByRole('option', { name: 'Goal 100', exact: true })).toBeInTheDocument();
     expect(request).toHaveBeenCalledWith(`/customers/${cid}/goals?limit=100&offset=100`, expect.anything());
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Portfolios pagination' })).getByRole('button', { name: 'Next' })); await flush();
@@ -189,6 +198,126 @@ describe('portfolio routes, creation and optional goals', () => {
     server.goalList = async (query) => page(server.goals, query);
     fireEvent.click(screen.getByRole('button', { name: 'Retry goals' })); await flush();
     expect(screen.getByRole('option', { name: 'Retirement' })).toBeInTheDocument();
+  });
+});
+
+describe('portfolio list creation and financial summary', () => {
+  const table = () => screen.getByRole('table', { name: 'Portfolio summary' });
+
+  it('opens creation only on request, focuses the input and discards canceled drafts without writes', async () => {
+    mockServer(); await open(listRoute);
+    const add = screen.getByRole('button', { name: 'Add portfolio' });
+    expect(screen.queryByRole('form', { name: 'New portfolio' })).not.toBeInTheDocument();
+    expect(add).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(add);
+    expect(add).toBeDisabled(); expect(add).toHaveAttribute('aria-expanded', 'true');
+    expect(add).toHaveAttribute('aria-controls', screen.getByRole('form', { name: 'New portfolio' }).id);
+    expect(screen.getByLabelText('Portfolio name')).toHaveFocus();
+    change('Portfolio name', 'Discard this'); change('Linked goal (optional)', goal.id);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(add).toHaveFocus(); expect(add).toBeEnabled(); expect(writes()).toHaveLength(0);
+    expect(screen.queryByRole('form', { name: 'New portfolio' })).not.toBeInTheDocument();
+    fireEvent.click(add);
+    expect(screen.getByLabelText('Portfolio name')).toHaveValue('');
+    expect(screen.getByLabelText('Linked goal (optional)')).toHaveValue('');
+    expect(table()).toBeInTheDocument();
+  });
+
+  it('retains failed creation drafts and disables cancellation and duplicate submission while pending', async () => {
+    const server = mockServer(), pending = deferred(); server.create = () => pending.promise;
+    await open(listRoute); fireEvent.click(screen.getByRole('button', { name: 'Add portfolio' }));
+    change('Portfolio name', 'Keep this'); change('Linked goal (optional)', goal.id);
+    const form = screen.getByRole('form', { name: 'New portfolio' });
+    await submit(form); await submit(form);
+    expect(writes()).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    await act(async () => pending.reject(new Error('Could not create portfolio.')));
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not create portfolio.');
+    expect(screen.getByLabelText('Portfolio name')).toHaveValue('Keep this');
+    expect(screen.getByLabelText('Linked goal (optional)')).toHaveValue(goal.id);
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
+  });
+
+  it('matches customer financial columns and formats exact money, signs, goals and unavailable values', async () => {
+    const server = mockServer();
+    server.portfolios = [portfolioSummary({ name: 'Linked investments', goal_id: goal.id, net_worth_eur: '9007199254740993.01',
+      realized_pnl_eur: '-12.34', unrealized_pnl_eur: '0.00', today_pnl_eur: '12.34', total_pnl_eur: '-12.34' }),
+    portfolioSummary({ id: 'missing', name: 'Missing prices', net_worth_eur: null, unrealized_pnl_eur: null,
+      today_pnl_eur: null, total_pnl_eur: null, today_from_date: null, today_to_date: null })];
+    await open(listRoute);
+    expect(within(table()).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+      'Portfolio', 'Linked goal', 'Net worth (EUR)', 'Realized P&L (EUR)', 'Unrealized P&L (EUR)', 'Today P&L (EUR)', 'Total P&L (EUR)',
+    ]);
+    const rows = within(table()).getAllByRole('row');
+    expect(within(rows[1]).getByRole('link', { name: 'Linked investments' })).toHaveAttribute('href', detailRoute);
+    expect(within(rows[1]).getByText('Retirement')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('€9,007,199,254,740,993.01')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('€12.34')).toHaveClass('return-positive');
+    expect(within(rows[1]).getAllByText('-€12.34').every((cell) => cell.classList.contains('return-negative'))).toBe(true);
+    expect(within(rows[1]).getByText('€0.00')).not.toHaveClass('return-positive', 'return-negative');
+    expect(within(rows[1]).getByText('2026-09-22')).toHaveAttribute('datetime', '2026-09-22');
+    expect(within(rows[1]).getByText('2026-09-23')).toHaveAttribute('datetime', '2026-09-23');
+    expect(within(rows[2]).getByText('No goal')).toBeInTheDocument();
+    expect(within(rows[2]).getAllByText('Unavailable')).toHaveLength(4);
+    expect(within(rows[2]).getByText('Some holdings cannot be valued.')).toBeInTheDocument();
+    expect(within(rows[2]).getByText('€0.00')).toBeInTheDocument();
+    expect(table()).toHaveAccessibleDescription(/saved prices—not live prices.*including sales and fees, excluding deposits and withdrawals/);
+    expect(screen.getByRole('region', { name: 'Portfolios table' })).toHaveAttribute('tabindex', '0');
+    expect(screen.getByRole('region', { name: 'Portfolios table' })).toHaveAccessibleDescription('Scroll horizontally to view all columns.');
+    expect(request.mock.calls.some(([path]) => path.startsWith(`${base}/`))).toBe(false);
+    expect(writes()).toHaveLength(0);
+  });
+
+  it.each([
+    { net_worth_eur: 12.34 }, { net_worth_eur: '-1.00' }, { net_worth_eur: '1.234' },
+    { realized_pnl_eur: null }, { realized_pnl_eur: 'NaN' }, { unrealized_pnl_eur: undefined },
+    { total_pnl_eur: '1e3' }, { today_pnl_eur: undefined }, { today_to_date: null },
+    { today_from_date: '2026-02-30' }, { today_from_date: '2026-09-24' },
+  ])('rejects malformed portfolio summaries and permits an explicit retry: %j', async (invalid) => {
+    const server = mockServer(); server.portfolios = [portfolioSummary(invalid)];
+    await open(listRoute);
+    expect(screen.getByRole('alert')).toHaveTextContent('unexpected portfolios');
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    server.portfolios = [metadata()];
+    fireEvent.click(screen.getByRole('button', { name: 'Retry portfolios' })); await flush();
+    expect(table()).toBeInTheDocument(); expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('hides outdated amounts on refresh failure and ignores superseded summary responses', async () => {
+    const server = mockServer(); await open(listRoute);
+    const pending = deferred(); server.portfolioList = () => pending.promise;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolios' })); await flush();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    const signal = request.mock.calls.filter(([path]) => path === pagePath(base)).at(-1)[1].signal;
+    server.portfolioList = async () => { throw new Error('Summary unavailable.'); };
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolios' })); await flush();
+    expect(signal.aborted).toBe(true);
+    expect(screen.getByRole('alert')).toHaveTextContent('Summary unavailable.');
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    server.portfolioList = async (query) => page([portfolioSummary({ net_worth_eur: '222.22' })], query);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry portfolios' })); await flush();
+    await act(async () => pending.resolve(page([portfolioSummary({ net_worth_eur: '999.99' })], new URLSearchParams('limit=20&offset=0'))));
+    expect(within(table()).getByText('€222.22')).toBeInTheDocument();
+    expect(screen.queryByText('€999.99')).not.toBeInTheDocument();
+  });
+
+  it.each(['user', 'request', 'status', 'route'])('aborts creation and discards the draft after a %s change', async (kind) => {
+    const server = mockServer(), pending = deferred(); server.create = () => pending.promise;
+    const view = render(<PortfolioTracker customerId={cid} />); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Add portfolio' }));
+    change('Portfolio name', 'Private draft'); await submit(screen.getByRole('form', { name: 'New portfolio' }));
+    const signal = writes()[0][1].signal;
+    if (kind === 'user') auth.user = { id: 'user-b' };
+    if (kind === 'request') auth.request = vi.fn(server.handle);
+    if (kind === 'status') auth.status = 'anonymous';
+    view.rerender(<PortfolioTracker customerId={cid} portfolioId={kind === 'route' ? pid : undefined} />); await flush();
+    expect(signal.aborted).toBe(true);
+    const calls = request.mock.calls.length;
+    await act(async () => pending.resolve(metadata({ name: 'Private draft' })));
+    expect(request.mock.calls).toHaveLength(calls);
+    expect(screen.queryByRole('form', { name: 'New portfolio' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Private draft')).not.toBeInTheDocument();
   });
 });
 
@@ -485,13 +614,16 @@ describe('route and session isolation', () => {
     const original = server.detail; server.detail = () => pendingDetail.promise;
     await open(); const signal = request.mock.calls.find(([path]) => path === detailPath)[1].signal;
     await navigate(listRoute); expect(signal.aborted).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Add portfolio' }));
     server.create = () => pendingCreate.promise; change('Portfolio name', 'Old create'); await submit(screen.getByRole('form', { name: 'New portfolio' }));
     const createSignal = writes()[0][1].signal;
     server.detail = original; await navigate(detailRoute); expect(createSignal.aborted).toBe(true);
     await act(async () => { pendingDetail.resolve(snapshot(metadata({ name: 'Stale name' }))); pendingCreate.resolve(metadata({ name: 'Old create' })); });
     expect(screen.getByRole('heading', { name: 'Long term' })).toBeInTheDocument(); expect(screen.queryByText('Stale name')).not.toBeInTheDocument();
     expect(window.location.hash).toBe(detailRoute);
-    await navigate(listRoute); expect(screen.getByLabelText('Portfolio name')).toHaveValue(''); expect(screen.queryByText('Portfolio created.')).not.toBeInTheDocument();
+    await navigate(listRoute); expect(screen.queryByRole('form', { name: 'New portfolio' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add portfolio' }));
+    expect(screen.getByLabelText('Portfolio name')).toHaveValue(''); expect(screen.queryByText('Portfolio created.')).not.toBeInTheDocument();
   });
 
   it('ignores an aborted refresh even if it resolves after the latest valuation', async () => {
@@ -515,7 +647,7 @@ describe('route and session isolation', () => {
     expect(signal.aborted).toBe(true);
     await act(async () => pending.resolve({ ...savedBody, id: 'late', created_at: '2026-09-24T00:00:00Z', sequence: 1 }));
     expect(screen.queryByText('Deposit saved.')).not.toBeInTheDocument();
-    if (kind === 'route') expect(screen.getByRole('form', { name: 'New portfolio' })).toBeInTheDocument();
+    if (kind === 'route') expect(screen.getByRole('button', { name: 'Add portfolio' })).toBeInTheDocument();
     else if (kind === 'status') { expect(screen.getByRole('status')).toHaveTextContent('Sign in'); expect(screen.queryByRole('form')).not.toBeInTheDocument(); }
     else expect(screen.getByLabelText('Amount (EUR)')).toHaveValue('');
   });
