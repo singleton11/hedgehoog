@@ -160,12 +160,16 @@ basis (consistent with average-cost accounting). Daily unrealized PnL equals
 current open position value minus this remaining reference basis. This avoids
 counting a new contribution or an already-sold position as unrealized profit.
 
-If a trade is newer than the latest saved close, daily PnL is unavailable until
-prices catch up. Total unrealized PnL can still use the last saved close, with its
-date and a warning that it is not a live price. Portfolio daily unrealized PnL is
-only summed when all open positions have the same closing-date interval; mixed
-intervals are reported as unavailable rather than combined into a false total.
-An empty portfolio has zero position value and zero unrealized PnL.
+If a trade is newer than the latest saved close, daily and total unrealized PnL
+still mark the **current holdings** using that last available saved close; they do
+not require today's close. New purchases retain their actual fee-inclusive cost
+in the daily reference basis, and sales reduce it proportionally. This is a
+saved-price estimate, not a historical holdings snapshot at the ending close or
+a live return. The saved closing dates and non-live-price warning remain visible.
+Portfolio daily unrealized PnL is only summed when all open positions have the
+same closing-date interval; mixed intervals are reported as unavailable rather
+than combined into a false total. An empty portfolio has zero position value and
+zero unrealized PnL.
 
 ### Customer summary PnL
 

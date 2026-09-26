@@ -557,12 +557,13 @@ def test_missing_quote_or_prior_close_keeps_unavailable_values_explicit(tracker,
         assert result["positions"][0]["previous_price_date"] is None
 
 
-def test_daily_reference_allocates_new_buys_and_sales_to_remaining_shares(tracker):
+@pytest.mark.parametrize("trade_day", ["2026-09-16", "2026-09-17"])
+def test_daily_reference_allocates_new_buys_and_sales_to_remaining_shares(tracker, trade_day):
     client, _, _, url = tracker
     record(client, url, cash())
     record(client, url, trade(quantity="2", price="90", commission_eur="2"))
-    record(client, url, trade(quantity="2", price="105", commission_eur="2", day="2026-09-16"))
-    record(client, url, trade("sell", quantity="1", price="120", commission_eur="1", day="2026-09-16"))
+    record(client, url, trade(quantity="2", price="105", commission_eur="2", day=trade_day))
+    record(client, url, trade("sell", quantity="1", price="120", commission_eur="1", day=trade_day))
     result = detail(client, url)
     # Reference: (2 * prior close 100 + new purchase 212) * 3/4 = 309.
     # Average-cost basis: (182 + 212) * 3/4 = 295.50. Sale realizes 119 - 98.50.
@@ -573,17 +574,49 @@ def test_daily_reference_allocates_new_buys_and_sales_to_remaining_shares(tracke
     assert result["daily_unrealized_pnl_eur"] == "21.00"
 
 
-@pytest.mark.parametrize("kind", ["buy", "sell"])
-def test_trade_newer_than_latest_quote_makes_daily_pnl_unavailable(tracker, kind):
+@pytest.mark.parametrize("kind,expected", [("buy", "8.00"), ("sell", "10.00")])
+def test_trade_newer_than_latest_quote_uses_last_saved_close(tracker, db, api, monkeypatch, kind, expected):
     client, _, _, url = tracker
     record(client, url, cash())
     record(client, url, trade(quantity="2"))
-    record(client, url, trade(kind, day="2026-09-17"))
+    record(client, url, trade(kind, price="120", commission_eur="2", day="2026-09-17"))
+    before = list(db.quotes.find())
+    provider = Mock(side_effect=AssertionError("Portfolio reads must not acquire market data"))
+    monkeypatch.setattr(md, "MarketstackClient", provider)
     result = detail(client, url)
+    position = result["positions"][0]
     assert result["positions_value_eur"] == ("330.00" if kind == "buy" else "110.00")
-    assert result["daily_unrealized_pnl_eur"] is None
-    assert result["positions"][0]["daily_unrealized_pnl_eur"] is None
-    assert "newer than" in result["positions"][0]["warning"]
+    # New purchases use actual cost (122), not a fictional prior-close purchase;
+    # sales only reduce the reference for the shares still held.
+    assert result["daily_unrealized_pnl_eur"] == position["daily_unrealized_pnl_eur"] == expected
+    assert position["market_price_eur"] == "110"
+    assert result["daily_from_date"] == position["previous_price_date"] == "2026-09-15"
+    assert result["daily_to_date"] == position["price_date"] == "2026-09-16"
+    assert position["warning"] == "Uses saved close from 2026-09-16, not a live price."
+    assert result["warnings"] == [f"{ISIN}: {position['warning']}"]
+    assert list(db.quotes.find()) == before
+    assert db.marketstack_usage.count_documents({}) == 0
+    api[1].assert_not_called()
+    provider.assert_not_called()
+
+
+@pytest.mark.parametrize("previous_position", [False, True])
+def test_new_position_after_latest_close_uses_actual_cost_and_saved_price(tracker, previous_position):
+    client, _, _, url = tracker
+    record(client, url, cash())
+    if previous_position:
+        record(client, url, trade(quantity="2"))
+        record(client, url, trade("sell", quantity="2", day="2026-09-17"))
+    record(client, url, trade(quantity="2", price="115", commission_eur="2", day="2026-09-17"))
+    result = detail(client, url)
+    position = result["positions"][0]
+    assert position["quantity"] == "2"
+    assert position["cost_basis_eur"] == "232.00"
+    assert result["positions_value_eur"] == "220.00"
+    assert result["unrealized_pnl_eur"] == result["daily_unrealized_pnl_eur"] == "-12.00"
+    assert position["daily_unrealized_pnl_eur"] == "-12.00"
+    assert result["daily_from_date"] == "2026-09-15"
+    assert result["daily_to_date"] == "2026-09-16"
 
 
 def test_mixed_quote_periods_preserve_position_daily_pnl_but_not_portfolio_total(tracker, db):

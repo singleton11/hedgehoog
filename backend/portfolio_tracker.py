@@ -202,11 +202,10 @@ def replay(events, anchors=None):
                 instrument = event["instrument"]
                 isin = instrument["instrument_id"]
                 position = positions.setdefault(isin, {"instrument": instrument, "quantity": ZERO, "cost": ZERO,
-                                                        "reference": ZERO, "last_trade_date": event["date"]})
+                                                        "reference": ZERO})
                 quantity, unit_price = Decimal(event["quantity"]), Decimal(event["price_eur"])
                 commission = Decimal(event["commission_eur"])
                 gross = (quantity * unit_price).quantize(CENT, rounding=ROUND_HALF_UP)
-                position["last_trade_date"] = event["date"]
                 anchor_date, anchor_price = anchors.get(isin, (None, None))
                 if kind == "buy":
                     cost = gross + commission
@@ -270,9 +269,9 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
                 warning = "Daily unrealized PnL unavailable: two distinct valid EUR closing dates are required."
             elif not daily_interval(anchors[isin][0], latest["date"]):
                 warning = "Daily unrealized PnL unavailable: saved closes span missing weekdays or non-trading dates."
-            elif position["last_trade_date"] > latest["date"]:
-                warning = "Daily unrealized PnL unavailable: a trade is newer than the latest saved close."
             else:
+                # Mark current holdings even when trades postdate the saved close.
+                # Replay retains actual fee-inclusive cost for buys after the anchor.
                 daily = value - position["reference"]
             if latest.get("date") and latest["date"] < now.date().isoformat():
                 stale = f"Uses saved close from {latest['date']}, not a live price."
