@@ -30,8 +30,9 @@ def page(rows=None, total=None, offset=0):
 
 class Provider:
     """No network; service tests exercise quota callbacks and all Mongo writes."""
-    def __init__(self, pages=None, profile=None):
+    def __init__(self, pages=None, profile=None, splits=None):
         self.pages = iter(pages or [page()])
+        self.splits = iter(splits if splits is not None else [page([])])
         self.profile = profile if profile is not None else {"ticker": "SXR8.DE", "name": "Example", "address": {"city": ""}, "stock_exchanges": [], "future": {"value": None}}
         self.calls = []
 
@@ -50,6 +51,14 @@ class Provider:
         self.before_request()
         self.calls.append(("tickerinfo", symbol))
         return deepcopy(self.profile)
+
+    def splits_page(self, symbol, date_from, date_to, offset=0):
+        self.before_request()
+        self.calls.append(("splits", symbol, date_from, date_to, offset))
+        result = next(self.splits)
+        if isinstance(result, Exception):
+            raise result
+        return deepcopy(result)
 
     def eod_page(self, symbol, exchange, date_from, date_to, offset=0):
         self.before_request()
@@ -204,11 +213,11 @@ def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(
     assert item["historical_year_return"] == pytest.approx(0.1)
     assert item["historical_year_start_date"] == "2025-09-16"
     assert item["historical_year_end_date"] == "2026-09-16"
-    assert item["historical_year_price_basis"] == "adj_close"
+    assert item["historical_year_price_basis"] == "split_adjusted_close"
     assert item["historical_year_volatility"] == pytest.approx(math.sqrt(variance(logs) * 252))
     assert item["historical_year_volatility_start_date"] == "2025-09-16"
     assert item["historical_year_volatility_end_date"] == "2026-09-16"
-    assert item["historical_year_volatility_price_basis"] == "adj_close"
+    assert item["historical_year_volatility_price_basis"] == "split_adjusted_close"
     assert item["historical_year_volatility_return_count"] == 2
     assert list(db.quotes.find()) == original_quotes
     cached = db.instrument_statistics.find_one({"_id": ISIN})
@@ -217,7 +226,7 @@ def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(
     assert db.instrument_statistics.find_one({"_id": ISIN}) == cached
     revised = original_quotes[-1]
     db.quotes.insert_one({**revised, "_id": "revision", "job_id": "revision", "collected_at": clock[0],
-                          "data": {**revised["data"], "adj_close": "121"}})
+                          "data": {**revised["data"], "close": "121"}})
     updated = md.acquired_instruments(db, limit=1)["items"][0]
     assert updated["quote_count"] == 4
     assert updated["annualized_mean_log_return"] == pytest.approx(math.log(1.1) * 252)
@@ -227,7 +236,7 @@ def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(
     # Revising the year-ago endpoint also invalidates the cached actual return.
     revised = original_quotes[0]
     db.quotes.insert_one({**revised, "_id": "start-revision", "job_id": "start-revision", "collected_at": clock[0],
-                          "data": {**revised["data"], "adj_close": "100"}})
+                          "data": {**revised["data"], "close": "100"}})
     assert md.acquired_instruments(db, limit=1)["items"][0]["historical_year_return"] == pytest.approx(0.21)
 
 
@@ -274,9 +283,9 @@ def test_publish_failure_is_sanitized_and_retriable(db, config):
 def test_initial_history_snapshots_exact_numbers_and_no_duplicate_redelivery(db, config):
     result, provider = collect(db, config)
     assert result["status"] == "succeeded"
-    assert result["calls"] == 2 and result["rows"] == 1
+    assert result["calls"] == 3 and result["rows"] == 1
     assert provider.calls[1][3:] == ("2010-05-19", "2026-09-16", 0)
-    assert md.budget_status(db, config)["used"] == 2
+    assert md.budget_status(db, config)["used"] == 3
     snapshot = db.instruments.find_one()
     assert snapshot["collection_date"] == "2026-09-17"
     assert snapshot["data"] == provider.profile
@@ -358,9 +367,9 @@ def test_database_retry_resumes_profile_and_idempotent_page_writes(db, config, c
     provider = Provider()
     result = md.run_acquisition(db, config, job["id"], provider.factory)
     assert result["status"] == "succeeded"
-    assert provider.calls == []  # Re-index the persisted page without another HTTP call.
+    assert [call[0] for call in provider.calls] == ["splits"]  # Reuse saved EOD, fetch only missing splits.
     assert db.instruments.count_documents({}) == db.quotes.count_documents({}) == 1
-    assert result["calls"] == 2
+    assert result["calls"] == 3
 
 
 def test_completed_download_can_be_finalized_offline_after_statistics_failure(db, config, monkeypatch):
@@ -431,7 +440,7 @@ def test_budget_and_job_limits_stop_before_http(db, config):
 def test_provider_isin_mismatch_is_preserved_without_blocking_download(db, config):
     result, source = collect(db, config, Provider(profile={"ticker": "SXR8.DE", "isin": "IE00B4L5Y983"}))
     assert result["status"] == "succeeded"
-    assert len(source.calls) == 2
+    assert len(source.calls) == 3
     assert db.instruments.find_one()["data"]["isin"] == "IE00B4L5Y983"
     assert db.quotes.count_documents({}) == 1
 
@@ -672,8 +681,8 @@ def test_price_currency_override_survives_provider_acquisition(api, db, config, 
     result, source = collect(db, config, source)
     assert result["status"] == "succeeded"
     assert result["mode"] == ("update" if already_acquired else "initial")
-    assert len(source.calls) == 2
-    assert md.budget_status(db, config)["used"] == used + 2
+    assert len(source.calls) == 3
+    assert md.budget_status(db, config)["used"] == used + 3
     state = db.instrument_state.find_one({"_id": ISIN})
     assert state["price_currency_override"] == "CHF"
     assert state["listing"] == LISTING

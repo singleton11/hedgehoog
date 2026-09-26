@@ -2,6 +2,7 @@
 
 from unittest.mock import Mock
 from datetime import timedelta
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -19,11 +20,18 @@ def test_real_mongo_acquisition_statistics_and_simulation(environment, monkeypat
     settings, db = environment
     calls = []
     rows = [{**bar("2025-09-15", "90"), "price_currency": "EUR"}] + history()
+    split_date = rows[40]["date"][:10]
+    for row in rows[40:]:
+        row["close"] = str(Decimal(row["close"]) / 25)
+    # Provider adjusted closes already include the split: never adjust them twice.
 
     def respond(request):
         calls.append(request.url.path)
         if request.url.path.endswith("tickerinfo"):
             return httpx.Response(200, json={"data": {"ticker": LISTING["symbol"], "name": "Synthetic ETF"}})
+        if request.url.path.endswith("splits"):
+            return httpx.Response(200, json={"pagination": {"total": 1, "limit": 1000}, "data": [
+                {"symbol": LISTING["symbol"], "date": split_date, "split_factor": 25}]})
         return httpx.Response(200, json={"pagination": {"total": len(rows), "limit": 1000}, "data": rows})
 
     def factory(key, before_request):
@@ -34,7 +42,10 @@ def test_real_mongo_acquisition_statistics_and_simulation(environment, monkeypat
     assert db.instruments.find_one({"instrument_id": ISIN}) is not None
     saved = db.instrument_statistics.find_one({"_id": ISIN})
     assert saved["statistics"]["return_count"] == 80
-    assert len(calls) == 2
+    assert len(calls) == 3
+    assert saved["statistics"]["price_basis"] == "split_adjusted_close"
+    assert db.raw_split_pages.count_documents({}) == db.split_snapshots.count_documents({}) == 1
+    assert [item["close"] for item in md.read_quotes(db, ISIN)["items"]] == [row["close"] for row in rows]
     original_quotes = list(db.quotes.find())
     monkeypatch.setattr("main.enqueue_etf_import", Mock())
     with TestClient(create_app(settings)) as client:
@@ -67,7 +78,7 @@ def test_real_mongo_acquisition_statistics_and_simulation(environment, monkeypat
         later = md.utcnow() + timedelta(seconds=1)
         revised["collected_at"] = later
         monkeypatch.setattr(md, "utcnow", lambda: later)
-        revised["data"]["adj_close"] = "200"
+        revised["data"]["close"] = "8"  # 200 in the split-normalized series.
         db.quotes.insert_one(revised)
         refreshed = client.get(f"/instruments/{ISIN}/statistics").json()
         assert refreshed["quote_count"] == 82
@@ -80,5 +91,5 @@ def test_real_mongo_acquisition_statistics_and_simulation(environment, monkeypat
             assert acquired[key] == refreshed[key]
         assert acquired["historical_year_volatility"] != stats.json()["historical_year_volatility"]
         assert acquired["historical_year_return"] == pytest.approx(200 / 90 - 1)
-    assert len(calls) == 2
-    assert md.budget_status(db, settings)["used"] == 2
+    assert len(calls) == 3
+    assert md.budget_status(db, settings)["used"] == 3

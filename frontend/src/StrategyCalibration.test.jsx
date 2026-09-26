@@ -710,6 +710,14 @@ describe('saved report chart, metrics and bounded audit', () => {
     expect(circle).toHaveAttribute('cx', '612'); expect(circle).toHaveAttribute('cy', '24');
   });
 
+  it('accepts and labels split-adjusted saved calibration audits', async () => {
+    const server = mockServer(); const saved = generatedCalibration({ ...expectedBody, scenario_count: 10 }, 9);
+    saved.forecasts.forEach((forecast) => { forecast.price_basis = 'split_adjusted_close'; });
+    server.save(saved); await open({ route: reportRoute() }); openAudit();
+    expect(within(screen.getByRole('table', { name: 'Per-scenario audit' })).getAllByText('Split-adjusted close')).toHaveLength(9);
+    expect(posts()).toHaveLength(0);
+  });
+
   it('keeps audit identities, monetary values, origin dates and actual/requested probabilities distinct', async () => {
     const server = mockServer(); const saved = generatedCalibration({ ...expectedBody, scenario_count: 10 }, 9);
     saved.forecasts[0].price_basis = 'close'; server.save(saved); await open({ route: reportRoute() }); openAudit();

@@ -229,6 +229,22 @@ class MarketstackClient:
         _page_rows(payload, offset)
         return _exact_values(payload)
 
+    def splits_page(self, symbol: str, date_from: str | date, date_to: str | date, offset: int = 0) -> dict:
+        start, end = _calendar_date(date_from), _calendar_date(date_to)
+        if (
+            not isinstance(symbol, str) or not symbol.strip()
+            or start is None or end is None or start > end
+            or type(offset) is not int or offset < 0
+        ):
+            raise _error("invalid_request")
+        # Unlike EOD, splits are scoped by the full provider symbol, not MIC.
+        payload = self._get("/v2/splits", {
+            "symbols": symbol, "date_from": start.isoformat(), "date_to": end.isoformat(),
+            "limit": 1000, "sort": "ASC", "offset": offset,
+        })
+        _page_rows(payload, offset)
+        return _exact_values(payload)
+
     def eod_page(
         self,
         symbol: str,

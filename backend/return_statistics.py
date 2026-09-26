@@ -7,8 +7,9 @@ from statistics import fmean, variance
 from bson import Decimal128
 
 import market_data as md
+from split_adjustments import BASIS, adjusted_rows, load_split_snapshot
 
-MODEL_VERSION = 6
+MODEL_VERSION = 7
 TRADING_DAYS = 252
 MIN_RETURNS = 60
 YEAR_START_MAX_GAP_DAYS = 7
@@ -68,8 +69,9 @@ def calculate_historical_year_return(rows):
     if not window:
         return unavailable
     start, end = window[0], window[-1]
-    basis = "adj_close" if all(positive_price(row.get("adj_close")) is not None
-                               for row in (start, end)) else "close"
+    basis = BASIS if BASIS in start and BASIS in end else (
+        "adj_close" if all(positive_price(row.get("adj_close")) is not None
+                           for row in (start, end)) else "close")
     start_price, end_price = (positive_price(row.get(basis)) for row in (start, end))
     if start_price is None or end_price is None:
         return unavailable
@@ -93,7 +95,8 @@ def calculate_daily_statistics(rows):
     quote_count = len(rows)
     rows = [row for row in rows if date.fromisoformat(row["date"]).weekday() < 5]
     weekend_count = quote_count - len(rows)
-    basis = "adj_close" if rows and all(positive_price(row.get("adj_close")) is not None for row in rows) else "close"
+    basis = BASIS if rows and all(BASIS in row for row in rows) else (
+        "adj_close" if rows and all(positive_price(row.get("adj_close")) is not None for row in rows) else "close")
     warnings = []
     if weekend_count:
         warnings.append(f"{weekend_count} weekend quote(s) excluded from weekday return estimation.")
@@ -199,8 +202,8 @@ def calculate_statistics(rows):
 def refresh_statistics(db, isin, *, force=False):
     """Persist estimates after acquisition; lazily cover pre-feature/partial data.
 
-    Observations are append-only. Their count, listing, model version and UTC day
-    invalidate the cache, including corrections to an already saved quote date.
+    Observations are append-only. Their count, listing, split snapshot, model
+    version and UTC day invalidate the cache, including quote/action corrections.
     Currency overrides and operational eligibility are evaluated on every read.
     """
     state = db.instrument_state.find_one({"_id": isin}) or {}
@@ -209,7 +212,10 @@ def refresh_statistics(db, isin, *, force=False):
     query = md.listing_filter(isin, listing) if listing else {"instrument_id": isin, "symbol": {"$exists": False}}
     query.update(collected_at={"$lte": cutoff}, date={"$lte": cutoff.date().isoformat()})
     count = db.quotes.count_documents(query) if listing else 0
-    signature = {"version": MODEL_VERSION, "listing": listing, "observations": count, "day": cutoff.date().isoformat()}
+    splits = load_split_snapshot(db, isin, listing, cutoff)
+    signature = {"version": MODEL_VERSION, "listing": listing, "observations": count,
+                 "splits": {"id": splits["_id"], "error": splits.get("error")} if splits else None,
+                 "day": cutoff.date().isoformat()}
     cached = db.instrument_statistics.find_one({"_id": isin})
     if not force and cached and cached.get("signature") == signature:
         return cached["statistics"], state
@@ -230,10 +236,12 @@ def refresh_statistics(db, isin, *, force=False):
             currencies.add(currency.strip().upper())
         else:
             unknown_currency = True
+    rows, split_warnings = adjusted_rows(rows, splits)
     statistics = {
         **calculate_statistics(rows), "computed_at": cutoff, "as_of": cutoff,
         "provider_currencies": sorted(currencies), "unknown_currency": unknown_currency,
     }
+    statistics["warnings"].extend(split_warnings)
     db.instrument_statistics.replace_one({"_id": isin}, {
         "_id": isin, "signature": signature, "statistics": statistics,
     }, upsert=True)

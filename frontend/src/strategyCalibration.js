@@ -145,7 +145,7 @@ export function validCalibrationResult(data, body = null, definition = null) {
     && data.forecasts.every((forecast) => object(forecast)
       && [forecast.origin_date, forecast.goal_date, forecast.training_start_date, forecast.training_end_date, forecast.valuation_date].every(validDate)
       && count(forecast.training_return_count) && forecast.training_return_count > 0
-      && ['adj_close', 'close'].includes(forecast.price_basis) && probability(forecast.predicted_probability)
+      && ['split_adjusted_close', 'adj_close', 'close'].includes(forecast.price_basis) && probability(forecast.predicted_probability)
       && typeof forecast.observed_success === 'boolean' && money(forecast.terminal_value_eur)
       && scenarioId(forecast.scenario_id) && money(forecast.goal_eur) && Number(forecast.goal_eur) > 0
       && money(forecast.starting_capital_eur) && Number(forecast.starting_capital_eur) >= 1000 && Number(forecast.starting_capital_eur) <= 100000

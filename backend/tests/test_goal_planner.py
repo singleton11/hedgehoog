@@ -193,7 +193,7 @@ def test_successful_download_persists_stats_and_updates_recompute(db, config, cl
     rows = history()
     result, source = collect(db, config, Provider([page(rows)]))
     assert result["status"] == "succeeded"
-    assert len(source.calls) == 2
+    assert len(source.calls) == 3
     stored = db.instrument_statistics.find_one({"_id": ISIN})
     assert stored["statistics"]["return_count"] == len(rows) - 1
     before = instrument_statistics(db, ISIN)
@@ -219,7 +219,7 @@ def test_statistics_db_failure_resumes_without_provider_calls(db, config, clock,
     clock[0] += timedelta(seconds=md.LEASE_SECONDS + 1)
     result = md.run_acquisition(db, config, job["id"], source.factory)
     assert result["status"] == "succeeded"
-    assert len(source.calls) == 2
+    assert len(source.calls) == 3
     assert instrument_statistics(db, ISIN)["return_count"] == 80
 
 

@@ -57,6 +57,8 @@ def provider_fixture():
             ]})
         if request.url.path.endswith("tickerinfo"):
             return httpx.Response(200, json={"data": {"ticker": "SXR8.DE", "name": "Synthetic ETF", "stock_exchanges": [], "unknown_nested": {"preserve": True}}})
+        if request.url.path.endswith("splits"):
+            return httpx.Response(200, json={"data": [], "pagination": {"total": 0, "limit": 1000}})
         day = "2026-09-16" if request.url.params["date_from"] == "2026-09-16" else "2026-09-15"
         return httpx.Response(200, json={"pagination": {"limit": 1000, "offset": 0, "count": 1, "total": 1}, "data": [{"symbol": "SXR8.DE", "exchange": "XETR", "date": day + "T00:00:00+0000", "open": 100.01, "high": 103.00, "low": 99.5, "close": 102.25, "volume": 125.0, "adj_open": None, "adj_high": None, "adj_low": None, "adj_close": 102.25, "adj_volume": None, "price_currency": None}]})
 
@@ -87,7 +89,7 @@ def test_real_mongo_atomic_job_gate_budget_and_observations(environment, listing
         db.acquisition_jobs.insert_one({"instrument_id": ISIN, "active": True})
     factory, calls = provider_fixture()
     result = md.run_acquisition(db, settings, jobs[0]["id"], factory)
-    initial_calls = 3 if listing is None else 2
+    initial_calls = 4 if listing is None else 3
     assert result["status"] == "succeeded" and len(calls) == initial_calls
     assert db.instrument_state.find_one()["listing"] == LISTING
     assert db.instruments.find_one()["data"]["unknown_nested"]["preserve"] is True
@@ -123,7 +125,7 @@ def test_real_mongo_atomic_job_gate_budget_and_observations(environment, listing
 
     with ThreadPoolExecutor(max_workers=10) as pool:
         reservations = list(pool.map(reserve, range(20)))
-    assert sum(reservations) == 7 - initial_calls - 2
+    assert sum(reservations) == 7 - initial_calls - 3
     assert sum(path.endswith("tickerslist") for path, _ in calls) == (1 if listing is None else 0)
     assert md.budget_status(db, settings)["used"] == 7
 
@@ -176,12 +178,13 @@ def test_real_broker_request_poll_update_and_duplicate_delivery(environment, mon
                     updated = client.post(path + "/acquisitions", json={"confirmed": True})
                     assert updated.status_code == 202 and updated.json()["job"]["mode"] == "update"
                     assert results.get(timeout=25)["status"] == "succeeded"
-                    assert calls[-1][1]["date_from"] == "2026-09-16"
+                    assert calls[-2][1]["date_from"] == "2026-09-16"
+                    assert calls[-1][0] == "/v2/splits" and calls[-1][1]["date_from"] == "2010-05-19"
                     assert client.get(path + "/quotes").json()["total"] == 2
                     assert db.instruments.count_documents({}) == 2
                     publish(settings, first_id)
                     assert results.get(timeout=25)["status"] == "succeeded"
-                    assert len(calls) == 5  # Lookup once; updates/delivery reuse mapping.
+                    assert len(calls) == 7  # Lookup once; updates/delivery reuse mapping.
                     assert sum(path.endswith("tickerslist") for path, _ in calls) == 1
         finally:
             with worker_app.connection_for_write() as connection:
