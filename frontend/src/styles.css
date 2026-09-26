@@ -184,7 +184,7 @@ button.sign-out { min-height: 34px; padding: 0.4rem 0.65rem; font-size: 0.74rem;
 .collection-empty p, .planner-empty p { max-width: 26rem; color: var(--muted); }
 
 /* Instrument cards, coverage and disclosures. */
-.workspace-content > article > section:not(.instrument-heading), .price-currency-form, .goal-form { padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius); background: white; box-shadow: var(--shadow); }
+.workspace-content > article > section:not(.instrument-heading), .portfolio-tracker [role='tabpanel'] > section, .price-currency-form, .goal-form { padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius); background: white; box-shadow: var(--shadow); }
 .instrument-heading { margin: 0 0 2rem; }
 .instrument-heading .eyebrow { display: inline-flex; padding: 0.3rem 0.65rem; border-radius: 5px; background: #e8eee8; color: #516b57; letter-spacing: 0.07em; }
 .instrument-heading h2 { margin-top: 0.3rem; max-width: 52rem; }
@@ -237,10 +237,29 @@ summary::marker { color: #839a8b; }
 .portfolio-tracker .portfolio-ledger-notice { margin-top: 1rem; font-size: 0.8rem; }
 .portfolio-tracker .facts dd { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .portfolio-table td { font-variant-numeric: tabular-nums; }
+.portfolio-table .return-positive { color: var(--green); }
 .portfolio-table td:not(.portfolio-instrument) { white-space: nowrap; }
 .portfolio-table td .simulation-parameter { white-space: normal; }
 .portfolio-scroll-hint { color: var(--muted); font-size: 0.75rem; }
-.portfolio-forms { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 25rem), 1fr)); gap: 1.25rem; align-items: start; }
+.portfolio-identity { min-width: 0; flex: 1 1 28rem; }
+.portfolio-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.65rem; }
+.portfolio-title-row .instrument-name { margin: 0; overflow-wrap: anywhere; }
+.portfolio-rename { padding: 0.6rem; }
+.portfolio-name-form { flex: 1 1 22rem; min-width: 0; margin: 0; }
+.portfolio-name-form label { display: block; margin-bottom: 0.4rem; }
+.portfolio-name-form fieldset { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; border: 0; padding: 0; margin: 0; min-width: 0; }
+.portfolio-name-form input { flex: 1 1 14rem; min-width: 0; width: 100%; margin: 0; }
+.portfolio-goal-form { max-width: 40rem; margin-bottom: 1.5rem; }
+.portfolio-section-controls { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem; margin-top: 1.5rem; }
+.portfolio-tabs { display: flex; border-bottom: 1px solid var(--line); }
+.portfolio-tabs [role='tab'] { min-height: 44px; border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; color: var(--muted); }
+.portfolio-tabs [role='tab']:hover { color: var(--green-hover); background: var(--mint); }
+.portfolio-tabs [aria-selected='true'] { border-bottom-color: var(--green); color: var(--green); }
+.portfolio-transaction-dialog { width: min(44rem, calc(100% - 2rem)); max-width: none; max-height: calc(100dvh - 2rem); padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius); color: var(--ink); background: white; box-shadow: var(--shadow); overflow-y: auto; }
+.portfolio-transaction-dialog::backdrop { background: #17251bb3; }
+.portfolio-transaction-dialog .planner-create { margin: 0; padding: 0; border: 0; box-shadow: none; }
+.portfolio-transaction-dialog .goal-fields { grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); }
+.portfolio-transaction-dialog .button-group { margin-top: 1rem; }
 .portfolio-table th:first-child { min-width: 12rem; }
 .portfolio-warning { display: block; margin-top: 0.4rem; color: #795518; font-size: 0.8rem; font-weight: 400; }
 .portfolio-warnings { padding: 1rem 1rem 1rem 2rem; border: 1px solid #e7d6ae; border-radius: var(--radius); background: #fffaf0; color: #795518; font-size: 0.85rem; }
@@ -447,7 +466,7 @@ main.login-page { display: grid; grid-template-columns: 1fr 1fr; width: min(calc
   .acquired-pagination { padding: 0.85rem 1rem; gap: 0.8rem; }
   .collection-empty, .planner-empty { min-height: 270px; }
   .search-card, .add-etf-page .search-card { padding: 1.25rem; }
-  .workspace-content > article > section:not(.instrument-heading), .price-currency-form, .goal-form { padding: 1.1rem; }
+  .workspace-content > article > section:not(.instrument-heading), .portfolio-tracker [role='tabpanel'] > section, .price-currency-form, .goal-form { padding: 1.1rem; }
   .listing-fields, .goal-fields { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
   .facts { grid-template-columns: minmax(0, 1fr); gap: 0.65rem; }
   .acquisition-form { padding: 1rem; }

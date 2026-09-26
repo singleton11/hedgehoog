@@ -2,7 +2,9 @@
 
 Open **Customers → a customer → Portfolios**. A customer can have multiple named
 portfolios. A portfolio may have no goal; create it with a goal or attach, change,
-or detach a goal later in portfolio settings. A linked goal must belong to the
+or detach a goal later using **Assign goal** / **Change goal** beside the portfolio
+name. **Unassign goal** removes the link completely. Use the pencil button beside
+the name to rename the portfolio inline. A linked goal must belong to the
 same customer and account. Linking is organizational: it neither changes a goal
 nor funds/recalculates its simulations.
 
@@ -14,6 +16,17 @@ Summary PnL follows the customer accounting below, calculated separately for eac
 portfolio (including its own saved-close interval); it is not live market data.
 
 ## Manual ledger
+
+The detail view has **Positions** and **Transactions** tabs with the same portfolio
+summary above both. Positions opens by default. Select **Add transaction** from
+either tab to open a single dialog, then choose **Deposit**, **Withdrawal**, **Buy**
+or **Sell**; only the fields for that type are shown. **Save transaction** closes
+the dialog after a successful save and refreshes the server balances and history.
+**Cancel** or Escape closes without submitting. Drafts and uncertain-save retry
+IDs survive closing/reopening, switching types or tabs, and portfolio refreshes
+while you remain on this portfolio; navigation or session changes reset them.
+Cancellation is disabled while a save is pending. Cash and trade drafts are kept
+separately so funding a purchase does not erase its inputs or retry identity.
 
 - Portfolios and cash movements are **EUR only**. Record a deposit before buying.
 - Trade fields: instrument, buy/sell, quantity, average execution price per unit
