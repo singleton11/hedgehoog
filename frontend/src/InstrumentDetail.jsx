@@ -4,6 +4,7 @@ import { acquisitionEstimate, displayText, listingPriceCurrency, pendingJob } fr
 import useInstrument from './useInstrument.js';
 import PriceCurrencyForm from './PriceCurrencyForm.jsx';
 import ReturnStatistics from './ReturnStatistics.jsx';
+import ManualSplits from './ManualSplits.jsx';
 
 function AcquisitionForm({ detail, mode, busy, onCancel, onConfirm }) {
   const [symbol, setSymbol] = useState(detail.listing?.symbol || '');
@@ -78,6 +79,7 @@ function JobStatus({ job }) {
 export default function InstrumentDetail({ isin }) {
   const { detail, loading, error, pollError, postError, submitting, quotes, quotesLoading, quotesError, acquire, retry, retryQuotes, savingCurrency, currencyError, saveCurrency } = useInstrument(isin);
   const [reviewMode, setReviewMode] = useState(null);
+  const [splitRevision, setSplitRevision] = useState(0);
   const heading = useRef(null);
   const reviewButton = useRef(null);
   const previousReview = useRef(null);
@@ -113,7 +115,7 @@ export default function InstrumentDetail({ isin }) {
         {listing && <> · {listing.symbol} / {listing.exchange}</>}</p>
       <p><a href={`#/goal/${encodeURIComponent(isin)}`}>Plan a goal with this ETF</a></p>
     </section>
-    <ReturnStatistics isin={isin} refreshKey={JSON.stringify([acquisition?.id, acquisition?.status, detail.price_currency_override])} />
+    <ReturnStatistics isin={isin} refreshKey={JSON.stringify([acquisition?.id, acquisition?.status, detail.price_currency_override, splitRevision])} />
     {!priceCurrency && !quotesLoading && !quotesError && <PriceCurrencyForm busy={savingCurrency || submitting}
       saving={savingCurrency} error={currencyError} onSave={saveCurrency} />}
     {!quotes.length && priceCurrency && <p className="muted">Price currency: {priceCurrency}</p>}
@@ -134,6 +136,9 @@ export default function InstrumentDetail({ isin }) {
       </div>}
       {reviewMode && !pending && <AcquisitionForm key={reviewMode} detail={detail} mode={reviewMode} busy={submitting || savingCurrency}
         onCancel={() => setReviewMode(null)} onConfirm={confirm} />}
+      <ManualSplits isin={isin} listing={listing} inception={catalogue.inception_date} hasQuotes={hasData}
+        disabled={pending || submitting} refreshKey={JSON.stringify([acquisition?.id, acquisition?.status])}
+        onChanged={() => setSplitRevision((value) => value + 1)} />
     </section>
     <details className="disclosure instrument-metadata"><summary>Data details</summary>
       <div className="disclosure-content">

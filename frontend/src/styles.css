@@ -209,6 +209,8 @@ button.sign-out { min-height: 34px; padding: 0.4rem 0.65rem; font-size: 0.74rem;
 .disclosure-content > :first-child { margin-top: 0; }
 .acquisition-form .disclosure { margin-top: 0.25rem; }
 .disclosure-content p + p { margin-top: 0.5rem; }
+.manual-split-list { padding-left: 1.2rem; }
+.manual-split-list li { margin: 0.75rem 0; overflow-wrap: anywhere; }
 summary { padding: 0.9rem 1rem; cursor: pointer; font-size: 0.8rem; font-weight: 500; overflow-wrap: anywhere; }
 summary::marker { color: #839a8b; }
 .metadata[open] > summary, .disclosure[open] > summary { margin-bottom: 0.7rem; border-bottom: 1px solid var(--line); }
