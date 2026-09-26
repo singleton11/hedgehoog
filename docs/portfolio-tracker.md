@@ -64,6 +64,64 @@ A portfolio pins its instrument's symbol/exchange; it never silently switches to
 a different listing. Existing EUR trade snapshots remain sellable even if their
 catalogue/profile is removed. Such removal does not erase balances or history.
 
+## Import a DEGIRO account statement
+
+Open a portfolio and select **Import DEGIRO CSV**, choose the broker's **Account**
+CSV export, then **Preview statement**. Nothing is saved until you check the
+chosen EUR listings and transactions and select **Import transactions**. For an
+initial import, use a separate empty portfolio and export the complete funding
+history. Acquire each required EUR-priced instrument first; the preview reports
+missing/unconfirmed listings. A CSV identifies the ISIN but not the exchange, so
+verify the displayed symbol/exchange matches your holding. No provider requests
+or currency relabeling are performed by an import.
+
+Supported format and accounting:
+
+- UTF-8 (optional BOM), comma or semicolon separator, English headers exactly:
+  `Date,Time,Value date,Product,ISIN,Description,FX,Change,,Balance,,Order Id`.
+  Dates are `DD-MM-YYYY`, times `HH:MM`, decimal commas with optional dot thousands
+  separators. Export **newest first**; equal timestamps use reverse source-row
+  order. Times order events within a broker date, not a timezone conversion.
+- EUR-only `Koop`/`Buy` and `Verkoop`/`Sell` executions, one execution per Order Id.
+  Fees (`DEGIRO Transactiekosten en/of kosten van derden` / `DEGIRO transaction
+  and/or third party fees`) are attached by order, ISIN and timestamp. Trade cash
+  changes must match rounded quantity × price. Multiple executions of one order,
+  orphan fees and ambiguous duplicate rows block import rather than guessing.
+- External `iDEAL Deposit`, `Deposit`, `Storting`, `Withdrawal`, `Terugstorting`.
+  Cash movements use posting dates. A settled iDEAL deposit with reservation
+  entries is counted once at its original funding timestamp/row position;
+  its positive reservation and matching negative reversal are disclosed but not
+  counted again. Incomplete or ambiguous reservation chains block import.
+- `Degiro Cash Sweep Transfer` plus its matching flatex cash-account counterpart
+  are internal movements, not external funding. Amount, direction, timestamp and
+  value date must match. Running balances are validated as numbers but are not
+  used to invent opening cash or reconcile an account-wide valuation.
+- Dividends, interest, taxes, FX, corporate actions and any other unrecognized
+  rows block the **entire** import. The preview shows line-specific issues and
+  every ignored internal/reservation row. It never silently imports only the
+  recognized portion of a statement. File limit: 1,000,000 UTF-8 bytes / 10,000 rows.
+
+The preview shows new/duplicate transactions, resulting cash and holdings/cost
+basis. Monetary values use the same exact Decimal ledger rules as manual entries.
+The whole existing-plus-new timeline must remain funded and long-only. Existing
+same-day events keep their insertion sequence; an imported historical deposit
+cannot move ahead of an already-recorded same-day trade.
+
+Saving appends the complete batch in **one** revision-checked update. If portfolio
+metadata, transactions or the chosen listing changed since preview, preview again.
+If the response was lost, **Retry import** sends the identical file and token;
+existing imported events are recognized without appending again. Re-uploaded and
+overlapping exports deduplicate trades by Order Id and cash movements by posting
+timestamp, value date, normalized description and amount. Cash rows have no broker
+transaction ID: indistinguishable movements cannot be inferred to be separate.
+Changed order amounts/dates and removed imported entries are conflicts, not new
+entries. Manually entered transactions are **not** matched against broker imports.
+
+The original file and raw descriptions are not saved. Imported ledger entries are
+marked `source: "degiro"` and retain deterministic retry IDs and normalized ledger
+inputs. They can be removed under the same funded-history rules as manual entries.
+The 5,000 lifetime-transaction cap includes imports and removed transactions.
+
 ## Accounting and valuation
 
 All backend ledger calculations use high-precision Decimal arithmetic; numeric
@@ -168,6 +226,8 @@ protection. Browser requests use the `/api` prefix.
 | `GET /customers/{cid}/portfolios/{pid}/transactions?limit=20&offset=0` | Ledger newest date/entry first |
 | `POST /customers/{cid}/portfolios/{pid}/transactions` | Append a validated transaction |
 | `DELETE /customers/{cid}/portfolios/{pid}/transactions/{tid}` | Remove one entry after validating the remaining timeline; returns `{id, removed: true}` |
+| `POST /customers/{cid}/portfolios/{pid}/imports/degiro/preview` | `{csv: string}`; read-only parsed transactions, row errors/ignored reasons, resulting ledger totals and `preview_token` |
+| `POST /customers/{cid}/portfolios/{pid}/imports/degiro` | `{csv: string, preview_token: string}`; atomically append reviewed new entries; returns `{imported_count, duplicate_count}` |
 
 Pagination supports `limit` 1–100 and nonnegative `offset`. Portfolio list metrics
 are calculated only for the requested page, sharing a request-local saved-quote

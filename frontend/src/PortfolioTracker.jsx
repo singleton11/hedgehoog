@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
 import CustomerTabs from './CustomerTabs.jsx';
 import Icon from './Icon.jsx';
+import DegiroImport from './DegiroImport.jsx';
 import { formatEuros as formatExactEuros } from './goalProjection.js';
 
 const PAGE_SIZE = 20;
@@ -487,6 +488,7 @@ function PortfolioDetail({ request, customerId, portfolioId, goals }) {
         </div>
         <button ref={addButton} type="button" aria-haspopup="dialog" onClick={() => { setAdding(true); setMessage(null); }}>Add transaction</button>
       </div>
+      <DegiroImport request={request} portfolioPath={path} onImported={refresh} disabled={resource.loading || Boolean(resource.error)} />
       {message && <p role="status">{message}</p>}
       <div id="portfolio-positions-panel" role="tabpanel" aria-labelledby="portfolio-positions-tab" tabIndex={0} hidden={tab !== 'positions'}><Positions positions={resource.data.positions} /></div>
       <div id="portfolio-transactions-panel" role="tabpanel" aria-labelledby="portfolio-transactions-tab" tabIndex={0} hidden={tab !== 'transactions'}><Transactions request={request} path={`${path}/transactions`} revision={revision} onRemoved={refresh} /></div>

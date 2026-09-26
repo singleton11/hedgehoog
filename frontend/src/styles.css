@@ -263,6 +263,9 @@ summary::marker { color: #839a8b; }
 .portfolio-transaction-dialog .goal-fields { grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); }
 .portfolio-transaction-dialog .button-group { margin-top: 1rem; }
 .portfolio-table th:first-child { min-width: 12rem; }
+.degiro-import .planner-table { min-width: 55rem; }
+.degiro-import .planner-table th, .degiro-import .planner-table td { min-width: 0; }
+.degiro-import .planner-table .portfolio-instrument { min-width: 12rem; max-width: 20rem; overflow-wrap: anywhere; }
 .portfolio-warning { display: block; margin-top: 0.4rem; color: #795518; font-size: 0.8rem; font-weight: 400; }
 .portfolio-warnings { padding: 1rem 1rem 1rem 2rem; border: 1px solid #e7d6ae; border-radius: var(--radius); background: #fffaf0; color: #795518; font-size: 0.85rem; }
 

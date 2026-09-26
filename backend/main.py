@@ -27,6 +27,7 @@ from goal_planner import router as goal_router
 from market_data import DataError
 from manual_splits import ensure_indexes as ensure_manual_split_indexes
 from portfolio_tracker import ensure_indexes as ensure_portfolio_indexes, router as portfolio_router
+from degiro_import import router as degiro_import_router
 
 
 def create_app(settings: Settings | None = None, client_factory=MongoClient) -> FastAPI:
@@ -53,6 +54,7 @@ def create_app(settings: Settings | None = None, client_factory=MongoClient) -> 
     app.include_router(goal_router)
     app.include_router(customer_planner_router)
     app.include_router(portfolio_router)
+    app.include_router(degiro_import_router)
 
     @app.exception_handler(DataError)
     async def acquisition_error(request: Request, exc: DataError):
