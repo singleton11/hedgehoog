@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
 import CustomerTabs from './CustomerTabs.jsx';
+import Icon from './Icon.jsx';
 import { formatEuros as formatExactEuros } from './goalProjection.js';
 
 const PAGE_SIZE = 20;
@@ -133,7 +134,7 @@ function useMutation(request) {
       if (!abort.signal.aborted) { pending.current = null; setBusy(false); }
     }
   }
-  return { busy, error, message, submit, fail: (error) => { setError(error); setMessage(null); } };
+  return { busy, error, message, submit, reset: () => { setError(null); setMessage(null); }, fail: (error) => { setError(error); setMessage(null); } };
 }
 function MutationStatus({ mutation }) {
   return <>{mutation.error && <p role="alert">{mutation.error}</p>}{mutation.message && <p role="status">{mutation.message}</p>}</>;
@@ -145,9 +146,9 @@ function Pagination({ label, offset, total, count, setOffset, loading }) {
     <button type="button" className="secondary" disabled={loading || offset + count >= total} onClick={() => setOffset(offset + PAGE_SIZE)}>Next</button>
   </nav>;
 }
-function GoalChoice({ goals, value, onChange, prefix }) {
+function GoalChoice({ goals, value, onChange, prefix, autoFocus = false }) {
   return <div><label htmlFor={`${prefix}-goal`}>Linked goal (optional)</label>
-    <select id={`${prefix}-goal`} value={value} onChange={(event) => onChange(event.target.value)}>
+    <select id={`${prefix}-goal`} value={value} autoFocus={autoFocus} onChange={(event) => onChange(event.target.value)}>
       <option value="">No goal</option>
       {value && !goals.data?.some((goal) => goal.id === value) && <option value={value}>Current goal ({value})</option>}
       {(goals.data || []).map((goal) => <option key={goal.id} value={goal.id}>{goal.name}</option>)}
@@ -155,35 +156,96 @@ function GoalChoice({ goals, value, onChange, prefix }) {
     <p className="muted">A goal is optional. Attach, change or detach it later without changing transactions.</p>
   </div>;
 }
-function MetadataForm({ request, customerId, portfolio, goals, onSaved, onCancel }) {
-  const editing = Boolean(portfolio);
-  const [name, setName] = useState(portfolio?.name || '');
-  const [goalId, setGoalId] = useState(portfolio?.goal_id || '');
+function MetadataForm({ request, customerId, goals, onSaved, onCancel }) {
+  const [name, setName] = useState('');
+  const [goalId, setGoalId] = useState('');
   const mutation = useMutation(request);
-  const prefix = editing ? 'portfolio-settings' : 'new-portfolio';
+  const prefix = 'new-portfolio';
   async function save(event) {
     event.preventDefault();
     if (mutation.busy) return;
     if (!name.trim()) { mutation.fail('Enter a portfolio name.'); return; }
-    await mutation.submit(editing ? portfolioPath(customerId, portfolio.id) : portfoliosPath(customerId), editing ? 'PATCH' : 'POST',
-      { name: name.trim(), goal_id: goalId || null }, (data) => validPortfolio(data, customerId) && (!editing || data.id === portfolio.id),
-      (data) => { if (!editing) { setName(''); setGoalId(''); } onSaved(data); }, editing ? 'Portfolio settings saved.' : 'Portfolio created.');
+    await mutation.submit(portfoliosPath(customerId), 'POST',
+      { name: name.trim(), goal_id: goalId || null }, (data) => validPortfolio(data, customerId),
+      (data) => { setName(''); setGoalId(''); onSaved(data); }, 'Portfolio created.');
   }
-  return <form id={`${prefix}-form`} className="goal-form planner-create" aria-label={editing ? 'Portfolio settings' : 'New portfolio'} onSubmit={save} noValidate>
-    <h3>{editing ? 'Portfolio settings' : 'New portfolio'}</h3>
+  return <form id={`${prefix}-form`} className="goal-form planner-create" aria-label="New portfolio" onSubmit={save} noValidate>
+    <h3>New portfolio</h3>
     <fieldset disabled={mutation.busy}>
       <div className="goal-fields"><div><label htmlFor={`${prefix}-name`}>Portfolio name</label>
         <input id={`${prefix}-name`} value={name} required maxLength={200} autoComplete="off" autoFocus={Boolean(onCancel)} onChange={(event) => setName(event.target.value)} /></div>
         <GoalChoice goals={goals} value={goalId} onChange={setGoalId} prefix={prefix} />
       </div>
       <div className="button-group">
-        <button type="submit">{mutation.busy ? 'Saving…' : editing ? 'Save portfolio settings' : 'Create portfolio'}</button>
+        <button type="submit">{mutation.busy ? 'Saving…' : 'Create portfolio'}</button>
         {onCancel && <button type="button" className="secondary" onClick={onCancel}>Cancel</button>}
       </div>
     </fieldset>
     <ReadStatus resource={goals} label="goals" />
     <MutationStatus mutation={mutation} />
   </form>;
+}
+function PortfolioHeader({ request, customerId, portfolio, goals, onSaved, onRefresh, disabled }) {
+  const [editor, setEditor] = useState(null);
+  const [name, setName] = useState('');
+  const [goalId, setGoalId] = useState('');
+  const renameButton = useRef(null), goalButton = useRef(null), previousEditor = useRef(null);
+  const mutation = useMutation(request);
+  const blocked = disabled || mutation.busy;
+  useEffect(() => {
+    if (editor) previousEditor.current = editor;
+    else if (previousEditor.current && !blocked) {
+      (previousEditor.current === 'name' ? renameButton : goalButton).current?.focus();
+      previousEditor.current = null;
+    }
+  }, [editor, blocked]);
+  function edit(field) {
+    setName(portfolio.name); setGoalId(portfolio.goal_id || ''); mutation.reset(); setEditor(field);
+  }
+  async function save(event, unassign = false) {
+    event.preventDefault();
+    if (blocked) return;
+    const nextName = editor === 'name' ? name.trim() : portfolio.name;
+    if (!nextName) { mutation.fail('Enter a portfolio name.'); return; }
+    const nextGoal = editor === 'goal' ? (unassign ? null : goalId || null) : portfolio.goal_id;
+    await mutation.submit(portfolioPath(customerId, portfolio.id), 'PATCH', { name: nextName, goal_id: nextGoal },
+      (data) => validPortfolio(data, customerId) && data.id === portfolio.id,
+      () => { setEditor(null); onSaved(); }, editor === 'name' ? 'Portfolio name saved.' : nextGoal ? 'Goal assigned.' : 'Goal unassigned.');
+  }
+  const cancel = () => { mutation.reset(); setEditor(null); };
+  const cancelOnEscape = (event) => { if (event.key === 'Escape' && !mutation.busy) { event.preventDefault(); cancel(); } };
+  return <header className="portfolio-header">
+    <div className="section-heading page-heading">
+      <div className="portfolio-identity">
+        <div className="portfolio-title-row">
+          {editor === 'name' ? <form className="portfolio-name-form" aria-label="Rename portfolio" onSubmit={save} onKeyDown={cancelOnEscape} noValidate>
+            <label htmlFor="portfolio-name">Portfolio name</label>
+            <fieldset disabled={mutation.busy}><input id="portfolio-name" value={name} required maxLength={200} autoComplete="off" autoFocus onChange={(event) => setName(event.target.value)} />
+              <button type="submit" disabled={disabled}>{mutation.busy ? 'Saving…' : 'Save name'}</button>
+              <button type="button" className="secondary" onClick={cancel}>Cancel</button>
+            </fieldset>
+          </form> : <>
+            <h2 className="instrument-name">{portfolio.name}</h2>
+            <button ref={renameButton} className="secondary portfolio-rename" type="button" aria-label="Edit portfolio name" title="Edit portfolio name" disabled={blocked || Boolean(editor)} onClick={() => edit('name')}><Icon name="edit" /></button>
+          </>}
+          <button ref={goalButton} className="secondary" type="button" disabled={blocked || Boolean(editor)} aria-expanded={editor === 'goal'} aria-controls={editor === 'goal' ? 'portfolio-goal-form' : undefined} onClick={() => edit('goal')}>{portfolio.goal_id ? 'Change goal' : 'Assign goal'}</button>
+        </div>
+        <p className="muted">EUR · {portfolio.goal_id ? goals.data?.find((goal) => goal.id === portfolio.goal_id)?.name || 'Linked goal' : 'No linked goal'}</p>
+      </div>
+      <button className="secondary" type="button" onClick={onRefresh}>Refresh portfolio</button>
+    </div>
+    {editor === 'goal' && <form id="portfolio-goal-form" className="goal-form planner-create portfolio-goal-form" aria-label="Assign portfolio goal" onSubmit={save} onKeyDown={cancelOnEscape}>
+      <h3>{portfolio.goal_id ? 'Change goal' : 'Assign goal'}</h3>
+      <fieldset disabled={mutation.busy}>
+        <div className="goal-fields"><GoalChoice goals={goals} value={goalId} onChange={setGoalId} prefix="portfolio" autoFocus /></div>
+        <div className="button-group"><button type="submit" disabled={disabled}>{mutation.busy ? 'Saving…' : 'Save goal'}</button>
+          {portfolio.goal_id && <button type="button" className="secondary" disabled={disabled} onClick={(event) => save(event, true)}>Unassign goal</button>}
+          <button type="button" className="secondary" onClick={cancel}>Cancel</button></div>
+      </fieldset>
+      <ReadStatus resource={goals} label="goals" />
+    </form>}
+    <MutationStatus mutation={mutation} />
+  </header>;
 }
 function PortfolioList({ request, customerId, goals }) {
   const [offset, setOffset] = useState(0);
@@ -260,9 +322,16 @@ function Positions({ positions }) {
     </div></>}
   </section>;
 }
-function TransactionForm({ request, path, cash = false, instruments, positions, onSaved, disabled }) {
-  const [type, setType] = useState(cash ? 'deposit' : 'buy');
-  const [date, setDate] = useState(today);
+function TransactionForm({ request, path, open, onClose, instruments, positions, onSaved, disabled }) {
+  const [type, setType] = useState('deposit');
+  const cash = type === 'deposit' || type === 'withdrawal';
+  const [cashDate, setCashDate] = useState(today), [tradeDate, setTradeDate] = useState(today);
+  const date = cash ? cashDate : tradeDate, setDate = cash ? setCashDate : setTradeDate;
+  const dialog = useRef(null), typeInput = useRef(null);
+  useEffect(() => {
+    if (open) { dialog.current.showModal(); typeInput.current?.focus(); }
+    else dialog.current.close();
+  }, [open]);
   const [instrumentId, setInstrumentId] = useState('');
   const [amount, setAmount] = useState('');
   const [quantity, setQuantity] = useState('');
@@ -271,7 +340,7 @@ function TransactionForm({ request, path, cash = false, instruments, positions, 
   const mutation = useMutation(request);
   // Retain IDs for failed/uncertain payloads, including a payload edited and then restored.
   const retries = useRef(new Map());
-  const prefix = cash ? 'cash' : 'trade';
+  const prefix = 'transaction';
   const choices = new Map((instruments?.data || []).map((item) => [item.instrument_id, item]));
   if (type === 'sell') for (const position of positions) if (!choices.has(position.instrument.instrument_id)) choices.set(position.instrument.instrument_id, position.instrument);
   async function save(event) {
@@ -297,16 +366,23 @@ function TransactionForm({ request, path, cash = false, instruments, positions, 
     } catch { mutation.fail('Secure transaction IDs are unavailable. Open this app over HTTPS or localhost and retry.'); return; }
     body = { client_id: retries.current.get(signature), ...body };
     await mutation.submit(path, 'POST', body, (data) => validTransaction(data) && data.client_id === body.client_id && data.type === body.type,
-      () => { retries.current.clear(); setAmount(''); setQuantity(''); setPrice(''); setCommission(''); setDate(today()); onSaved(); }, `${transactionName(type)} saved.`);
+      () => {
+        retries.current.delete(signature);
+        if (cash) setAmount('');
+        else { setQuantity(''); setPrice(''); setCommission(''); }
+        setDate(today()); onSaved(`${transactionName(type)} saved.`);
+      }, null);
   }
-  return <form className="goal-form planner-create" aria-label={cash ? 'Cash movement' : 'Trade'} aria-describedby={`${prefix}-ledger-notice`} onSubmit={save} noValidate>
-    <h3>{cash ? 'Cash movement' : 'Trade'}</h3>
+  return <dialog ref={dialog} className="portfolio-transaction-dialog" aria-labelledby="transaction-heading" onCancel={(event) => { event.preventDefault(); if (!mutation.busy) onClose(); }}>
+    <form className="goal-form planner-create" aria-label="Add transaction" aria-describedby={`${prefix}-ledger-notice`} onSubmit={save} noValidate>
+    <h3 id="transaction-heading">Add transaction</h3>
+    <p className="muted">Choose a transaction type. Closing keeps your draft while you stay on this portfolio.</p>
     <fieldset disabled={disabled || mutation.busy}>
       <div className="goal-fields">
-        <div><label htmlFor={`${prefix}-type`}>{cash ? 'Cash movement type' : 'Trade type'}</label><select id={`${prefix}-type`} value={type} onChange={(event) => setType(event.target.value)}>
-          {(cash ? ['deposit', 'withdrawal'] : ['buy', 'sell']).map((value) => <option key={value} value={value}>{transactionName(value)}</option>)}
+        <div><label htmlFor={`${prefix}-type`}>Transaction type</label><select ref={typeInput} id={`${prefix}-type`} value={type} onChange={(event) => { setType(event.target.value); mutation.reset(); }}>
+          {['deposit', 'withdrawal', 'buy', 'sell'].map((value) => <option key={value} value={value}>{transactionName(value)}</option>)}
         </select></div>
-        <div><label htmlFor={`${prefix}-date`}>{cash ? 'Cash date (UTC)' : 'Trade date (UTC)'}</label><input id={`${prefix}-date`} type="date" required max={today()} value={date} onChange={(event) => setDate(event.target.value)} /></div>
+        <div><label htmlFor={`${prefix}-date`}>Transaction date (UTC)</label><input id={`${prefix}-date`} type="date" required max={today()} value={date} onChange={(event) => setDate(event.target.value)} /></div>
         {cash ? <div><label htmlFor="cash-amount">Amount (EUR)</label><input id="cash-amount" inputMode="decimal" required maxLength={100} value={amount} onChange={(event) => setAmount(event.target.value)} /></div> : <>
           <div><label htmlFor="trade-instrument">Trade instrument</label><select id="trade-instrument" value={choices.has(instrumentId) ? instrumentId : ''} onChange={(event) => setInstrumentId(event.target.value)} required>
             <option value="">Choose an instrument</option>{[...choices.values()].map((item) => <option key={item.instrument_id} value={item.instrument_id}>{instrumentName(item)}</option>)}
@@ -317,13 +393,15 @@ function TransactionForm({ request, path, cash = false, instruments, positions, 
         </>}
       </div>
       <p className="muted portfolio-ledger-notice" id={`${prefix}-ledger-notice`}>Saved entries cannot be edited, but can be removed from transaction history if the remaining cash and holdings stay non-negative. Dividends, splits and other corporate actions are not processed.</p>
-      <button type="submit">{mutation.busy ? 'Saving…' : cash ? 'Save cash movement' : 'Save trade'}</button>
     </fieldset>
+    <div className="button-group"><button type="submit" disabled={disabled || mutation.busy}>{mutation.busy ? 'Saving…' : 'Save transaction'}</button>
+      <button type="button" className="secondary" disabled={mutation.busy} onClick={onClose}>Cancel</button></div>
     {!cash && <><ReadStatus resource={instruments} label="instruments" />
       {!instruments.loading && !instruments.error && instruments.data?.length === 0 && <p className="muted">No acquired EUR instruments are available to buy. <a href="#/add">Add an ETF</a> or open an instrument in <a href="#/">your ETFs</a> to set its price currency to EUR. Existing holdings remain available to sell.</p>}
       <p className="muted">Long only and cash-funded. Deposit cash before buying. Historical transactions must keep cash and holdings non-negative throughout the ledger; the server validates this.</p></>}
     <MutationStatus mutation={mutation} />
-  </form>;
+    </form>
+  </dialog>;
 }
 function Transactions({ request, path, revision, onRemoved }) {
   const [offset, setOffset] = useState(0);
@@ -377,6 +455,22 @@ function Transactions({ request, path, revision, onRemoved }) {
 }
 function PortfolioDetail({ request, customerId, portfolioId, goals }) {
   const [revision, setRevision] = useState(0);
+  const [tab, setTab] = useState('positions');
+  const [adding, setAdding] = useState(false);
+  const [message, setMessage] = useState(null);
+  const addButton = useRef(null), wasAdding = useRef(false);
+  useEffect(() => {
+    if (wasAdding.current && !adding) addButton.current?.focus();
+    wasAdding.current = adding;
+  }, [adding]);
+  function tabKey(event) {
+    const tabs = ['positions', 'transactions'];
+    let next;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') next = tabs[1 - tabs.indexOf(tab)];
+    if (event.key === 'Home') next = tabs[0];
+    if (event.key === 'End') next = tabs[1];
+    if (next) { event.preventDefault(); setTab(next); document.getElementById(`portfolio-${next}-tab`)?.focus(); }
+  }
   const path = portfolioPath(customerId, portfolioId);
   const resource = useRead(request, path, { revision });
   const instruments = useRead(request, '/portfolio-instruments', { all: true, validate: validInstrument, itemKey: 'instrument_id' });
@@ -385,18 +479,19 @@ function PortfolioDetail({ request, customerId, portfolioId, goals }) {
   return <>
     <ReadStatus resource={resource} label="portfolio" invalid={!valid} />
     {valid && <>
-      <div className="section-heading page-heading"><div><h2 className="instrument-name">{resource.data.portfolio.name}</h2>
-        <p className="muted">EUR · {resource.data.portfolio.goal_id ? goals.data?.find((goal) => goal.id === resource.data.portfolio.goal_id)?.name || 'Linked goal' : 'No linked goal'}</p></div>
-        <button className="secondary" type="button" onClick={refresh}>Refresh portfolio</button>
-      </div>
+      <PortfolioHeader request={request} customerId={customerId} portfolio={resource.data.portfolio} goals={goals} onSaved={refresh} onRefresh={refresh} disabled={resource.loading || Boolean(resource.error)} />
       <Summary data={resource.data} />
-      <Positions positions={resource.data.positions} />
-      <div className="portfolio-forms">
-        <TransactionForm request={request} path={`${path}/transactions`} cash onSaved={refresh} disabled={resource.loading || Boolean(resource.error)} />
-        <TransactionForm request={request} path={`${path}/transactions`} instruments={instruments} positions={resource.data.positions} onSaved={refresh} disabled={resource.loading || Boolean(resource.error)} />
+      <div className="portfolio-section-controls">
+        <div className="portfolio-tabs" role="tablist" aria-label="Portfolio sections" onKeyDown={tabKey}>
+          {['positions', 'transactions'].map((value) => <button key={value} id={`portfolio-${value}-tab`} type="button" role="tab" aria-selected={tab === value} aria-controls={`portfolio-${value}-panel`} tabIndex={tab === value ? 0 : -1} onClick={() => setTab(value)}>{value === 'positions' ? 'Positions' : 'Transactions'}</button>)}
+        </div>
+        <button ref={addButton} type="button" aria-haspopup="dialog" onClick={() => { setAdding(true); setMessage(null); }}>Add transaction</button>
       </div>
-      <Transactions request={request} path={`${path}/transactions`} revision={revision} onRemoved={refresh} />
-      <MetadataForm request={request} customerId={customerId} portfolio={resource.data.portfolio} goals={goals} onSaved={refresh} />
+      {message && <p role="status">{message}</p>}
+      <div id="portfolio-positions-panel" role="tabpanel" aria-labelledby="portfolio-positions-tab" tabIndex={0} hidden={tab !== 'positions'}><Positions positions={resource.data.positions} /></div>
+      <div id="portfolio-transactions-panel" role="tabpanel" aria-labelledby="portfolio-transactions-tab" tabIndex={0} hidden={tab !== 'transactions'}><Transactions request={request} path={`${path}/transactions`} revision={revision} onRemoved={refresh} /></div>
+      <TransactionForm request={request} path={`${path}/transactions`} open={adding} onClose={() => setAdding(false)} instruments={instruments} positions={resource.data.positions}
+        onSaved={(success) => { setMessage(success); setAdding(false); refresh(); }} disabled={resource.loading || Boolean(resource.error)} />
     </>}
   </>;
 }

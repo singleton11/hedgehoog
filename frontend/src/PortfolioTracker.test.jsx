@@ -55,9 +55,17 @@ function mockServer() {
   return server;
 }
 const writes = () => request.mock.calls.filter(([, options]) => ['POST', 'PATCH', 'DELETE'].includes(options?.method));
-const tradeForm = () => screen.getByRole('form', { name: 'Trade', exact: true });
-const cashForm = () => screen.getByRole('form', { name: 'Cash movement', exact: true });
-const settings = () => screen.getByRole('form', { name: 'Portfolio settings' });
+const transactionForm = () => screen.getByRole('form', { name: 'Add transaction' });
+const tradeForm = transactionForm, cashForm = transactionForm;
+const settings = () => screen.getByRole('form', { name: 'Rename portfolio' });
+const dialog = () => document.querySelector('dialog.portfolio-transaction-dialog');
+function addTransaction(type = 'deposit') {
+  fireEvent.click(screen.getByRole('button', { name: 'Add transaction' }));
+  change('Transaction type', type);
+  return transactionForm();
+}
+function transactionType(type) { change('Transaction type', type); }
+function transactionsTab() { fireEvent.click(screen.getByRole('tab', { name: 'Transactions' })); }
 const change = (label, value) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
 async function flush() { await act(async () => {}); }
 async function submit(form) { fireEvent.submit(form); await flush(); }
@@ -73,8 +81,10 @@ beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-24T00:15:00Z')); request.mockReset();
   auth.user = { id: 'user-a' }; auth.status = 'authenticated'; delete auth.request;
   window.history.replaceState(null, '', '#/');
+  Object.defineProperty(window.HTMLDialogElement.prototype, 'showModal', { configurable: true, value() { this.setAttribute('open', ''); } });
+  Object.defineProperty(window.HTMLDialogElement.prototype, 'close', { configurable: true, value() { this.removeAttribute('open'); } });
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); window.history.replaceState(null, '', '#/'); });
+afterEach(() => { cleanup(); delete window.HTMLDialogElement.prototype.showModal; delete window.HTMLDialogElement.prototype.close; vi.restoreAllMocks(); vi.useRealTimers(); window.history.replaceState(null, '', '#/'); });
 
 describe('portfolio routes, creation and optional goals', () => {
   it('links from existing customer goals with Customers active, creates multiple portfolios and attaches, changes or detaches a goal later', async () => {
@@ -102,13 +112,19 @@ describe('portfolio routes, creation and optional goals', () => {
     server.goals.push({ ...goal, id: 'goal-b', name: 'Home' });
     // Returning to the route reloads goal choices, as a goal may be created later.
     await navigate(listRoute); await navigate(`${listRoute}/portfolio-0`);
-    change('Portfolio name', 'Safety net'); change('Linked goal (optional)', goal.id); await submit(settings());
-    expect(writes().at(-1)[1].body).toEqual({ name: 'Safety net', goal_id: goal.id });
+    fireEvent.click(screen.getByRole('button', { name: 'Edit portfolio name' }));
+    change('Portfolio name', 'Safety net'); await submit(settings());
+    expect(writes().at(-1)[1].body).toEqual({ name: 'Safety net', goal_id: null });
     expect(screen.getByRole('heading', { name: 'Safety net' })).toBeInTheDocument();
-    change('Linked goal (optional)', 'goal-b'); await submit(settings());
-    expect(writes().at(-1)[1].body.goal_id).toBe('goal-b');
-    change('Linked goal (optional)', ''); await submit(settings());
-    expect(writes().at(-1)[1].body.goal_id).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Assign goal' }));
+    change('Linked goal (optional)', goal.id); await submit(screen.getByRole('form', { name: 'Assign portfolio goal' }));
+    expect(writes().at(-1)[1].body).toEqual({ name: 'Safety net', goal_id: goal.id });
+    fireEvent.click(screen.getByRole('button', { name: 'Change goal' }));
+    change('Linked goal (optional)', 'goal-b'); await submit(screen.getByRole('form', { name: 'Assign portfolio goal' }));
+    expect(writes().at(-1)[1].body).toEqual({ name: 'Safety net', goal_id: 'goal-b' });
+    fireEvent.click(screen.getByRole('button', { name: 'Change goal' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Unassign goal' })); await flush();
+    expect(writes().at(-1)[1].body).toEqual({ name: 'Safety net', goal_id: null });
     expect(screen.getByText('EUR · No linked goal')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
@@ -186,18 +202,23 @@ describe('portfolio routes, creation and optional goals', () => {
     await open(); expect(screen.getByRole('alert')).toHaveTextContent('Customer unavailable.'); expect(screen.queryByRole('form')).not.toBeInTheDocument();
     server.customer = async () => ({ id: cid, name: 'Alice' });
     fireEvent.click(screen.getByRole('button', { name: 'Retry customer' })); await flush();
-    expect(screen.getByRole('link', { name: 'Alice · Goals' })).toBeInTheDocument(); expect(cashForm()).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Alice · Goals' })).toBeInTheDocument(); expect(dialog()).not.toHaveAttribute('open');
   });
 
   it('does not implicitly detach a linked goal when goals are unavailable, and exposes retry and save errors', async () => {
     const server = mockServer(); server.details.set(pid, snapshot(metadata({ goal_id: goal.id })));
     server.goalList = async () => { throw new Error('Goals temporarily unavailable.'); };
     server.patch = async () => { throw new Error('Could not save settings.'); };
-    await open(); expect(screen.getByText('Goals temporarily unavailable.')).toHaveAttribute('role', 'alert');
+    await open(); fireEvent.click(screen.getByRole('button', { name: 'Change goal' }));
+    expect(screen.getByText('Goals temporarily unavailable.')).toHaveAttribute('role', 'alert');
+    fireEvent.click(within(screen.getByRole('form', { name: 'Assign portfolio goal' })).getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit portfolio name' }));
     change('Portfolio name', 'Rename only'); await submit(settings());
     expect(writes()[0][1].body).toEqual({ name: 'Rename only', goal_id: goal.id });
     expect(screen.getByText('Could not save settings.')).toHaveAttribute('role', 'alert');
+    fireEvent.click(within(settings()).getByRole('button', { name: 'Cancel' }));
     server.goalList = async (query) => page(server.goals, query);
+    fireEvent.click(screen.getByRole('button', { name: 'Change goal' }));
     fireEvent.click(screen.getByRole('button', { name: 'Retry goals' })); await flush();
     expect(screen.getByRole('option', { name: 'Retirement' })).toBeInTheDocument();
   });
@@ -326,34 +347,42 @@ describe('portfolio list creation and financial summary', () => {
 describe('exact manually dated cash and trade transactions', () => {
   it('defaults both dates to today UTC and submits exact deposit, withdrawal, buy and sell strings without ledger calculation', async () => {
     const server = mockServer(); await open();
-    expect(screen.getByLabelText('Trade date (UTC)')).toHaveValue('2026-09-24');
-    expect(screen.getByLabelText('Cash date (UTC)')).toHaveValue('2026-09-24'); expect(writes()).toHaveLength(0);
+    expect(dialog()).not.toHaveAttribute('open');
+    expect(screen.queryByRole('form', { name: 'Add transaction' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'Rename portfolio' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'Assign portfolio goal' })).not.toBeInTheDocument();
+    addTransaction(); expect(screen.getByLabelText('Transaction date (UTC)')).toHaveValue('2026-09-24'); expect(writes()).toHaveLength(0);
     change('Amount (EUR)', '9007199254740993.01'); await submit(cashForm());
+    expect(dialog()).not.toHaveAttribute('open'); addTransaction('withdrawal');
     expect(writes()[0][1].body).toEqual({ client_id: expect.any(String), date: '2026-09-24', type: 'deposit', amount_eur: '9007199254740993.01', currency: 'EUR' });
-    change('Cash movement type', 'withdrawal'); change('Cash date (UTC)', '2020-02-29'); change('Amount (EUR)', '000123.4'); await submit(cashForm());
+    change('Transaction date (UTC)', '2020-02-29'); change('Amount (EUR)', '000123.4'); await submit(cashForm());
+    expect(dialog()).not.toHaveAttribute('open'); addTransaction('buy');
+    expect(screen.getByLabelText('Transaction date (UTC)')).toHaveValue('2026-09-24');
     expect(writes()[1][1].body).toEqual({ client_id: expect.any(String), date: '2020-02-29', type: 'withdrawal', amount_eur: '123.40', currency: 'EUR' });
-    fillTrade({ Quantity: '9007199254740993.12345678', 'Trade date (UTC)': '2020-01-02', 'Commission (EUR, optional)': '1.25' }); await submit(tradeForm());
+    fillTrade({ Quantity: '9007199254740993.12345678', 'Transaction date (UTC)': '2020-01-02', 'Commission (EUR, optional)': '1.25' }); await submit(tradeForm());
+    expect(dialog()).not.toHaveAttribute('open'); addTransaction('sell');
     expect(writes()[2][1].body).toEqual({ client_id: expect.any(String), date: '2020-01-02', type: 'buy', instrument_id: A, quantity: '9007199254740993.12345678', price_eur: '123.12345678', commission_eur: '1.25' });
-    change('Trade type', 'sell'); fillTrade({ Quantity: '0.00000001', 'Average execution price (EUR)': '1.00000001' }); await submit(tradeForm());
+    fillTrade({ Quantity: '0.00000001', 'Average execution price (EUR)': '1.00000001' }); await submit(tradeForm());
     expect(writes()[3][1].body).toEqual({ client_id: expect.any(String), date: '2026-09-24', type: 'sell', instrument_id: A, quantity: '0.00000001', price_eur: '1.00000001', commission_eur: '0.00' });
     expect(new Set(writes().map(([, options]) => options.body.client_id)).size).toBe(4);
     expect(server.transactions).toHaveLength(4); expect(screen.getByText('Sell saved.')).toBeInTheDocument();
     expect(summaryValue('Cash')).toHaveTextContent('€1,000.00'); // server fixture, never inferred from submitted cash
-    expect(within(screen.getByRole('table', { name: /Transactions ·/ })).getAllByRole('row')).toHaveLength(5);
+    transactionsTab(); expect(within(screen.getByRole('table', { name: /Transactions ·/ })).getAllByRole('row')).toHaveLength(5);
     expect(request.mock.calls.some(([path]) => path.includes('/instruments/acquired'))).toBe(false);
   });
 
   it('discloses ledger correction rules before saving and links empty EUR choices to acquisition and currency settings', async () => {
-    const server = mockServer(); server.instruments = []; await open();
+    const server = mockServer(); server.instruments = []; await open(); addTransaction('buy');
     expect(screen.getByRole('link', { name: 'Add an ETF' })).toHaveAttribute('href', '#/add');
     expect(screen.getByRole('link', { name: 'your ETFs' })).toHaveAttribute('href', '#/');
     expect(screen.getByText(/set its price currency to EUR/)).toBeInTheDocument();
-    for (const form of [cashForm(), tradeForm()]) {
-      const notice = within(form).getByText(/Saved entries cannot be edited/);
+    for (const type of ['buy', 'deposit']) {
+      transactionType(type);
+      const form = transactionForm(), notice = within(form).getByText(/Saved entries cannot be edited/);
       expect(notice).toHaveTextContent('can be removed from transaction history if the remaining cash and holdings stay non-negative');
       expect(notice).toHaveTextContent('Dividends, splits and other corporate actions are not processed');
       expect(form).toHaveAttribute('aria-describedby', notice.id);
-      expect(notice.compareDocumentPosition(within(form).getByRole('button', { name: /Save/ })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(notice.compareDocumentPosition(within(form).getByRole('button', { name: 'Save transaction' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
     expect(writes()).toHaveLength(0);
   });
@@ -361,21 +390,22 @@ describe('exact manually dated cash and trade transactions', () => {
   it('loads paginated EUR instruments and permits selling held snapshots when inventory is unavailable', async () => {
     const server = mockServer();
     server.instruments = Array.from({ length: 101 }, (_, i) => ({ ...instrument, instrument_id: `IE${String(i).padStart(10, '0')}`, name: `Fund ${i}` }));
-    await open(); expect(screen.getByRole('option', { name: /Fund 100 ·/ })).toBeInTheDocument();
+    await open(); addTransaction('buy'); expect(screen.getByRole('option', { name: /Fund 100 ·/ })).toBeInTheDocument();
     expect(request).toHaveBeenCalledWith('/portfolio-instruments?limit=100&offset=100', expect.anything());
     await navigate(listRoute);
     server.instrumentList = async () => { throw new Error('Inventory unavailable.'); };
-    server.details.set(pid, snapshot(metadata(), { positions: [position({ instrument: held })] })); await navigate(detailRoute);
+    server.details.set(pid, snapshot(metadata(), { positions: [position({ instrument: held })] })); await navigate(detailRoute); addTransaction('buy');
     expect(screen.getByText('Inventory unavailable.')).toHaveAttribute('role', 'alert');
     expect(screen.queryByRole('option', { name: /Retired ETF/ })).not.toBeInTheDocument();
-    change('Trade type', 'sell'); fillTrade({ 'Trade instrument': B, Quantity: '1' }); await submit(tradeForm());
+    transactionType('sell'); expect(screen.getByRole('option', { name: /Retired ETF/ })).toBeInTheDocument();
+    fillTrade({ 'Trade instrument': B, Quantity: '1' }); await submit(tradeForm());
     expect(writes()[0][1].body).toMatchObject({ type: 'sell', instrument_id: B, quantity: '1' });
     expect(screen.getByText('Sell saved.')).toBeInTheDocument();
   });
 
   it('disables pending submissions and reuses client IDs for failed unchanged payloads, including edit-and-revert', async () => {
     const server = mockServer(), pending = deferred(); server.save = () => pending.promise;
-    await open(); fillTrade(); await submit(tradeForm());
+    await open(); addTransaction('buy'); fillTrade(); await submit(tradeForm());
     const first = writes()[0][1].body;
     expect(first.client_id).toMatch(/^[0-9a-f-]{36}$/i);
     expect(within(tradeForm()).getByRole('button', { name: 'Saving…' })).toBeDisabled();
@@ -390,64 +420,176 @@ describe('exact manually dated cash and trade transactions', () => {
     change('Quantity', first.quantity); await submit(tradeForm()); expect(writes()[3][1].body).toEqual(first);
     await act(async () => { await vi.advanceTimersByTimeAsync(10000); }); expect(writes()).toHaveLength(4);
     server.save = async (body) => ({ ...body, id: 'saved', instrument, sequence: 1, created_at: '2026-09-24T00:00:00Z' });
-    await submit(tradeForm()); expect(writes()[4][1].body).toEqual(first); expect(screen.getByLabelText('Quantity')).toHaveValue('');
+    await submit(tradeForm()); expect(writes()[4][1].body).toEqual(first); expect(dialog()).not.toHaveAttribute('open');
+    addTransaction('buy'); expect(screen.getByLabelText('Quantity')).toHaveValue('');
     fillTrade(); await submit(tradeForm()); expect(writes()[5][1].body.client_id).not.toBe(first.client_id);
   });
 
   it('validates a missing instrument, cash date and portfolio name before submitting', async () => {
-    mockServer(); await open();
+    mockServer(); await open(); addTransaction('buy');
     await submit(tradeForm()); expect(screen.getByRole('alert')).toHaveTextContent('Choose an available EUR instrument');
-    change('Cash date (UTC)', ''); change('Amount (EUR)', '10'); await submit(cashForm());
+    transactionType('deposit'); change('Transaction date (UTC)', ''); change('Amount (EUR)', '10'); await submit(cashForm());
     expect(within(cashForm()).getByRole('alert')).toHaveTextContent('valid transaction date');
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit portfolio name' }));
     change('Portfolio name', '   '); await submit(settings());
-    expect(within(settings()).getByRole('alert')).toHaveTextContent('Enter a portfolio name'); expect(writes()).toHaveLength(0);
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a portfolio name'); expect(writes()).toHaveLength(0);
   });
 
   it('keeps independent form drafts and pending IDs intact while another transaction refreshes the portfolio', async () => {
     const server = mockServer(), save = server.save;
     server.save = async (body) => { if (body.type === 'buy') throw new Error('Insufficient cash.'); return save(body); };
-    await open(); fillTrade({ 'Trade date (UTC)': '2020-02-29', 'Commission (EUR, optional)': '1.00' });
+    await open(); addTransaction('buy'); fillTrade({ 'Transaction date (UTC)': '2020-02-29', 'Commission (EUR, optional)': '1.00' });
     await submit(tradeForm()); const retryBody = writes()[0][1].body;
-    change('Cash date (UTC)', '2020-01-01'); change('Amount (EUR)', '500'); await submit(cashForm());
+    transactionType('deposit'); change('Transaction date (UTC)', '2020-01-01'); change('Amount (EUR)', '500'); await submit(cashForm());
+    expect(dialog()).not.toHaveAttribute('open'); addTransaction('buy');
     expect(screen.getByLabelText('Quantity')).toHaveValue('1.25000001');
-    expect(screen.getByLabelText('Trade date (UTC)')).toHaveValue('2020-02-29');
+    expect(screen.getByLabelText('Transaction date (UTC)')).toHaveValue('2020-02-29');
     expect(screen.getByLabelText('Commission (EUR, optional)')).toHaveValue('1.00');
     server.save = save; await submit(tradeForm()); expect(writes()[2][1].body).toEqual(retryBody);
   });
 
   it('retains an uncertain cash client ID even if the response is malformed', async () => {
-    const server = mockServer(); server.save = async () => ({ id: 'bad' }); await open();
+    const server = mockServer(); server.save = async () => ({ id: 'bad' }); await open(); addTransaction();
     change('Amount (EUR)', '10'); await submit(cashForm()); expect(screen.getByRole('alert')).toHaveTextContent('Unexpected response');
     await submit(cashForm()); expect(writes()[1][1].body).toEqual(writes()[0][1].body);
   });
 
   it.each(['0', '-1', '1.001', '1e3', 'NaN', ''])('validates cash amount %j without a write', async (value) => {
-    mockServer(); await open(); change('Amount (EUR)', value); await submit(cashForm());
+    mockServer(); await open(); addTransaction(); change('Amount (EUR)', value); await submit(cashForm());
     expect(screen.getByRole('alert')).toHaveTextContent('positive cash amount'); expect(writes()).toHaveLength(0);
   });
   it.each([
     ['Quantity', '0', 'positive quantity'], ['Quantity', '1.123456789', 'positive quantity'], ['Average execution price (EUR)', '-1', 'positive quantity'],
     ['Average execution price (EUR)', '1e2', 'positive quantity'], ['Commission (EUR, optional)', '-1', 'non-negative commission'], ['Commission (EUR, optional)', '0.001', 'non-negative commission'],
-    ['Trade date (UTC)', '2026-09-25', 'valid transaction date'], ['Trade date (UTC)', '', 'valid transaction date'],
+    ['Transaction date (UTC)', '2026-09-25', 'valid transaction date'], ['Transaction date (UTC)', '', 'valid transaction date'],
   ])('validates %s=%j without a write', async (label, value, message) => {
-    mockServer(); await open(); fillTrade({ [label]: value }); await submit(tradeForm());
+    mockServer(); await open(); addTransaction('buy'); fillTrade({ [label]: value }); await submit(tradeForm());
     expect(screen.getByRole('alert')).toHaveTextContent(message); expect(writes()).toHaveLength(0);
   });
 
   it('shows backend long-only and cash-funding validation errors without clearing inputs', async () => {
     const server = mockServer(); server.save = async (body) => { throw new Error(body.type === 'buy' ? 'Insufficient cash on transaction date.' : 'Cannot sell more than held.'); };
-    await open(); fillTrade(); await submit(tradeForm());
+    await open(); addTransaction('buy'); fillTrade(); await submit(tradeForm());
     expect(screen.getByRole('alert')).toHaveTextContent('Insufficient cash on transaction date.');
     expect(screen.getByLabelText('Quantity')).toHaveValue('1.25000001');
-    change('Trade type', 'sell'); await submit(tradeForm()); expect(screen.getByRole('alert')).toHaveTextContent('Cannot sell more than held.');
+    transactionType('sell'); await submit(tradeForm()); expect(screen.getByRole('alert')).toHaveTextContent('Cannot sell more than held.');
     expect(writes()[1][1].body.client_id).not.toBe(writes()[0][1].body.client_id);
+  });
+});
+
+describe('portfolio detail interactions', () => {
+  it('uses keyboard-operable tabs with shared summary and mounted but hidden panels', async () => {
+    const server = mockServer(); server.transactions = [cashEvent(1)]; await open();
+    const positions = screen.getByRole('tab', { name: 'Positions' }), transactions = screen.getByRole('tab', { name: 'Transactions' });
+    expect(positions).toHaveAttribute('aria-selected', 'true'); expect(positions).toHaveAttribute('tabindex', '0');
+    expect(transactions).toHaveAttribute('aria-selected', 'false'); expect(transactions).toHaveAttribute('tabindex', '-1');
+    expect(document.getElementById('portfolio-transactions-panel')).toHaveAttribute('hidden');
+    expect(document.getElementById('portfolio-positions-panel')).not.toHaveAttribute('hidden');
+    positions.focus(); fireEvent.keyDown(positions, { key: 'ArrowRight' });
+    expect(transactions).toHaveFocus(); expect(transactions).toHaveAttribute('aria-selected', 'true');
+    expect(document.getElementById('portfolio-positions-panel')).toHaveAttribute('hidden');
+    expect(screen.getByRole('table', { name: /Transactions ·/ })).toBeInTheDocument();
+    expect(summaryValue('Cash')).toHaveTextContent('€1,000.00');
+    fireEvent.keyDown(transactions, { key: 'Home' }); expect(positions).toHaveFocus();
+    fireEvent.keyDown(positions, { key: 'End' }); expect(transactions).toHaveFocus();
+    fireEvent.keyDown(transactions, { key: 'ArrowLeft' }); expect(positions).toHaveFocus();
+  });
+
+  it('retains transaction pagination and the shared summary when switching tabs', async () => {
+    const server = mockServer(); server.transactions = Array.from({ length: 21 }, (_, i) => cashEvent(21 - i));
+    await open(); const summary = screen.getByRole('region', { name: 'Portfolio summary' });
+    transactionsTab(); fireEvent.click(within(screen.getByRole('navigation', { name: 'Transactions pagination' })).getByRole('button', { name: 'Next' })); await flush();
+    const reads = request.mock.calls.length;
+    fireEvent.click(screen.getByRole('tab', { name: 'Positions' }));
+    expect(screen.queryByRole('table', { name: /Transactions ·/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Portfolio summary' })).toBe(summary);
+    transactionsTab(); expect(screen.getByText('21–21 of 21')).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Portfolio summary' })).toBe(summary);
+    expect(request.mock.calls).toHaveLength(reads); expect(writes()).toHaveLength(0);
+  });
+
+  it.each(['name', 'goal'])('allows canceling a %s draft after a portfolio refresh fails but blocks stale saves', async (editor) => {
+    const server = mockServer(); await open();
+    fireEvent.click(screen.getByRole('button', { name: editor === 'name' ? 'Edit portfolio name' : 'Assign goal' }));
+    const form = screen.getByRole('form', { name: editor === 'name' ? 'Rename portfolio' : 'Assign portfolio goal' });
+    server.detail = async () => { throw new Error('Portfolio refresh unavailable.'); };
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolio' })); await flush();
+    expect(screen.getByRole('alert')).toHaveTextContent('Portfolio refresh unavailable.');
+    expect(within(form).getByRole('button', { name: editor === 'name' ? 'Save name' : 'Save goal' })).toBeDisabled();
+    await submit(form); expect(writes()).toHaveLength(0);
+    expect(within(form).getByRole('button', { name: 'Cancel' })).toBeEnabled();
+    fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }));
+    expect(form).not.toBeInTheDocument();
+  });
+
+  it('retains uncertain trade and cash retry IDs, their separate dates and drafts across cancel/reopen', async () => {
+    const server = mockServer(); server.save = async () => { throw new Error('Outcome unknown.'); }; await open();
+    addTransaction('buy'); fillTrade({ 'Transaction date (UTC)': '2020-02-29' }); await submit(tradeForm());
+    const trade = writes()[0][1].body;
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'Cancel' }));
+    expect(dialog()).not.toHaveAttribute('open'); addTransaction('deposit');
+    expect(screen.getByLabelText('Transaction date (UTC)')).toHaveValue('2026-09-24');
+    change('Transaction date (UTC)', '2020-01-01'); change('Amount (EUR)', '25'); await submit(cashForm());
+    const cash = writes()[1][1].body;
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'Cancel' }));
+    addTransaction('buy'); expect(screen.getByLabelText('Quantity')).toHaveValue('1.25000001');
+    expect(screen.getByLabelText('Transaction date (UTC)')).toHaveValue('2020-02-29');
+    await submit(tradeForm()); expect(writes()[2][1].body).toEqual(trade);
+    transactionType('deposit'); expect(screen.getByLabelText('Transaction date (UTC)')).toHaveValue('2020-01-01');
+    expect(screen.getByLabelText('Amount (EUR)')).toHaveValue('25');
+    await submit(cashForm()); expect(writes()[3][1].body).toEqual(cash);
+  });
+
+  it('blocks cancel and Escape while a transaction is pending, then allows Escape after failure', async () => {
+    const server = mockServer(), pending = deferred(); server.save = () => pending.promise; await open();
+    addTransaction(); change('Amount (EUR)', '10'); await submit(cashForm());
+    expect(within(dialog()).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    const cancel = fireEvent(dialog(), new Event('cancel', { cancelable: true })); expect(cancel).toBe(false); expect(dialog()).toHaveAttribute('open');
+    await act(async () => pending.reject(new Error('Outcome unknown.')));
+    fireEvent(dialog(), new Event('cancel', { cancelable: true })); expect(dialog()).not.toHaveAttribute('open');
+    addTransaction(); expect(screen.getByLabelText('Amount (EUR)')).toHaveValue('10');
+  });
+
+  it.each(['user', 'request', 'status', 'route'])('ignores a late metadata save after %s changes', async (kind) => {
+    const server = mockServer(), pending = deferred(); server.patch = () => pending.promise;
+    const view = render(<PortfolioTracker customerId={cid} portfolioId={pid} />); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit portfolio name' }));
+    change('Portfolio name', 'Private rename'); await submit(settings());
+    const signal = writes()[0][1].signal;
+    if (kind === 'user') auth.user = { id: 'user-b' };
+    if (kind === 'request') auth.request = vi.fn(server.handle);
+    if (kind === 'status') auth.status = 'anonymous';
+    view.rerender(<PortfolioTracker customerId={cid} portfolioId={kind === 'route' ? undefined : pid} />); await flush();
+    expect(signal.aborted).toBe(true);
+    const count = request.mock.calls.length;
+    await act(async () => pending.resolve(metadata({ name: 'Private rename' })));
+    expect(request.mock.calls).toHaveLength(count);
+    expect(screen.queryByText('Private rename')).not.toBeInTheDocument();
+    expect(screen.queryByText('Portfolio name saved.')).not.toBeInTheDocument();
+  });
+
+  it('cancels metadata edits without writes and retains the full name and goal PATCH contract', async () => {
+    mockServer(); await open(); const rename = screen.getByRole('button', { name: 'Edit portfolio name' });
+    fireEvent.click(rename); change('Portfolio name', 'Discarded');
+    fireEvent.click(within(settings()).getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: 'Edit portfolio name' })).toHaveFocus();
+    expect(screen.queryByRole('form', { name: 'Rename portfolio' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Assign goal' }));
+    change('Linked goal (optional)', goal.id);
+    fireEvent.click(within(screen.getByRole('form', { name: 'Assign portfolio goal' })).getByRole('button', { name: 'Cancel' }));
+    expect(writes()).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Assign goal' }));
+    expect(screen.getByLabelText('Linked goal (optional)')).toHaveValue('');
+    change('Linked goal (optional)', goal.id); await submit(screen.getByRole('form', { name: 'Assign portfolio goal' }));
+    expect(writes()[0][1].body).toEqual({ name: 'Long term', goal_id: goal.id });
   });
 });
 
 describe('transaction removal', () => {
   const history = () => within(screen.getByRole('region', { name: 'Transaction history' }));
   const confirmation = () => screen.getByRole('form', { name: 'Remove transaction' });
-  async function selectFirst() { fireEvent.click(history().getAllByRole('button', { name: /^Remove / })[0]); await flush(); }
+  async function selectFirst() { transactionsTab(); fireEvent.click(history().getAllByRole('button', { name: /^Remove / })[0]); await flush(); }
 
   it('requires confirmation, supports cancel, and refreshes history, holdings and authoritative balances', async () => {
     const server = mockServer(); server.transactions = [cashEvent(1)];
@@ -457,7 +599,8 @@ describe('transaction removal', () => {
       server.details.set(pid, snapshot(metadata(), { cash_eur: '42.00', positions: [], equity_eur: '42.00', realized_pnl_eur: '3.00' }));
       return result;
     };
-    await open(); fillTrade(); change('Amount (EUR)', '25'); await selectFirst();
+    await open(); addTransaction('buy'); fillTrade(); transactionType('deposit'); change('Amount (EUR)', '25');
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'Cancel' })); transactionsTab(); await selectFirst();
     expect(confirmation()).toHaveTextContent('Deposit · 2026-09-23 · €100.00');
     expect(within(confirmation()).getByRole('heading')).toHaveFocus();
     expect(confirmation()).toHaveTextContent('It cannot be undone'); expect(writes()).toHaveLength(0);
@@ -470,8 +613,10 @@ describe('transaction removal', () => {
     expect(history().getByRole('heading', { name: 'Transaction history' })).toHaveFocus();
     expect(history().getByText(/No transactions yet/)).toBeInTheDocument();
     expect(summaryValue('Cash')).toHaveTextContent('€42.00'); expect(summaryValue('Realized P&L')).toHaveTextContent('€3.00');
-    expect(screen.getByText('No open positions.')).toBeInTheDocument();
-    expect(screen.getByLabelText('Quantity')).toHaveValue('1.25000001'); expect(screen.getByLabelText('Amount (EUR)')).toHaveValue('25');
+    fireEvent.click(screen.getByRole('tab', { name: 'Positions' }));
+    expect(screen.getByText('No open positions.')).toBeVisible();
+    addTransaction(); expect(screen.getByLabelText('Amount (EUR)')).toHaveValue('25');
+    transactionType('buy'); expect(screen.getByLabelText('Quantity')).toHaveValue('1.25000001');
   });
 
   it('shows trade details and keeps failed removals visible with a safe explicit retry', async () => {
@@ -493,7 +638,7 @@ describe('transaction removal', () => {
     const server = mockServer(), pending = deferred(), original = server.remove;
     server.transactions = Array.from({ length: 21 }, (_, i) => cashEvent(21 - i));
     server.remove = () => pending.promise;
-    await open(); fireEvent.click(within(screen.getByRole('navigation', { name: 'Transactions pagination' })).getByRole('button', { name: 'Next' })); await flush();
+    await open(); transactionsTab(); fireEvent.click(within(screen.getByRole('navigation', { name: 'Transactions pagination' })).getByRole('button', { name: 'Next' })); await flush();
     await selectFirst(); const form = confirmation(); await submit(form); await submit(form);
     expect(writes()).toHaveLength(1); expect(within(form).getByRole('button', { name: 'Removing…' })).toBeDisabled();
     expect(within(form).getByRole('button', { name: 'Cancel' })).toBeDisabled();
@@ -561,9 +706,11 @@ describe('valuation, transaction pagination and read failures', () => {
     expect(within(positions).getByText('€100.20')).toBeInTheDocument();
     expect(within(positions).getByText('€9,007,199,254,740,993.12345678')).toBeInTheDocument();
     expect(within(positions).getByText('€123.4567')).toBeInTheDocument();
-    expect(within(screen.getByRole('table', { name: /Transactions ·/ })).getByText('€123.40')).toBeInTheDocument();
-    expect(screen.getAllByText('Scroll horizontally to view all columns.')).toHaveLength(2);
-    expect(screen.getByRole('region', { name: 'Positions table' })).toHaveAccessibleDescription('Scroll horizontally to view all columns.');
+    transactionsTab(); expect(within(screen.getByRole('table', { name: /Transactions ·/ })).getByText('€123.40')).toBeInTheDocument();
+    expect(document.getElementById('portfolio-positions-panel')).toHaveAttribute('hidden');
+    expect(document.getElementById('portfolio-positions-scroll')).toHaveTextContent('Scroll horizontally to view all columns.');
+    expect(document.getElementById('portfolio-transactions-scroll')).toHaveTextContent('Scroll horizontally to view all columns.');
+    expect(screen.getByRole('region', { name: 'Positions table', hidden: true })).toHaveAccessibleDescription('Scroll horizontally to view all columns.');
     expect(screen.getByRole('region', { name: 'Transactions table' })).toHaveAccessibleDescription('Scroll horizontally to view all columns.');
     expect(summaryValue('Total unrealized P&L')).toHaveClass('return-positive');
   });
@@ -571,7 +718,7 @@ describe('valuation, transaction pagination and read failures', () => {
   it('paginates transaction history and retries an explicit read failure without any write', async () => {
     const server = mockServer(); server.transactions = Array.from({ length: 21 }, (_, i) => cashEvent(21 - i));
     const original = server.transactionList; server.transactionList = async () => { throw new Error('History unavailable.'); };
-    await open(); expect(screen.getByText('History unavailable.')).toHaveAttribute('role', 'alert');
+    await open(); transactionsTab(); expect(screen.getByText('History unavailable.')).toHaveAttribute('role', 'alert');
     server.transactionList = original; fireEvent.click(screen.getByRole('button', { name: 'Retry transactions' })); await flush();
     const table = () => screen.getByRole('table', { name: /Transactions ·/ });
     expect(within(table()).getAllByRole('row')).toHaveLength(21);
@@ -587,7 +734,7 @@ describe('valuation, transaction pagination and read failures', () => {
   it('fails visibly on malformed pages and never exposes a silently incomplete instrument selector', async () => {
     const server = mockServer(); server.instrumentList = async (query) => Number(query.get('offset')) === 0
       ? { items: [instrument], total: 2, limit: 100, offset: 0 } : { items: [], total: 2, limit: 100, offset: 1 };
-    await open(); expect(screen.getByRole('alert')).toHaveTextContent('could not be loaded completely');
+    await open(); addTransaction('buy'); expect(screen.getByRole('alert')).toHaveTextContent('could not be loaded completely');
     expect(screen.queryByRole('option', { name: /World ETF/ })).not.toBeInTheDocument();
     server.instrumentList = async (query) => page([instrument], query); fireEvent.click(screen.getByRole('button', { name: 'Retry instruments' })); await flush();
     expect(screen.getByRole('option', { name: /World ETF/ })).toBeInTheDocument();
@@ -641,7 +788,7 @@ describe('route and session isolation', () => {
   it.each(['user', 'request', 'status', 'route'])('resets standalone state and aborts an old transaction on %s change', async (kind) => {
     const server = mockServer(), pending = deferred(); server.save = () => pending.promise;
     const view = render(<PortfolioTracker customerId={cid} portfolioId={pid} />); await flush();
-    change('Amount (EUR)', '123.45'); await submit(cashForm()); const savedBody = writes()[0][1].body, signal = writes()[0][1].signal;
+    addTransaction(); change('Amount (EUR)', '123.45'); await submit(cashForm()); const savedBody = writes()[0][1].body, signal = writes()[0][1].signal;
     if (kind === 'user') auth.user = { id: 'user-b' };
     if (kind === 'request') auth.request = vi.fn(server.handle);
     if (kind === 'status') auth.status = 'anonymous';
@@ -651,6 +798,6 @@ describe('route and session isolation', () => {
     expect(screen.queryByText('Deposit saved.')).not.toBeInTheDocument();
     if (kind === 'route') expect(screen.getByRole('button', { name: 'Add portfolio' })).toBeInTheDocument();
     else if (kind === 'status') { expect(screen.getByRole('status')).toHaveTextContent('Sign in'); expect(screen.queryByRole('form')).not.toBeInTheDocument(); }
-    else expect(screen.getByLabelText('Amount (EUR)')).toHaveValue('');
+    else { addTransaction(); expect(screen.getByLabelText('Amount (EUR)')).toHaveValue(''); }
   });
 });
