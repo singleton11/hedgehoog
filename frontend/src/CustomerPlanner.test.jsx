@@ -154,6 +154,7 @@ const result = () => screen.queryByRole('region', { name: 'Goal simulation resul
 const calculate = () => screen.getByRole('button', { name: 'Calculate monthly contribution' });
 const saveButton = () => screen.queryByRole('button', { name: 'Save simulation' });
 function change(label, value) { fireEvent.change(screen.getByLabelText(label), { target: { value } }); }
+function addCustomer() { fireEvent.click(screen.getByRole('button', { name: 'Add customer' })); }
 async function flush() { await act(async () => {}); }
 async function advance(ms = 5) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
 async function open(route = '#/goal') {
@@ -278,16 +279,49 @@ describe('customer portfolio summary table', () => {
 });
 
 describe('customers, fixed goals and instrument shortcuts', () => {
+  it('only opens customer creation on demand and discards cancelled drafts and errors', async () => {
+    mockServer(); await open();
+    const trigger = screen.getByRole('button', { name: 'Add customer' });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('form', { name: 'New customer' })).not.toBeInTheDocument();
+    addCustomer();
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(trigger).toBeDisabled();
+    expect(screen.getByLabelText('Customer name')).toHaveFocus();
+    expect(screen.getByRole('form', { name: 'New customer' })).toHaveAttribute('id', trigger.getAttribute('aria-controls'));
+    expect(screen.getByRole('table', { name: 'Customer portfolio summary' })).toBeInTheDocument();
+    change('Customer name', '   ');
+    fireEvent.submit(screen.getByRole('form', { name: 'New customer' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a customer name.');
+    change('Customer name', 'Discard this draft');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('form', { name: 'New customer' })).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(trigger).toHaveFocus();
+    addCustomer();
+    expect(screen.getByLabelText('Customer name')).toHaveValue('');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(posts()).toHaveLength(0);
+    expect(reads(pagePath('/customers'))).toHaveLength(1);
+  });
+
   it('creates a name-only customer and multiple named goals without calculating or saving', async () => {
     const server = mockServer({ seed: false }); await open();
     expect(screen.getByText(/No customers yet/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Customers', exact: true })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('form', { name: 'New customer' })).not.toBeInTheDocument();
+    addCustomer();
     expect(within(screen.getByRole('form', { name: 'New customer' })).getAllByRole('textbox')).toHaveLength(1);
     expect(screen.queryByLabelText('Target (EUR)')).not.toBeInTheDocument();
     change('Customer name', '  Ada Lovelace  '); fireEvent.click(screen.getByRole('button', { name: 'Create customer' })); await flush();
     const created = [...server.customers.values()][0];
     expect(posts()[0]).toEqual(['/customers', expect.objectContaining({ body: { name: 'Ada Lovelace' }, method: 'POST', signal: expect.any(AbortSignal) })]);
+    expect(screen.queryByRole('form', { name: 'New customer' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add customer' })).toHaveFocus();
+    expect(reads(pagePath('/customers'))).toHaveLength(2);
+    addCustomer();
     expect(screen.getByLabelText('Customer name')).toHaveValue('');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(window.location.hash).toBe('#/goal');
     await follow(/Ada Lovelace/);
     expect(screen.getByRole('link', { name: 'Portfolios', exact: true })).toHaveAttribute('aria-current', 'page');
@@ -342,10 +376,12 @@ describe('customers, fixed goals and instrument shortcuts', () => {
 
   it('blocks duplicate creation while busy and retries a failed creation only explicitly', async () => {
     const server = mockServer({ seed: false }), pending = deferred();
-    server.createCustomer = () => pending.promise; await open();
+    server.createCustomer = () => pending.promise; await open(); addCustomer();
     change('Customer name', 'Alice'); fireEvent.click(screen.getByRole('button', { name: 'Create customer' })); await flush();
     expect(screen.getByLabelText('Customer name')).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Creating…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Add customer' })).toBeDisabled();
     fireEvent.submit(screen.getByRole('form', { name: 'New customer' })); expect(posts()).toHaveLength(1);
     await act(async () => pending.reject(new Error('Could not create customer.')));
     expect(screen.getByRole('alert')).toHaveTextContent('Could not create customer');
@@ -354,6 +390,7 @@ describe('customers, fixed goals and instrument shortcuts', () => {
     server.createCustomer = async (body) => { server.customers.set(customer.id, { ...customer, ...body }); return server.customers.get(customer.id); };
     fireEvent.click(screen.getByRole('button', { name: 'Create customer' })); await flush();
     expect(screen.getByRole('link', { name: /Alice/ })).toBeInTheDocument(); expect(posts()).toHaveLength(2);
+    expect(screen.queryByRole('form', { name: 'New customer' })).not.toBeInTheDocument();
   });
 });
 
@@ -738,10 +775,12 @@ describe('route, authentication and request identity isolation', () => {
 
   it.each(['user', 'request'])('aborts pending creation on %s change and never adds a late customer to the new session', async (identity) => {
     const server = mockServer({ seed: false }), pending = deferred(); server.createCustomer = () => pending.promise;
-    const view = render(<CustomerPlanner />); await flush(); change('Customer name', 'Private draft');
+    const view = render(<CustomerPlanner />); await flush(); addCustomer(); change('Customer name', 'Private draft');
     fireEvent.click(screen.getByRole('button', { name: 'Create customer' })); await flush(); const options = posts()[0][1];
     if (identity === 'user') auth.user = { id: 'user-b' }; else auth.request = vi.fn(server.handle);
     view.rerender(<CustomerPlanner />); await flush(); expect(options.signal.aborted).toBe(true);
+    expect(screen.queryByRole('form', { name: 'New customer' })).not.toBeInTheDocument();
+    addCustomer();
     expect(screen.getByLabelText('Customer name')).toHaveValue('');
     await act(async () => pending.resolve({ id: uid(20), name: 'Private draft' }));
     expect(screen.queryByRole('link', { name: /Private draft/ })).not.toBeInTheDocument(); expect(posts()).toHaveLength(1);

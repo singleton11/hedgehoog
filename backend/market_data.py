@@ -65,6 +65,8 @@ def ensure_indexes(db):
     db.quotes.create_index([("instrument_id", ASCENDING), ("symbol", ASCENDING), ("exchange", ASCENDING), ("date", ASCENDING), ("collected_at", DESCENDING)])
     db.quotes.create_index([("job_id", ASCENDING), ("date", ASCENDING)], unique=True)
     db.raw_eod_pages.create_index([("job_id", ASCENDING), ("offset", ASCENDING)], unique=True)
+    db.raw_split_pages.create_index([("job_id", ASCENDING), ("offset", ASCENDING)], unique=True)
+    db.split_snapshots.create_index([("instrument_id", ASCENDING), ("symbol", ASCENDING), ("exchange", ASCENDING), ("requested_at", DESCENDING), ("_id", DESCENDING)])
 
 
 def latest_catalogue(db, isin):
@@ -141,6 +143,11 @@ def acquired_instruments(db, limit=20, offset=0):
             "historical_year_start_date": statistics.get("historical_year_start_date"),
             "historical_year_end_date": statistics.get("historical_year_end_date"),
             "historical_year_price_basis": statistics.get("historical_year_price_basis"),
+            "historical_year_volatility": statistics.get("historical_year_volatility"),
+            "historical_year_volatility_start_date": statistics.get("historical_year_volatility_start_date"),
+            "historical_year_volatility_end_date": statistics.get("historical_year_volatility_end_date"),
+            "historical_year_volatility_price_basis": statistics.get("historical_year_volatility_price_basis"),
+            "historical_year_volatility_return_count": statistics.get("historical_year_volatility_return_count"),
         })
     return public({"items": items, "total": result["count"][0]["total"] if result["count"] else 0, "limit": limit, "offset": offset})
 
@@ -361,6 +368,10 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
         "_id": job_id, "instrument_id": isin, "listing": listing, "lookup_ticker": ticker,
         "requested_by": requested_by, "requested_at": utcnow(), "mode": actual_mode,
         "date_from": start.isoformat(), "date_to": end.isoformat(),
+        # Always refresh all actions, including on incremental/no-new-price
+        # updates and older-price backfills. Corrections may affect old quotes.
+        "splits_date_from": min(inception.isoformat(), dates[0]) if dates else inception.isoformat(),
+        "splits_date_to": max(inception.isoformat(), (utcnow().date() - timedelta(days=1)).isoformat()),
         "status": "queued", "active": True, "phase": "queued", "pages": 0, "rows": 0, "flagged_rows": 0, "unindexed_rows": 0, "calls": 0,
         "next_offset": 0, "expected_total": None, "started_at": None, "finished_at": None,
         "error": None, "warning": None,
@@ -535,6 +546,50 @@ def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
                     "next_offset": offset, "expected_total": pagination_integer(page, "total"),
                     "last_page_date": latest_date, "download_complete": not has_more_pages(page, offset),
                 }, {"pages": 1, "rows": len(rows), "unindexed_rows": unindexed})
+            from split_adjustments import split_events
+            # Legacy queued jobs also gain full-range split acquisition. Freeze
+            # the request range before the first call for deterministic replay.
+            if "splits_date_from" not in job:
+                dates = quote_dates(db, isin, listing)
+                inception = require_catalogue(db, isin)["inception_date"]
+                job = checkpoint({
+                    "splits_date_from": min(inception, dates[0]) if dates else inception,
+                    "splits_date_to": max(inception, (aware(job["requested_at"]).date() - timedelta(days=1)).isoformat()),
+                })
+            job = checkpoint({"phase": "splits"})
+            split_offset = job.get("next_split_offset", 0)
+            while not job.get("splits_complete"):
+                raw = db.raw_split_pages.find_one({"job_id": job_id, "offset": split_offset})
+                if raw is None:
+                    page = provider.splits_page(listing["symbol"], job["splits_date_from"], job["splits_date_to"], offset=split_offset)
+                    collected = utcnow()
+                    checkpoint()
+                    raw = db.raw_split_pages.find_one_and_update(
+                        {"job_id": job_id, "offset": split_offset}, {"$setOnInsert": {
+                            "instrument_id": isin, **listing, "provider": "marketstack",
+                            "job_id": job_id, "offset": split_offset, "collected_at": collected,
+                            "collection_date": collected.date().isoformat(), "data": page,
+                        }}, upsert=True, return_document=ReturnDocument.AFTER,
+                    )
+                page = raw["data"]
+                split_offset += len(page["data"])
+                total = pagination_integer(page, "total")
+                expected = job.get("expected_split_total")
+                if total is not None and (total < split_offset or (expected is not None and total != expected)):
+                    raise MarketstackError("inconsistent_split_history", "Marketstack changed split pagination totals. Retry market data; the unfinished range was not marked complete.")
+                total = total if total is not None else expected
+                if not page["data"] and total is not None and total > split_offset:
+                    raise MarketstackError("incomplete_split_history", "Marketstack ended split pagination before all actions were returned. Retry market data; the unfinished range was not marked complete.")
+                more = split_offset < total if total is not None else has_more_pages(page, split_offset)
+                job = checkpoint({"next_split_offset": split_offset, "expected_split_total": total, "splits_complete": not more})
+            if db.split_snapshots.find_one({"_id": job_id}) is None:
+                events = split_events(db.raw_split_pages.find({"job_id": job_id}).sort("offset", ASCENDING), listing,
+                                      job["splits_date_from"], job["splits_date_to"])
+                checkpoint()
+                db.split_snapshots.update_one({"_id": job_id}, {"$setOnInsert": {
+                    "instrument_id": isin, **listing, "collected_at": utcnow(), "requested_at": job["requested_at"],
+                    "date_from": job["splits_date_from"], "date_to": job["splits_date_to"], "events": events,
+                }}, upsert=True)
         # Derived analytics never rewrite provider evidence. Persist them before
         # reporting success; DB retries replay saved pages without provider calls.
         from return_statistics import refresh_statistics

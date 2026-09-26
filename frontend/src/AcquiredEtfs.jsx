@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
 import { collectionAgeDays, displayText } from './instruments.js';
-import { formatReturn, historicalReturnTitle, percent } from './ReturnStatistics.jsx';
+import { formatReturn, historicalReturnTitle, historicalVolatilityTitle, percent } from './ReturnStatistics.jsx';
 import useAcquiredUpdates, { updatePending } from './useAcquiredUpdates.js';
 import Icon from './Icon.jsx';
 
@@ -36,7 +36,7 @@ function UpdateConfirmation({ selection, onConfirm, onCancel }) {
     if (confirmed) onConfirm();
   }}>
     <h3 ref={heading} tabIndex={-1}>Update {selection.isin ? selection.name : `all ${selection.total} acquired ETFs`}?</h3>
-    <p>{selection.isin ? 'Refresh the saved profile and fetch new quotes.' : 'Update acquired ETFs across all pages, skipping those collected 0 days ago (less than 24 hours). Keep this page open until all requests are submitted.'} Saved listings are reused; older-history backfills are not requested.</p>
+    <p>{selection.isin ? 'Refresh the saved profile, split history and new quotes.' : 'Update acquired ETFs across all pages, skipping those collected 0 days ago (less than 24 hours). Keep this page open until all requests are submitted.'} Saved listings are reused; older-price backfills are not requested. Split history is refreshed for statistics and simulations, using at least one extra provider call per ETF; candles remain unadjusted.</p>
     <label className="checkbox-label"><input type="checkbox" required checked={confirmed}
       onChange={(event) => setConfirmed(event.target.checked)} />Allow {selection.isin ? 'this update' : 'these updates'} to use provider quota.</label>
     <div className="button-group"><button type="submit" disabled={!confirmed}>Confirm {selection.isin ? 'update' : 'update all'}</button>
@@ -136,12 +136,12 @@ export default function AcquiredEtfs() {
         <div className="table-heading"><h3>Fund overview</h3><span className="table-hint">Returns &amp; market data</span><span className="table-scroll-hint">Scroll for more →</span></div>
         <div className="acquired-table-scroll" role="region" aria-label="Acquired ETF data" tabIndex={0}>
           <table className="acquired-table">
-            <caption className="sr-only">Acquired ETFs, historical annual return, statistical annual return and volatility, and saved quote coverage</caption>
-            <colgroup span={2} /><colgroup span={1} /><colgroup span={2} /><colgroup span={2} /><colgroup span={1} />
+            <caption className="sr-only">Acquired ETFs, historical annual return and volatility, statistical annual return and volatility, and saved quote coverage</caption>
+            <colgroup span={2} /><colgroup span={2} /><colgroup span={2} /><colgroup span={2} /><colgroup span={1} />
             <thead>
               <tr>
                 <th scope="col" rowSpan={2}>ETF</th><th scope="col" rowSpan={2}>Saved listing</th>
-                <th id="acquired-historical" scope="colgroup" colSpan={1} className="statistic-group">Historical</th>
+                <th id="acquired-historical" scope="colgroup" colSpan={2} className="statistic-group">Historical</th>
                 <th id="acquired-statistical" scope="colgroup" colSpan={2} className="statistic-group">Statistical</th>
                 <th scope="col" rowSpan={2}>Saved quotes</th><th scope="col" rowSpan={2}>Profile collected</th>
                 <th scope="col" rowSpan={2} className="market-data-actions"><span>Market data</span>
@@ -152,8 +152,9 @@ export default function AcquiredEtfs() {
               </tr>
               <tr>
                 <th id="acquired-historical-return" headers="acquired-historical" scope="col" className="annual-statistic" title="Actual trailing 12-month price change: latest saved price ÷ year-ago price − 1. Not an annualized estimate.">Annual return</th>
+                <th id="acquired-historical-volatility" headers="acquired-historical" scope="col" className="annual-statistic" title="Trailing 12 months: sample standard deviation of daily log returns × √252 trading days, ending at the latest saved quote">Annual volatility</th>
                 <th id="acquired-statistical-return" headers="acquired-statistical" scope="col" className="annual-statistic" title="Average daily log return × 252 trading days">Annual return</th>
-                <th id="acquired-statistical-volatility" headers="acquired-statistical" scope="col" className="annual-statistic" title="Daily volatility × √252 trading days">Annual volatility</th>
+                <th id="acquired-statistical-volatility" headers="acquired-statistical" scope="col" className="annual-statistic" title="All saved history: daily volatility × √252 trading days">Annual volatility</th>
               </tr>
             </thead>
             <tbody>{page.items.map((item) => <tr key={item.instrument_id}>
@@ -163,6 +164,7 @@ export default function AcquiredEtfs() {
               </div></th>
               <td className="saved-listing">{item.listing?.symbol || 'Unknown'}<span className="muted">{item.listing?.exchange || 'Unknown MIC'}</span></td>
               <HistoricalYearReturn item={item} />
+              <td className="annual-statistic" headers="acquired-historical acquired-historical-volatility" title={historicalVolatilityTitle(item)}>{percent(item.historical_year_volatility)}</td>
               <ReturnCell value={item.annualized_mean_log_return} headers="acquired-statistical acquired-statistical-return" />
               <td className="annual-statistic" headers="acquired-statistical acquired-statistical-volatility">{percent(item.annualized_volatility)}</td>
               <td>{item.quote_count > 0 ? <>{item.quote_count.toLocaleString()} {item.quote_count === 1 ? 'quote' : 'quotes'}<span className="muted">{item.first_date} – {item.last_date}</span></>

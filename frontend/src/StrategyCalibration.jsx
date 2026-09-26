@@ -3,7 +3,7 @@ import { useAuth } from './Auth.jsx';
 import CalibrationChart from './CalibrationChart.jsx';
 import { formatEuros } from './goalProjection.js';
 import { useGoalStrategies } from './goalStrategies.js';
-import { percent } from './ReturnStatistics.jsx';
+import { percent, priceBasisLabel } from './ReturnStatistics.jsx';
 import StrategyParameters, { supportsParameter } from './StrategyParameters.jsx';
 import { calibrationRequest, DEFAULT_CALIBRATION_INPUTS, savedCalibrationInputs, validCalibrationHistory, validCalibrationResult, validCalibrationRunSummary } from './strategyCalibration.js';
 
@@ -124,7 +124,7 @@ function CalibrationResult({ result }) {
           <th scope="row">{forecast.scenario_id}</th><td>{formatEuros(forecast.goal_eur)}</td><td>{formatEuros(forecast.starting_capital_eur)}</td>
           <td>{formatEuros(forecast.monthly_contribution_eur)}</td><td>{forecast.horizon_months}</td><td>{percent(forecast.requested_probability)}</td>
           <td>{forecast.origin_date}</td><td>{forecast.goal_date}</td><td>{forecast.training_start_date}</td><td>{forecast.training_end_date}</td>
-          <td>{forecast.training_return_count}</td><td>{forecast.price_basis === 'adj_close' ? 'Adjusted close' : 'Unadjusted close'}</td>
+          <td>{forecast.training_return_count}</td><td>{priceBasisLabel(forecast.price_basis)}</td>
           <td>{percent(forecast.predicted_probability)}</td><td>{forecast.observed_success ? 'Yes' : 'No'}</td>
           <td>{formatEuros(forecast.terminal_value_eur)}</td><td>{forecast.valuation_date}</td>
         </tr>} />

@@ -113,7 +113,10 @@ const acquiredItem = (isin = A, extra = {}) => ({ ...item(isin), listing: { symb
   collected_at: '2026-09-17T12:00:00Z', quote_count: 42, first_date: '2020-01-01', last_date: '2026-09-16',
   annualized_mean_log_return: 0.1008, annualized_volatility: 0.1739,
   historical_year_return: 0.12, historical_year_start_date: '2025-09-16',
-  historical_year_end_date: '2026-09-16', historical_year_price_basis: 'adj_close', ...extra });
+  historical_year_end_date: '2026-09-16', historical_year_price_basis: 'adj_close',
+  historical_year_volatility: 0.1423, historical_year_volatility_start_date: '2025-09-16',
+  historical_year_volatility_end_date: '2026-09-16', historical_year_volatility_price_basis: 'adj_close',
+  historical_year_volatility_return_count: 250, ...extra });
 
 describe('instrument page layout', () => {
   it('shows return statistics, then price history, then the remaining sections', async () => {
@@ -331,13 +334,14 @@ describe('acquired ETF inventory', () => {
     const server = mockServer();
     server.acquiredItems = [acquiredItem(A, { name: 'Growing ETF' }),
       acquiredItem(B, { name: 'Declining ETF', annualized_mean_log_return: -0.05, annualized_volatility: 0,
-        historical_year_return: -0.08, historical_year_price_basis: 'close' })];
+        historical_year_return: -0.08, historical_year_price_basis: 'close',
+        historical_year_volatility: 0.2, historical_year_volatility_price_basis: 'close' })];
     await open();
     expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'ETF', 'Saved listing', 'Historical', 'Statistical', 'Saved quotes', 'Profile collected', 'Market dataUpdate all',
-      'Annual return', 'Annual return', 'Annual volatility',
+      'Annual return', 'Annual volatility', 'Annual return', 'Annual volatility',
     ]);
-    expect(screen.getByRole('columnheader', { name: 'Historical' })).toHaveAttribute('colspan', '1');
+    expect(screen.getByRole('columnheader', { name: 'Historical' })).toHaveAttribute('colspan', '2');
     expect(screen.getByRole('columnheader', { name: 'Statistical' })).toHaveAttribute('colspan', '2');
     for (const name of ['ETF', 'Saved listing', 'Saved quotes', 'Profile collected']) {
       expect(screen.getByRole('columnheader', { name })).toHaveAttribute('rowspan', '2');
@@ -347,7 +351,11 @@ describe('acquired ETF inventory', () => {
     expect(historical).toHaveAttribute('title', expect.stringContaining('Actual trailing 12-month price change'));
     expect(statistical).toHaveAttribute('headers', 'acquired-statistical');
     expect(statistical).toHaveAttribute('title', 'Average daily log return × 252 trading days');
-    expect(screen.getByRole('columnheader', { name: 'Annual volatility' })).toHaveAttribute('headers', 'acquired-statistical');
+    const [historicalVolatility, statisticalVolatility] = screen.getAllByRole('columnheader', { name: 'Annual volatility' });
+    expect(historicalVolatility).toHaveAttribute('headers', 'acquired-historical');
+    expect(historicalVolatility).toHaveAttribute('title', expect.stringContaining('Trailing 12 months'));
+    expect(statisticalVolatility).toHaveAttribute('headers', 'acquired-statistical');
+    expect(statisticalVolatility).toHaveAttribute('title', expect.stringContaining('All saved history'));
     const growing = within(screen.getByRole('link', { name: 'Growing ETF' }).closest('tr'));
     expect(growing.getByRole('cell', { name: '+12%' })).toHaveAttribute('title', '2025-09-16 – 2026-09-16. Adjusted closes.');
     expect(growing.getByRole('cell', { name: '+12%' })).toHaveAttribute('headers', 'acquired-historical acquired-historical-return');
@@ -356,11 +364,17 @@ describe('acquired ETF inventory', () => {
     expect(growing.getByRole('cell', { name: '+10.08%' })).toHaveClass('return-positive');
     expect(growing.getByRole('cell', { name: '17.39%' })).toHaveAttribute('headers', 'acquired-statistical acquired-statistical-volatility');
     expect(growing.getByRole('cell', { name: '17.39%' })).toHaveClass('annual-statistic', { exact: true });
+    expect(growing.getByRole('cell', { name: '14.23%' })).toHaveAttribute('headers', 'acquired-historical acquired-historical-volatility');
+    expect(growing.getByRole('cell', { name: '14.23%' })).toHaveAttribute('title',
+      '2025-09-16 – 2026-09-16. 250 usable daily log returns. Adjusted closes. Sample standard deviation × √252; missing-weekday intervals are excluded.');
+    expect(growing.getByRole('cell', { name: '14.23%' })).toHaveClass('annual-statistic', { exact: true });
     const declining = within(screen.getByRole('link', { name: 'Declining ETF' }).closest('tr'));
     expect(declining.getByRole('cell', { name: '-8%' })).toHaveAttribute('title', '2025-09-16 – 2026-09-16. Unadjusted closes; splits and distributions may affect the return.');
     expect(declining.getByRole('cell', { name: '-8%' })).toHaveClass('return-negative');
     expect(declining.getByRole('cell', { name: '-5%' })).toHaveClass('return-negative');
     expect(declining.getByRole('cell', { name: '0%' })).toHaveClass('annual-statistic', { exact: true });
+    expect(declining.getByRole('cell', { name: '20%' })).toHaveClass('annual-statistic', { exact: true });
+    expect(declining.getByRole('cell', { name: '20%' })).toHaveAttribute('title', expect.stringContaining('Unadjusted closes; splits and distributions may affect volatility'));
     expect(server.fetch.mock.calls.filter(([url]) => url.startsWith('/api/instruments/')).map(([url]) => url))
       .toEqual(['/api/instruments/budget', '/api/instruments/acquired?limit=20&offset=0']);
     expect(server.posts()).toHaveLength(0);
@@ -369,11 +383,11 @@ describe('acquired ETF inventory', () => {
   it.each([null, undefined, NaN, Infinity, -Infinity, '0.1'])('shows unavailable annual estimates rather than zero or invalid percentages: %s', async (value) => {
     const server = mockServer();
     server.acquiredItems = [acquiredItem(A, { quote_count: 0, first_date: null, last_date: null,
-      annualized_mean_log_return: value, annualized_volatility: value, historical_year_return: value })];
+      annualized_mean_log_return: value, annualized_volatility: value, historical_year_return: value, historical_year_volatility: value })];
     await open();
     const row = within(screen.getByRole('link', { name: 'iShares S&P ETF' }).closest('tr'));
     const unavailable = row.getAllByRole('cell', { name: 'Unavailable' });
-    expect(unavailable).toHaveLength(3);
+    expect(unavailable).toHaveLength(4);
     unavailable.forEach((cell) => expect(cell).toHaveClass('annual-statistic', { exact: true }));
     expect(row.getByText('Profile only')).toBeInTheDocument();
     expect(row.queryByText('0%')).not.toBeInTheDocument();
@@ -389,6 +403,15 @@ describe('acquired ETF inventory', () => {
     cells.forEach((cell) => expect(cell).toHaveClass('annual-statistic', { exact: true }));
   });
 
+  it('shows zero historical volatility as neutral, not unavailable', async () => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(A, { historical_year_volatility: 0 })];
+    await open();
+    const cell = screen.getByRole('cell', { name: '0%' });
+    expect(cell).toHaveAttribute('headers', 'acquired-historical acquired-historical-volatility');
+    expect(cell).toHaveClass('annual-statistic', { exact: true });
+  });
+
   it.each([0.05, -0.05])('styles each return independently when historical and statistical directions differ (%s)', async (value) => {
     const server = mockServer();
     server.acquiredItems = [acquiredItem(A, { historical_year_return: value, annualized_mean_log_return: -value })];
@@ -399,9 +422,11 @@ describe('acquired ETF inventory', () => {
 
   it('keeps statistical estimates visible when a full historical year is unavailable', async () => {
     const server = mockServer();
-    server.acquiredItems = [acquiredItem(A, { historical_year_return: null })];
+    server.acquiredItems = [acquiredItem(A, { historical_year_return: null, historical_year_volatility: null })];
     await open();
-    expect(screen.getByRole('cell', { name: 'Unavailable' })).toHaveAttribute('title', expect.stringContaining('covering a full year'));
+    const unavailable = screen.getAllByRole('cell', { name: 'Unavailable' });
+    expect(unavailable).toHaveLength(2);
+    unavailable.forEach((cell) => expect(cell).toHaveAttribute('title', expect.stringContaining('covering a full year')));
     expect(screen.getByRole('cell', { name: '+10.08%' })).toBeInTheDocument();
   });
 
@@ -411,11 +436,13 @@ describe('acquired ETF inventory', () => {
     await open();
     expect(screen.getByRole('cell', { name: '+10.08%' })).toBeInTheDocument();
     await navigate(A);
-    server.acquiredItems = [acquiredItem(A, { annualized_mean_log_return: -0.02, annualized_volatility: 0.25, historical_year_return: -0.03 })];
+    server.acquiredItems = [acquiredItem(A, { annualized_mean_log_return: -0.02, annualized_volatility: 0.25, historical_year_return: -0.03, historical_year_volatility: 0.18 })];
     await navigate(null);
     expect(screen.getByRole('cell', { name: '-2%' })).toBeInTheDocument();
     expect(screen.getByRole('cell', { name: '25%' })).toBeInTheDocument();
     expect(screen.getByRole('cell', { name: '-3%' })).toBeInTheDocument();
+    expect(screen.getByRole('cell', { name: '18%' })).toBeInTheDocument();
+    expect(screen.queryByRole('cell', { name: '14.23%' })).not.toBeInTheDocument();
     expect(screen.queryByRole('cell', { name: '+12%' })).not.toBeInTheDocument();
     expect(screen.queryByRole('cell', { name: '+10.08%' })).not.toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
@@ -456,7 +483,7 @@ describe('acquired ETF inventory', () => {
     await open();
     expect(screen.getByText('Loading acquired ETFs…')).toHaveAttribute('role', 'status');
     expect(screen.queryByRole('button', { name: 'Refresh list' })).not.toBeInTheDocument();
-    await act(async () => pending.resolve({ items: [acquiredItem(), acquiredItem(B, { name: 'Profile-only ETF', quote_count: 0, first_date: null, last_date: null, annualized_mean_log_return: null, annualized_volatility: null, historical_year_return: null })], total: 2, limit: ACQUIRED_PAGE_SIZE, offset: 0 }));
+    await act(async () => pending.resolve({ items: [acquiredItem(), acquiredItem(B, { name: 'Profile-only ETF', quote_count: 0, first_date: null, last_date: null, annualized_mean_log_return: null, annualized_volatility: null, historical_year_return: null, historical_year_volatility: null })], total: 2, limit: ACQUIRED_PAGE_SIZE, offset: 0 }));
     expect(screen.getByRole('heading', { name: 'Acquired ETFs (2)' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Refresh list' })).not.toBeInTheDocument();
     expect(screen.getByText('42 quotes')).toBeInTheDocument();
@@ -1000,9 +1027,9 @@ describe('ETF autocomplete and routing', () => {
 
 describe('acquisition estimates', () => {
   it.each([
-    ['unresolved', null, false, 1, 3, 8],
-    ['cached', { symbol: 'ETF.DE', exchange: 'XETR' }, false, 0, 2, 7],
-    ['manual', null, true, 0, 2, 7],
+    ['unresolved', null, false, 1, 4, 9],
+    ['cached', { symbol: 'ETF.DE', exchange: 'XETR' }, false, 0, 3, 8],
+    ['manual', null, true, 0, 3, 8],
   ])('includes lookup only for %s automatic listings', (_, listing, manual, lookupCalls, minimumCalls, calls) => {
     const instrument = detail(A, { listing });
     expect(acquisitionEstimate(instrument, 'update', manual)).toMatchObject({ lookupCalls, minimumCalls, pages: 6, calls });
@@ -1025,7 +1052,7 @@ describe('explicit acquisition and complete charts', () => {
     expect(requestDetails).not.toHaveAttribute('open');
     expect(screen.getByText(/first named, EOD-enabled exact ticker.exchange match/)).not.toBeVisible();
     expect(screen.queryByText(/Listing selection is not ISIN verification/)).not.toBeInTheDocument();
-    expect(estimateText()).toHaveTextContent('About 8. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('About 9. Actual usage may vary.');
     expect(screen.getAllByText('Local budget:')).toHaveLength(1);
     expect(screen.getByRole('heading', { name: 'Hedgehoog' }).closest('header')).toContainElement(screen.getByText('Local budget:'));
     expect(within(screen.getByRole('region', { name: 'Market data acquisition' })).queryByText('Local budget:')).not.toBeInTheDocument();
@@ -1079,7 +1106,7 @@ describe('explicit acquisition and complete charts', () => {
     expect(screen.queryByLabelText('Exchange MIC')).not.toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: /Manual listing override/ })).not.toBeInTheDocument();
     expect(screen.getByText('Listing:').closest('p')).toHaveTextContent('SXR8.DE / XETR · Locked');
-    expect(estimateText()).toHaveTextContent('About 4. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('About 5. Actual usage may vary.');
     fireEvent.click(authorization());
     fireEvent.click(screen.getByRole('button', { name: 'Confirm update' }));
     await flush();
@@ -1104,7 +1131,7 @@ describe('explicit acquisition and complete charts', () => {
     await review('Retry Older History');
     expect(screen.getByText(/From 2010-05-19 to before 2020-01-01/)).toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
-    expect(estimateText()).toHaveTextContent('About 5. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('About 6. Actual usage may vary.');
     expect(screen.queryByRole('checkbox', { name: /Manual listing override/ })).not.toBeInTheDocument();
     fireEvent.click(authorization());
     fireEvent.click(screen.getByRole('button', { name: 'Confirm older history' }));
@@ -1147,7 +1174,7 @@ describe('explicit acquisition and complete charts', () => {
     expect(screen.queryByLabelText('Provider symbol')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Exchange MIC')).not.toBeInTheDocument();
     expect(manualOverride()).not.toBeChecked();
-    expect(estimateText()).toHaveTextContent('About 7. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('About 8. Actual usage may vary.');
     expect(screen.getByText(/1 profile call/)).not.toHaveTextContent('ticker-list lookup');
     expect(server.posts()).toHaveLength(0);
     fireEvent.click(authorization());
@@ -1163,14 +1190,14 @@ describe('explicit acquisition and complete charts', () => {
     fireEvent.click(authorization());
     fireEvent.click(manualOverride());
     expect(authorization()).not.toBeChecked();
-    expect(estimateText()).toHaveTextContent('About 7. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('About 8. Actual usage may vary.');
     fireEvent.change(screen.getByLabelText('Provider symbol'), { target: { value: 'OVERRIDE.US' } });
     fireEvent.change(screen.getByLabelText('Exchange MIC'), { target: { value: 'XNYS' } });
     fireEvent.click(authorization());
     fireEvent.click(manualOverride());
     expect(authorization()).not.toBeChecked();
     expect(screen.queryByLabelText('Provider symbol')).not.toBeInTheDocument();
-    expect(estimateText()).toHaveTextContent('About 8. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('About 9. Actual usage may vary.');
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
     expect(server.posts()).toHaveLength(0);
     fireEvent.click(authorization());
@@ -1179,17 +1206,17 @@ describe('explicit acquisition and complete charts', () => {
     expect(JSON.parse(server.posts()[0][1].body)).toEqual({ confirmed: true, mode: 'update' });
   });
 
-  it('requires 3 calls for unresolved acquisition but only 2 to reuse a cached listing', async () => {
+  it('requires 4 calls for unresolved acquisition but only 3 to reuse a cached listing including splits', async () => {
     const server = mockServer();
-    const budget = { month: '2026-09', used: 9998, limit: 10000, remaining: 2 };
+    const budget = { month: '2026-09', used: 9997, limit: 10000, remaining: 3 };
     server.details[A].budget = budget;
     server.details[A].catalogue.inception_date = null;
     server.details[B] = detail(B, { listing: { symbol: 'ETF.DE', exchange: 'XETR' }, budget });
     server.details[B].catalogue.inception_date = null;
     await open(A);
-    expect(screen.getByText(/Insufficient local budget/)).toHaveTextContent('Requires 3 calls with automatic lookup.');
+    expect(screen.getByText(/Insufficient local budget/)).toHaveTextContent('Requires 4 calls with automatic lookup.');
     await review();
-    expect(estimateText()).toHaveTextContent('At least 3. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('At least 4. Actual usage may vary.');
     fireEvent.click(authorization());
     expect(screen.getByRole('button', { name: 'Confirm request' })).toBeDisabled();
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
@@ -1198,7 +1225,7 @@ describe('explicit acquisition and complete charts', () => {
     await navigate(B);
     expect(screen.queryByText(/Insufficient local budget/)).not.toBeInTheDocument();
     await review();
-    expect(estimateText()).toHaveTextContent('At least 2. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('At least 3. Actual usage may vary.');
     fireEvent.click(authorization());
     expect(screen.getByRole('button', { name: 'Confirm request' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Confirm request' }));
@@ -1208,14 +1235,14 @@ describe('explicit acquisition and complete charts', () => {
     expect(JSON.parse(server.posts()[0][1].body)).toEqual({ confirmed: true, mode: 'update' });
   });
 
-  it('allows an explicit valid manual override with 2 calls remaining and skips the lookup estimate', async () => {
+  it('allows an explicit valid manual override with 3 calls remaining including splits and skips lookup', async () => {
     const server = mockServer();
-    server.details[A].budget = { month: '2026-09', used: 9998, limit: 10000, remaining: 2 };
+    server.details[A].budget = { month: '2026-09', used: 9997, limit: 10000, remaining: 3 };
     server.details[A].catalogue.inception_date = null;
     await open(A);
     await review();
     fireEvent.click(manualOverride());
-    expect(estimateText()).toHaveTextContent('At least 2. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('At least 3. Actual usage may vary.');
     expect(screen.queryByText(/This request needs at least/)).not.toBeInTheDocument();
     fireEvent.click(authorization());
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));

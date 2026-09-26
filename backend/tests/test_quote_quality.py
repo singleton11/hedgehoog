@@ -28,6 +28,8 @@ def source(pages=None, profile=None):
         calls.append(request.url.path)
         if request.url.path.endswith("tickerinfo"):
             return httpx.Response(200, json={"data": profile})
+        if request.url.path.endswith("splits"):
+            return httpx.Response(200, json={"data": []})
         return httpx.Response(200, json=deepcopy(next(responses)))
 
     def factory(key, before_request):
@@ -125,7 +127,7 @@ def test_overlapping_pages_and_changing_totals_are_not_rejected(db, config):
     second = payload([{"date": "2026-09-15", "close": 2}, {"date": "2026-09-14", "close": None}], total=3, offset=1)
     result, calls = run(db, config, [first, second])
     assert result["pages"] == 2 and result["rows"] == 3
-    assert calls == ["/v2/tickerinfo", "/v2/eod", "/v2/eod"]
+    assert calls == ["/v2/tickerinfo", "/v2/eod", "/v2/eod", "/v2/splits"]
     assert db.raw_eod_pages.count_documents({}) == db.quotes.count_documents({}) == 2
     assert db.raw_eod_pages.find_one({"offset": 1})["data"] == second
     assert db.instrument_state.find_one()["last_complete_quote_date"] == "2026-09-15"
@@ -143,7 +145,7 @@ def test_missing_pagination_and_empty_page_terminate_safely(db, config):
     rows = [{"date": "2026-09-15"}] * 1000
     result, calls = run(db, config, [{"data": rows}, {"data": [], "pagination": {"total": 999999}}])
     assert result["pages"] == 2 and result["rows"] == 1000
-    assert len(calls) == 3
+    assert len(calls) == 4
 
 
 def test_saved_raw_page_resumes_without_another_provider_call(db, config, clock, monkeypatch):
@@ -166,7 +168,7 @@ def test_saved_raw_page_resumes_without_another_provider_call(db, config, clock,
     clock[0] += timedelta(seconds=md.LEASE_SECONDS + 1)
     result = md.run_acquisition(db, config, job["id"], factory)
     assert result["status"] == "succeeded" and result["rows"] == 1
-    assert len(calls) == result["calls"] == 2
+    assert len(calls) == result["calls"] == 3
     assert db.quotes.count_documents({}) == 1
 
 

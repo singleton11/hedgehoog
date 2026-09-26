@@ -87,9 +87,13 @@ case IDs and reasons. UI pagination limits rendered rows, not metric inputs.
 - Forecast at the first recorded weekday of each month. Origin-date bounds do not
   filter training or outcome dates. Fit only the trailing window ending at the
   origin, with a full calendar lookback and at least 60 usable daily returns.
-- The training prefix determines currency eligibility and adjusted/raw price
-  basis. Never use cached full-history statistics or change basis because later
-  prices are missing. A current EUR override fills missing currency only, not
+- Complete downloaded split snapshots supply a separate `split_adjusted_close`
+  series for both training and realized cash-flow ratios. Multiply raw closes by
+  cumulative effective split factors; future actions do not alter earlier prefixes.
+  Cash distributions are not reinvested. Legacy history without splits retains
+  training-selected adjusted/raw basis with a download warning. The training
+  prefix determines currency eligibility. Never use cached full-history statistics
+  or change basis because later prices are missing. A current EUR override fills missing currency only, not
   explicit foreign currencies.
 - Use the planner's normal log-return model, 252 trading days/year and calendar
   days/365.25. Starting capital is invested at the origin; contributions arrive

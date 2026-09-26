@@ -193,7 +193,7 @@ def test_successful_download_persists_stats_and_updates_recompute(db, config, cl
     rows = history()
     result, source = collect(db, config, Provider([page(rows)]))
     assert result["status"] == "succeeded"
-    assert len(source.calls) == 2
+    assert len(source.calls) == 3
     stored = db.instrument_statistics.find_one({"_id": ISIN})
     assert stored["statistics"]["return_count"] == len(rows) - 1
     before = instrument_statistics(db, ISIN)
@@ -219,7 +219,7 @@ def test_statistics_db_failure_resumes_without_provider_calls(db, config, clock,
     clock[0] += timedelta(seconds=md.LEASE_SECONDS + 1)
     result = md.run_acquisition(db, config, job["id"], source.factory)
     assert result["status"] == "succeeded"
-    assert len(source.calls) == 2
+    assert len(source.calls) == 3
     assert instrument_statistics(db, ISIN)["return_count"] == 80
 
 
@@ -248,7 +248,7 @@ def test_lazy_stats_latest_observation_listing_and_cache_invalidation(db, clock)
         [{**revised["data"], "date": revised["date"]}])["daily_mean_log_return"])
 
 
-@pytest.mark.parametrize("version", [2, 3, 4])
+@pytest.mark.parametrize("version", [2, 3, 4, 5])
 def test_old_statistics_cache_is_recomputed_without_changing_quotes(db, version):
     seed_history(db)
     expected = instrument_statistics(db, ISIN)
@@ -260,7 +260,10 @@ def test_old_statistics_cache_is_recomputed_without_changing_quotes(db, version)
         "statistics.daily_mean_log_return": 999,
     }, "$unset": {"statistics.daily_volatility": "", "statistics.annualized_mean_log_return": "",
                   "statistics.historical_year_return": "", "statistics.historical_year_start_date": "",
-                  "statistics.historical_year_end_date": "", "statistics.historical_year_price_basis": ""}})
+                  "statistics.historical_year_end_date": "", "statistics.historical_year_price_basis": "",
+                  "statistics.historical_year_volatility": "", "statistics.historical_year_volatility_start_date": "",
+                  "statistics.historical_year_volatility_end_date": "", "statistics.historical_year_volatility_price_basis": "",
+                  "statistics.historical_year_volatility_return_count": ""}})
     assert instrument_statistics(db, ISIN) == expected
     saved = db.instrument_statistics.find_one({"_id": ISIN})
     assert saved["signature"]["version"] == MODEL_VERSION > version

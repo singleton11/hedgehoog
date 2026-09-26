@@ -54,8 +54,8 @@ function AcquisitionForm({ detail, mode, busy, onCancel, onConfirm }) {
           ? 'The saved listing is reused without a ticker lookup.'
           : 'We select the first named, EOD-enabled exact ticker.exchange match with a valid MIC from Marketstack and cache it for future requests.'}</p>
         {fixed && <p>The listing cannot change once quotes are saved.</p>}
-        <p>{estimate.lookupCalls > 0 && 'At least 1 ticker-list lookup + '}1 profile call + {estimate.pages === null ? 'at least 1 history page' : `${estimate.pages} history page(s)`}.
-          {estimate.lookupCalls > 0 && ' Ticker lookup may need extra pages.'} History pages contain up to 1,000 rows; estimates use calendar days.</p>
+        <p>{estimate.lookupCalls > 0 && 'At least 1 ticker-list lookup + '}1 profile call + at least 1 split-history page + {estimate.pages === null ? 'at least 1 history page' : `${estimate.pages} history page(s)`}.
+          {estimate.lookupCalls > 0 && ' Ticker lookup may need extra pages.'} Split history is refreshed from inception for derived calculations only; candles remain unadjusted. Split and price pages contain up to 1,000 rows and may need extra calls; price estimates use calendar days.</p>
         <p>The local budget excludes requests made outside Hedgehoog.</p>
       </div>
     </details>
@@ -97,9 +97,9 @@ export default function InstrumentDetail({ isin }) {
   const hasData = summary.quote_count > 0 || quotes.length > 0;
   const priceCurrency = detail.price_currency_override || listingPriceCurrency(quotes);
   const minimumCalls = acquisitionEstimate(detail, 'update').minimumCalls;
-  // Keep review accessible with two calls remaining: a manual override can
+  // Keep review accessible with three calls remaining: a manual override can
   // skip lookup. The form enforces the minimum for the chosen acquisition.
-  const blocked = pending || submitting || savingCurrency || !detail.provider_configured || (budget && budget.remaining < 2);
+  const blocked = pending || submitting || savingCurrency || !detail.provider_configured || (budget && budget.remaining < 3);
 
   async function confirm(body) {
     if (await acquire(body)) setReviewMode(null);

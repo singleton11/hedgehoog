@@ -1,4 +1,4 @@
-"""EUR-only, funded, long-only portfolios with an append-only dated ledger.
+"""EUR-only, funded, long-only portfolios with a dated, removable ledger.
 
 One bounded Mongo document is the atomic write boundary. A revision CAS protects
 cash/holdings across processes without requiring a replica set or transactions.
@@ -95,6 +95,12 @@ def event_public(event):
     return {key: value for key, value in event.items() if not key.startswith("_")}
 
 
+def active_events(events):
+    # Keep removed entries internally to preserve insertion order, idempotency
+    # keys and the document-size cap. They never contribute to history or value.
+    return [event for event in events if not event.get("_removed_at")]
+
+
 def scope(owner, customer_id, portfolio_id=None):
     return {"user_id": owner, "customer_id": customer_id, **({"_id": portfolio_id} if portfolio_id else {})}
 
@@ -178,7 +184,7 @@ def replay(events, anchors=None):
     """Average cost; optional prior-close reference basis for remaining shares.
 
     Each same-day transaction follows its immutable insertion sequence. Backdated
-    insertion replays ALL later events and fails at the first negative balance.
+    insertion or removal replays ALL active events and fails at the first negative balance.
     Sell allocation uses the same average-cost proportion for the daily reference.
     A full liquidation removes the exact remaining basis (no rounding residual).
     """
@@ -187,7 +193,7 @@ def replay(events, anchors=None):
         cash, realized = ZERO, ZERO
         positions = {}
         anchors = anchors or {}
-        for event in sorted(events, key=lambda item: (item["date"], item["sequence"])):
+        for event in sorted(active_events(events), key=lambda item: (item["date"], item["sequence"])):
             kind = event["type"]
             if kind in ("deposit", "withdrawal"):
                 amount = Decimal(event["amount_eur"])
@@ -305,7 +311,7 @@ def _customer_daily_pnl(db, documents, now, quote_cache):
     liquidated before the interval need no marks and cannot poison the total.
     The caller supplies an 80-digit Decimal context and a request-local cache.
     """
-    trades = [event for document in documents for event in document["transactions"]
+    trades = [event for document in documents for event in active_events(document["transactions"])
               if event["type"] in ("buy", "sell")]
     if not trades:
         return {"today_pnl_eur": "0.00", "today_from_date": None, "today_to_date": None}
@@ -333,7 +339,7 @@ def _customer_daily_pnl(db, documents, now, quote_cache):
         return unavailable
     total, exposed = ZERO, False
     for document in documents:
-        events = document["transactions"]
+        events = active_events(document["transactions"])
         _, _, before = replay([event for event in events if event["date"] <= start])
         _, _, after = replay(events)
         period_trades = [event for event in events if event["type"] in ("buy", "sell") and start < event["date"] <= end]
@@ -454,8 +460,33 @@ def update_portfolio(customer_id: str, portfolio_id: str, body: PortfolioRequest
 @router.get(BASE + "/{portfolio_id}/transactions")
 def transactions(customer_id: str, portfolio_id: str, request: Request, user: CurrentUser, limit: Limit = 20, offset: Offset = 0):
     document = require_portfolio(request.app.state.database, str(user["_id"]), customer_id, portfolio_id)
-    events = sorted(document["transactions"], key=lambda item: (item["date"], item["sequence"]), reverse=True)
+    events = sorted(active_events(document["transactions"]), key=lambda item: (item["date"], item["sequence"]), reverse=True)
     return {"items": [event_public(event) for event in events[offset:offset + limit]], "total": len(events), "limit": limit, "offset": offset}
+
+
+@router.delete(BASE + "/{portfolio_id}/transactions/{transaction_id}")
+def remove_transaction(customer_id: str, portfolio_id: str, transaction_id: str, request: Request, user: CurrentUser):
+    db, owner = request.app.state.database, str(user["_id"])
+    for _ in range(8):
+        document = require_portfolio(db, owner, customer_id, portfolio_id)
+        events = document["transactions"]
+        event = next((item for item in events if item["id"] == transaction_id), None)
+        if event is None:
+            raise md.DataError(404, "Transaction not found.")
+        result = {"id": transaction_id, "removed": True}
+        if event.get("_removed_at"):
+            return result  # Safe to retry after a lost response; no extra revision.
+        try:
+            replay([item for item in events if item["id"] != transaction_id])
+        except md.DataError as error:
+            raise md.DataError(error.status, f"Cannot remove this transaction: {error} Remove dependent transactions first.") from error
+        updated = db.portfolios.update_one(
+            {**scope(owner, customer_id, portfolio_id), "revision": document["revision"], "transactions.id": transaction_id},
+            {"$set": {"transactions.$._removed_at": _timestamp(md.utcnow())}, "$inc": {"revision": 1}},
+        )
+        if updated.modified_count:
+            return result
+    raise md.DataError(409, "Portfolio changed concurrently. Retry removing the transaction.")
 
 
 @router.post(BASE + "/{portfolio_id}/transactions", status_code=201)
@@ -475,6 +506,8 @@ def add_transaction(customer_id: str, portfolio_id: str, body: TransactionReques
             if existing:
                 if existing["_request"] != normalized:
                     raise md.DataError(409, "This transaction ID was already used with different inputs.")
+                if existing.get("_removed_at"):
+                    raise md.DataError(409, "This transaction was removed. Use a new transaction ID to record a new entry.")
                 return event_public(existing)
             if len(events) >= MAX_TRANSACTIONS:
                 raise md.DataError(409, f"This portfolio has reached the {MAX_TRANSACTIONS}-transaction limit.")
@@ -486,7 +519,7 @@ def add_transaction(customer_id: str, portfolio_id: str, body: TransactionReques
                     raise md.DataError(422, "Trade value must round to at least EUR 0.01 and be no more than EUR 1 trillion.")
                 if body.type == "sell" and body.commission_eur > gross:
                     raise md.DataError(422, "Sell commission cannot exceed the sale proceeds.")
-                prior = next((item["instrument"] for item in events if item.get("instrument", {}).get("instrument_id") == body.instrument_id), None)
+                prior = next((item["instrument"] for item in active_events(events) if item.get("instrument", {}).get("instrument_id") == body.instrument_id), None)
                 if body.type == "sell":
                     if not prior:
                         raise md.DataError(422, "Insufficient holdings; short positions are not supported.")

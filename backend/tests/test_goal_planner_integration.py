@@ -2,6 +2,7 @@
 
 from unittest.mock import Mock
 from datetime import timedelta
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -19,11 +20,18 @@ def test_real_mongo_acquisition_statistics_and_simulation(environment, monkeypat
     settings, db = environment
     calls = []
     rows = [{**bar("2025-09-15", "90"), "price_currency": "EUR"}] + history()
+    split_date = rows[40]["date"][:10]
+    for row in rows[40:]:
+        row["close"] = str(Decimal(row["close"]) / 25)
+    # Provider adjusted closes already include the split: never adjust them twice.
 
     def respond(request):
         calls.append(request.url.path)
         if request.url.path.endswith("tickerinfo"):
             return httpx.Response(200, json={"data": {"ticker": LISTING["symbol"], "name": "Synthetic ETF"}})
+        if request.url.path.endswith("splits"):
+            return httpx.Response(200, json={"pagination": {"total": 1, "limit": 1000}, "data": [
+                {"symbol": LISTING["symbol"], "date": split_date, "split_factor": 25}]})
         return httpx.Response(200, json={"pagination": {"total": len(rows), "limit": 1000}, "data": rows})
 
     def factory(key, before_request):
@@ -34,7 +42,10 @@ def test_real_mongo_acquisition_statistics_and_simulation(environment, monkeypat
     assert db.instruments.find_one({"instrument_id": ISIN}) is not None
     saved = db.instrument_statistics.find_one({"_id": ISIN})
     assert saved["statistics"]["return_count"] == 80
-    assert len(calls) == 2
+    assert len(calls) == 3
+    assert saved["statistics"]["price_basis"] == "split_adjusted_close"
+    assert db.raw_split_pages.count_documents({}) == db.split_snapshots.count_documents({}) == 1
+    assert [item["close"] for item in md.read_quotes(db, ISIN)["items"]] == [row["close"] for row in rows]
     original_quotes = list(db.quotes.find())
     monkeypatch.setattr("main.enqueue_etf_import", Mock())
     with TestClient(create_app(settings)) as client:
@@ -45,8 +56,12 @@ def test_real_mongo_acquisition_statistics_and_simulation(environment, monkeypat
         assert stats.json()["computed_at"] == md.public(saved["statistics"]["computed_at"])
         acquired = client.get("/instruments/acquired").json()["items"][0]
         for key in ("annualized_mean_log_return", "annualized_volatility", "historical_year_return",
-                    "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis"):
+                    "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis",
+                    "historical_year_volatility", "historical_year_volatility_start_date", "historical_year_volatility_end_date",
+                    "historical_year_volatility_price_basis", "historical_year_volatility_return_count"):
             assert acquired[key] == stats.json()[key]
+        assert acquired["historical_year_volatility"] == stats.json()["annualized_volatility"]
+        assert acquired["historical_year_volatility_return_count"] == 80
         assert acquired["historical_year_return"] == pytest.approx(float(rows[-1]["adj_close"]) / 90 - 1)
         response = client.post("/goals/simulate", json=request_body())
         assert response.status_code == 200, response.text
@@ -63,15 +78,18 @@ def test_real_mongo_acquisition_statistics_and_simulation(environment, monkeypat
         later = md.utcnow() + timedelta(seconds=1)
         revised["collected_at"] = later
         monkeypatch.setattr(md, "utcnow", lambda: later)
-        revised["data"]["adj_close"] = "200"
+        revised["data"]["close"] = "8"  # 200 in the split-normalized series.
         db.quotes.insert_one(revised)
         refreshed = client.get(f"/instruments/{ISIN}/statistics").json()
         assert refreshed["quote_count"] == 82
         assert refreshed["daily_mean_log_return"] != stats.json()["daily_mean_log_return"]
         acquired = client.get("/instruments/acquired").json()["items"][0]
         for key in ("annualized_mean_log_return", "annualized_volatility", "historical_year_return",
-                    "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis"):
+                    "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis",
+                    "historical_year_volatility", "historical_year_volatility_start_date", "historical_year_volatility_end_date",
+                    "historical_year_volatility_price_basis", "historical_year_volatility_return_count"):
             assert acquired[key] == refreshed[key]
+        assert acquired["historical_year_volatility"] != stats.json()["historical_year_volatility"]
         assert acquired["historical_year_return"] == pytest.approx(200 / 90 - 1)
-    assert len(calls) == 2
-    assert md.budget_status(db, settings)["used"] == 2
+    assert len(calls) == 3
+    assert md.budget_status(db, settings)["used"] == 3

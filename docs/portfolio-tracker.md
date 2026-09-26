@@ -25,10 +25,15 @@ nor funds/recalculates its simulations.
   and is rejected if it invalidates any later balance. On the same date, events
   run in the order they were originally entered. Enter historical deposits before
   same-day trades; entering them later cannot reorder existing events.
-- Transactions are append-only in this first version: no edit/delete, transfers,
-  dividends, interest, taxes, FX, splits or other corporate-action processing.
-  Check the inputs before saving. Raw-price valuations across corporate actions
-  can be misleading until those actions are supported.
+- Use **Remove** in transaction history, then **Confirm removal**, to remove an
+  incorrect entry. This removes it from visible history and recalculates cash,
+  holdings and PnL. Removal cannot be undone and must leave cash and holdings
+  non-negative throughout the **whole remaining timeline**. Remove dependent
+  sales, purchases or withdrawals first if removal is blocked.
+- Entries cannot be edited. Transfers, dividends, interest, taxes, FX, splits and
+  other corporate actions are not processed. Check inputs before saving.
+  Raw-price valuations across corporate actions can be misleading until those
+  actions are supported.
 
 Instrument selection uses acquired listings with confirmed EUR **price currency**,
 not the fund's base currency. If provider currency is absent, use the instrument
@@ -142,6 +147,7 @@ protection. Browser requests use the `/api` prefix.
 | `PATCH /customers/{cid}/portfolios/{pid}` | `{name, goal_id?: string|null}`; null/omission detaches goal |
 | `GET /customers/{cid}/portfolios/{pid}/transactions?limit=20&offset=0` | Ledger newest date/entry first |
 | `POST /customers/{cid}/portfolios/{pid}/transactions` | Append a validated transaction |
+| `DELETE /customers/{cid}/portfolios/{pid}/transactions/{tid}` | Remove one entry after validating the remaining timeline; returns `{id, removed: true}` |
 
 Pagination supports `limit` 1–100 and nonnegative `offset`.
 
@@ -162,16 +168,23 @@ with the same ID returns the original event without appending or charging again.
 Reusing it with different normalized inputs is a conflict (409). Keep the same
 ID and effective date after a lost response; do not generate a new ID just because
 a request timed out. Validation failures are 422 and write nothing. Unknown or
-foreign customer/portfolio/goal IDs return 404.
+foreign customer/portfolio/goal/transaction IDs return 404. Repeating a successful
+removal returns the same acknowledgement without another write. Reposting a
+removed transaction's `client_id` returns 409 and cannot restore it; recording a
+new entry requires a new ID. An invalid removal returns 422 without changes.
 
 The `portfolios` collection contains owner/customer metadata and a bounded embedded
 ledger. An indexed owner/customer lookup protects scope. Atomic revision-checked
-updates append an event only after validating that exact ledger version; a racing
-writer must re-read and revalidate. This works with standalone MongoDB and does not
-need replica-set transactions. Metadata edits increment the revision but never
-replace the ledger. History is paginated at the API boundary.
+updates append or remove an event only after validating that exact ledger version;
+a racing writer must re-read and revalidate. This works with standalone MongoDB
+and does not need replica-set transactions. Metadata edits increment the revision
+but never replace the ledger. Removed entries retain an internal removal marker
+and original payload for retry safety and stable insertion sequences; they are
+excluded from history, pagination totals, balances, positions and PnL. Removal is
+not physical erasure from storage. History is paginated at the API boundary.
 
-The first version explicitly caps each portfolio at **5,000 transactions** to keep
-the atomic document below MongoDB's 16 MB limit. Further additions return 409;
-existing balances and history remain readable. Large-ledger storage/corporate
-actions and transaction corrections need a later version.
+Each portfolio is capped at **5,000 recorded transactions**, including removed
+entries, to keep the atomic document below MongoDB's 16 MB limit. Removal does not
+free capacity. Further additions return 409; existing balances, history and
+removal remain available. Large-ledger storage and corporate actions need a later
+version.

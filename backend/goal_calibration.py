@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from goal_simulation import Money, PATHS, add_months, money_string, period_factors
 import market_data as md
 from return_statistics import MIN_RETURNS, calculate_statistics, positive_price
+from split_adjustments import adjusted_rows, load_split_snapshot
 
 MAX_SEED = 2**32 - 1
 MAX_HISTORY_ROWS = 20_000
@@ -327,8 +328,10 @@ def calibrate_instrument(db, isin, body, *, evaluate):
     rows = [{**record.get("data", {}), "date": record["_id"]} for record in records]
     if len(rows) > MAX_HISTORY_ROWS:
         raise md.DataError(422, "Saved history exceeds the 20,000-date calculation limit; no history was silently truncated.")
+    rows, split_warnings = adjusted_rows(rows, load_split_snapshot(db, isin, listing, cutoff))
     seed = body.seed if body.seed is not None else secrets.randbits(32)
     result = evaluate(rows, body, seed=seed, override=state.get("price_currency_override"))
+    result["warnings"].extend(split_warnings)
     fingerprint = hashlib.sha256(json.dumps(md.public({"rows": rows, "listing": listing,
         "currency_override": state.get("price_currency_override")}), sort_keys=True).encode()).hexdigest()
     return {**result, "data_as_of": md.public(cutoff), "history_fingerprint": fingerprint}

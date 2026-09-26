@@ -180,7 +180,8 @@ describe('immutable calibration history and routes', () => {
     await follow('New run'); expect(screen.getByRole('heading', { name: 'New calibration run' })).toBeInTheDocument();
     expect(screen.getByLabelText('Strategy')).toHaveValue(BUY_AND_HOLD_ID); expect(button()).toBeDisabled();
     await navigate('#/goal'); expect(screen.getByRole('article', { name: 'Customers' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Customer name')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add customer' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Customer name')).not.toBeInTheDocument();
     expect(screen.getByText(/No customers yet/)).toBeInTheDocument();
     await follow('Calibration'); expect(screen.getByText(/No calibration runs yet/)).toBeInTheDocument(); expect(posts()).toHaveLength(0);
   });
@@ -707,6 +708,14 @@ describe('saved report chart, metrics and bounded audit', () => {
     expect(metric('Brier score')).toHaveTextContent('0.0000'); expect(metric('Calibration error')).toHaveTextContent('0.0 pp');
     const circle = screen.getByRole('img', { name: 'Financial goal success calibration curve' }).querySelector('circle');
     expect(circle).toHaveAttribute('cx', '612'); expect(circle).toHaveAttribute('cy', '24');
+  });
+
+  it('accepts and labels split-adjusted saved calibration audits', async () => {
+    const server = mockServer(); const saved = generatedCalibration({ ...expectedBody, scenario_count: 10 }, 9);
+    saved.forecasts.forEach((forecast) => { forecast.price_basis = 'split_adjusted_close'; });
+    server.save(saved); await open({ route: reportRoute() }); openAudit();
+    expect(within(screen.getByRole('table', { name: 'Per-scenario audit' })).getAllByText('Split-adjusted close')).toHaveLength(9);
+    expect(posts()).toHaveLength(0);
   });
 
   it('keeps audit identities, monetary values, origin dates and actual/requested probabilities distinct', async () => {

@@ -56,6 +56,26 @@ def test_daily_pnl_includes_fully_liquidated_positions(tracker, sell_price, real
     assert result["today_to_date"] == "2026-09-16"
 
 
+@pytest.mark.parametrize("kind,day,keep_holding", [
+    ("buy", "2026-09-16", True), ("sell", "2026-09-16", True),
+    ("buy", "2026-09-17", True), ("buy", "2026-09-16", False),
+])
+def test_removed_trades_do_not_affect_customer_pnl_or_close_interval(tracker, kind, day, keep_holding):
+    client, _, _, url = tracker
+    record(client, url, cash())
+    if keep_holding:
+        record(client, url, trade())
+    removed = record(client, url, trade(kind, day=day, price="80", commission_eur="1"))
+    response = client.delete(url + "/transactions/" + removed["id"])
+    assert response.status_code == 200, response.text
+    result = summary(client)
+    expected = "10.00" if keep_holding else "0.00"
+    assert result["today_pnl_eur"] == result["total_pnl_eur"] == result["unrealized_pnl_eur"] == expected
+    assert result["realized_pnl_eur"] == "0.00"
+    assert (result["today_from_date"], result["today_to_date"]) == (
+        ("2026-09-15", "2026-09-16") if keep_holding else (None, None))
+
+
 def test_intraday_round_trip_counts_fees_but_not_deposits(tracker):
     client, _, _, url = tracker
     record(client, url, cash(day="2026-09-16"))

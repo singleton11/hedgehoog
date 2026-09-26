@@ -156,9 +156,13 @@ History selection:
   future collection times. This is current-history analytics, not an `as_of`
   historical model or backtest.
 - Exclude weekend quote dates from daily-return estimation, preserving the raw rows.
-  Use adjusted closes **only when every selected weekday row has a positive finite adjusted
-  close**. Otherwise use unadjusted closes consistently across the entire series,
-  with a corporate-action/distribution warning. Never splice the two bases.
+  With downloaded split history, use `split_adjusted_close`: raw close multiplied
+  by cumulative effective split factors (new shares / old shares). This separate
+  derived series corrects forward/reverse splits without changing candles, applying
+  a split twice to provider-adjusted prices, or mixing adjustment vintages. It is
+  a price return, not a dividend-reinvestment total return. Missing/invalid raw
+  closes still break the chain. Legacy history without splits temporarily prefers
+  complete provider `adj_close`, otherwise raw `close`, with an update warning.
 - Reject missing, nonnumeric, boolean, non-finite and non-positive prices **from
   calculations only**. Invalid rows break the chain: a return never bridges them.
 - Only pairs on adjacent weekdays form daily returns. Friday to Monday is valid;
@@ -207,8 +211,9 @@ simulations are still rejected rather than clipped.
 
 ## Historical yearly return (inventory)
 
-The Acquired ETFs table groups **Annual return** under **Historical**, separately
-from **Annual return** and **Annual volatility** under **Statistical**. Both return
+The Acquired ETFs table groups **Annual return** and **Annual volatility** under
+**Historical**, separately from the all-history **Annual return** and **Annual
+volatility** under **Statistical**. Both return
 columns show green `+` values for growth and red negative values for decline;
 zero, unavailable values and volatility stay neutral. The historical return is the
 actual simple price change
@@ -221,11 +226,11 @@ an input to the Monte Carlo model.
   year earlier, allowing at most **7 calendar days** for weekends/holidays. February
   29 clamps to February 28. Never annualize shorter coverage or use a much older
   price as if it were a year ago. Actual endpoint dates are available on hover.
-- Use adjusted closes if **both endpoints** have positive finite adjusted prices;
-  otherwise use raw closes at **both** endpoints. Never splice the two bases.
-  The tooltip identifies the basis and warns that unadjusted splits/distributions
-  can distort the price change. Provider adjustments are used as saved; this is
-  not an independently verified dividend-reinvestment total return.
+- With a complete split snapshot, use split-corrected raw closes at both endpoints.
+  For legacy history only, prefer provider-adjusted closes if both are valid,
+  otherwise raw closes at both endpoints. Never splice bases or apply splits to
+  `adj_close`. The tooltip identifies the basis. Split correction does not reinvest
+  cash distributions or claim a total return.
 - Endpoint prices must be positive and finite. Invalid endpoints are not silently
   replaced with earlier valid ones. Sparse or invalid intermediate prices do not
   prevent calculating an endpoint ratio; this does not imply continuous coverage.
@@ -234,9 +239,36 @@ an input to the Monte Carlo model.
   is applied. Non-finite results are unavailable too.
 - API/cache fields are `historical_year_return` (nullable numeric fraction),
   `historical_year_start_date`, `historical_year_end_date` (ISO dates), and
-  `historical_year_price_basis` (`adj_close` or `close`). All four are null when
+  `historical_year_price_basis` (`split_adjusted_close`, `adj_close` or `close`). All four are null when
   unavailable. They share the existing cache invalidation; older cache versions
   refresh from saved data without provider requests or changes to raw observations.
+
+### Historical annual volatility (inventory)
+
+`historical_year_volatility` is the **annualized sample standard deviation of daily
+log returns within the trailing year**: `sqrt(252 * variance(log_returns))`, not
+variance of price levels or an endpoint price change. Its window follows the same
+latest-saved-quote/calendar-anniversary rules above. At least two usable daily
+returns and year-long saved coverage are required; insufficient coverage or known
+mixed currencies produce null, not zero. Flat usable prices produce zero.
+
+With a complete split snapshot, volatility uses split-corrected raw closes.
+For legacy history without splits, unlike the historical endpoint return, it uses
+provider-adjusted closes only when all weekday prices **within this window** have
+usable adjustments; otherwise it uses raw closes throughout. Older prices cannot
+affect either the basis or the volatility. The shared daily estimator excludes
+weekends and intervals spanning missing weekdays; bad prices break the return chain. Missing data is not
+interpolated. Sparse coverage can still yield an estimate from the remaining daily
+pairs; small samples are unreliable and do not imply continuous year-long data.
+
+The tooltip shows the selected window, usable return count, basis and formula.
+Separate API/cache metadata fields are `historical_year_volatility_start_date`,
+`historical_year_volatility_end_date`, `historical_year_volatility_price_basis`,
+and `historical_year_volatility_return_count`; all five fields are null when
+volatility is unavailable. Window endpoints are selected quote dates, not a claim
+that every quote inside the interval is usable. These values share existing
+cache/listing isolation and need no provider requests. Full-history statistical
+estimates and Monte Carlo inputs are unchanged.
 
 ## Monte Carlo model and monthly amount
 

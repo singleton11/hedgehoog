@@ -78,7 +78,7 @@ function PagedList({ request, path, label, validate, children, empty }) {
     </LoadState>
   </section>;
 }
-function CreateForm({ request, customerId, onCreated }) {
+function CreateForm({ request, customerId, onCreated, onCancel }) {
   const [name, setName] = useState('');
   const [amount, setAmount] = useState('100000');
   const [date, setDate] = useState(() => monthlyAnniversary(new Date(), 120));
@@ -111,19 +111,22 @@ function CreateForm({ request, customerId, onCreated }) {
       if (!abort.signal.aborted) { pending.current = null; setBusy(false); }
     }
   }
-  return <form className="goal-form planner-create" aria-label={`New ${kind}`} onSubmit={create}>
+  return <form id={`new-${kind}-form`} className="goal-form planner-create" aria-label={`New ${kind}`} onSubmit={create}>
     <h3>New {kind}</h3>
     <fieldset disabled={busy}>
       <div className="goal-fields">
         <div><label htmlFor={`${kind}-name`}>{customerId ? 'Goal name' : 'Customer name'}</label>
-          <input id={`${kind}-name`} value={name} maxLength={200} required onChange={(event) => setName(event.target.value)} autoComplete="off" /></div>
+          <input id={`${kind}-name`} value={name} maxLength={200} required onChange={(event) => setName(event.target.value)} autoComplete="off" autoFocus={Boolean(onCancel)} /></div>
         {customerId && <>
           <div><label htmlFor="new-goal-amount">Target (EUR)</label><input id="new-goal-amount" inputMode="decimal" value={amount} required maxLength={100} onChange={(event) => setAmount(event.target.value)} /></div>
           <div><label htmlFor="new-goal-date">Goal date (UTC)</label><input id="new-goal-date" type="date" required value={date}
             min={monthlyAnniversary(new Date(), 1)} max={monthlyAnniversary(new Date(), 600)} onChange={(event) => setDate(event.target.value)} /></div>
         </>}
       </div>
-      <button type="submit">{busy ? 'Creating…' : `Create ${kind}`}</button>
+      <div className="button-group">
+        <button type="submit">{busy ? 'Creating…' : `Create ${kind}`}</button>
+        {onCancel && <button type="button" className="secondary" onClick={onCancel}>Cancel</button>}
+      </div>
     </fieldset>
     {error && <p role="alert">{error}</p>}
   </form>;
@@ -190,10 +193,21 @@ function EditGoalForm({ request, goal, onSaved, onCancel }) {
 }
 function Customers({ request, isin }) {
   const [revision, setRevision] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const addButton = useRef(null);
+  const wasCreating = useRef(false);
+  useEffect(() => {
+    if (wasCreating.current && !creating) addButton.current?.focus();
+    wasCreating.current = creating;
+  }, [creating]);
   return <>
-    <div className="page-heading"><h2 className="instrument-name">Customers</h2><p className="muted">Choose a customer to manage portfolios, goals and saved simulations.</p></div>
+    <div className="section-heading page-heading"><div><h2 className="instrument-name">Customers</h2><p className="muted">Choose a customer to manage portfolios, goals and saved simulations.</p></div>
+      <button ref={addButton} type="button" disabled={creating} aria-expanded={creating} aria-controls={creating ? 'new-customer-form' : undefined} onClick={() => setCreating(true)}>Add customer</button>
+    </div>
     {isin && <p className="planner-prefill">Planning with {isin}. Choose a customer and goal first; this instrument will be preselected for the new simulation.</p>}
-    <PagedList key={revision} request={request} path="/customers" label="Customers" validate={validCustomerSummary} empty="No customers yet. Create your first customer below.">
+    {creating && <CreateForm request={request} onCancel={() => setCreating(false)}
+      onCreated={() => { setRevision((value) => value + 1); setCreating(false); }} />}
+    <PagedList key={revision} request={request} path="/customers" label="Customers" validate={validCustomerSummary} empty="No customers yet. Select Add customer to create your first customer.">
       {(items) => <>
         <p className="muted" id="customer-net-worth-note">Net worth is cash plus holdings across all tracked EUR portfolios, using saved prices—not live prices. External assets and debts are not included. Total P&L is realized plus unrealized P&L.</p>
         <p className="muted" id="customer-pnl-note">Today P&L covers the latest saved trading-day interval shown, including sales and fees, excluding deposits and withdrawals. It is not live or necessarily today. Missing or mismatched prices are unavailable.</p>
@@ -204,7 +218,7 @@ function Customers({ request, isin }) {
               {pnlColumns.map(([label, key]) => <th key={key} scope="col">{label}</th>)}
             </tr></thead>
             <tbody>{items.map((customer) => <tr key={customer.id}>
-              <th scope="row"><a href={`${customerRoute(customer.id)}${prefill(isin)}`}>{customer.name}<span className="simulation-parameter">View portfolios and goals →</span></a></th>
+              <th scope="row"><a href={`${customerRoute(customer.id)}${prefill(isin)}`}>{customer.name}</a></th>
               <td>{customer.goal_count}</td>
               <td>{formatEuros(customer.net_worth_eur)}{customer.net_worth_eur === null && <span className="simulation-parameter">Some holdings cannot be valued.</span>}</td>
               {pnlColumns.map(([, key]) => <td key={key}>
@@ -216,7 +230,6 @@ function Customers({ request, isin }) {
         </div>
       </>}
     </PagedList>
-    <CreateForm request={request} onCreated={() => setRevision((value) => value + 1)} />
   </>;
 }
 function CustomerGoals({ request, customer, isin }) {
