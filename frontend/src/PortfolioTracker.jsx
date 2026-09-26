@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
 import CustomerTabs from './CustomerTabs.jsx';
 import Icon from './Icon.jsx';
+import DegiroImport from './DegiroImport.jsx';
 import { formatEuros as formatExactEuros } from './goalProjection.js';
 
 const PAGE_SIZE = 20;
@@ -486,6 +487,7 @@ function PortfolioDetail({ request, customerId, portfolioId, goals }) {
         </div>
         <button ref={addButton} type="button" disabled={adding} aria-expanded={adding} aria-controls="transaction-entry" onClick={() => { setAdding(true); setMessage(null); }}>Add transaction</button>
       </div>
+      <DegiroImport request={request} portfolioPath={path} onImported={refresh} disabled={resource.loading || Boolean(resource.error)} />
       {message && <p role="status">{message}</p>}
       <TransactionForm request={request} path={`${path}/transactions`} open={adding} onClose={() => setAdding(false)} instruments={instruments} positions={resource.data.positions}
         onSaved={(success) => { setMessage(success); setAdding(false); refresh(); }} disabled={resource.loading || Boolean(resource.error)} />

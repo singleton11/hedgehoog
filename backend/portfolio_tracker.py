@@ -504,14 +504,53 @@ def remove_transaction(customer_id: str, portfolio_id: str, transaction_id: str,
     raise md.DataError(409, "Portfolio changed concurrently. Retry removing the transaction.")
 
 
-@router.post(BASE + "/{portfolio_id}/transactions", status_code=201)
-def add_transaction(customer_id: str, portfolio_id: str, body: TransactionRequest, request: Request, user: CurrentUser):
-    db, owner, now = request.app.state.database, str(user["_id"]), md.utcnow()
+def normalized_request(body):
     normalized = body.model_dump(mode="json")
-    # Normalize numeric strings so equivalent retries have the same identity.
+    # normalize() uses the current context; ledger values have at most 21 digits.
     for key in ("amount_eur", "quantity", "price_eur", "commission_eur"):
         if key in normalized:
             normalized[key] = format(Decimal(normalized[key]).normalize(), "f")
+    return normalized
+
+
+def build_event(db, body, events, now, instrument_cache=None):
+    """Shared manual/batch validation. Caller replays and atomically saves events."""
+    normalized = normalized_request(body)
+    event = {**normalized, "id": str(ObjectId()), "sequence": len(events) + 1,
+             "created_at": _timestamp(now), "_request": normalized}
+    if isinstance(body, TradeRequest):
+        with localcontext() as context:
+            context.prec = 80
+            gross = (body.quantity * body.price_eur).quantize(CENT, rounding=ROUND_HALF_UP)
+        if gross <= 0 or gross > MAX_AMOUNT:
+            raise md.DataError(422, "Trade value must round to at least EUR 0.01 and be no more than EUR 1 trillion.")
+        if body.type == "sell" and body.commission_eur > gross:
+            raise md.DataError(422, "Sell commission cannot exceed the sale proceeds.")
+        prior = next((item["instrument"] for item in active_events(events) if item.get("instrument", {}).get("instrument_id") == body.instrument_id), None)
+        if body.type == "sell":
+            if not prior:
+                raise md.DataError(422, "Insufficient holdings; short positions are not supported.")
+            instrument = prior
+        else:
+            cache = instrument_cache if instrument_cache is not None else {}
+            if body.instrument_id not in cache:
+                cache[body.instrument_id] = acquired_instrument(db, body.instrument_id, now)
+            instrument = cache[body.instrument_id]
+            if prior and any(prior[key] != instrument[key] for key in ("symbol", "exchange", "currency")):
+                raise md.DataError(422, "This portfolio already records a different listing for this instrument.")
+            instrument = prior or instrument
+        event.pop("instrument_id")
+        event["instrument"] = instrument
+        event["commission_eur"] = euros(body.commission_eur)
+    else:
+        event["amount_eur"] = euros(body.amount_eur)
+    return event
+
+
+@router.post(BASE + "/{portfolio_id}/transactions", status_code=201)
+def add_transaction(customer_id: str, portfolio_id: str, body: TransactionRequest, request: Request, user: CurrentUser):
+    db, owner, now = request.app.state.database, str(user["_id"]), md.utcnow()
+    normalized = normalized_request(body)
     with localcontext() as context:
         context.prec = 80
         for _ in range(8):
@@ -526,31 +565,7 @@ def add_transaction(customer_id: str, portfolio_id: str, body: TransactionReques
                 return event_public(existing)
             if len(events) >= MAX_TRANSACTIONS:
                 raise md.DataError(409, f"This portfolio has reached the {MAX_TRANSACTIONS}-transaction limit.")
-            event = {**normalized, "id": str(ObjectId()), "sequence": len(events) + 1,
-                     "created_at": _timestamp(now), "_request": normalized}
-            if isinstance(body, TradeRequest):
-                gross = (body.quantity * body.price_eur).quantize(CENT, rounding=ROUND_HALF_UP)
-                if gross <= 0 or gross > MAX_AMOUNT:
-                    raise md.DataError(422, "Trade value must round to at least EUR 0.01 and be no more than EUR 1 trillion.")
-                if body.type == "sell" and body.commission_eur > gross:
-                    raise md.DataError(422, "Sell commission cannot exceed the sale proceeds.")
-                prior = next((item["instrument"] for item in active_events(events) if item.get("instrument", {}).get("instrument_id") == body.instrument_id), None)
-                if body.type == "sell":
-                    if not prior:
-                        raise md.DataError(422, "Insufficient holdings; short positions are not supported.")
-                    # Selling a recorded EUR position must not depend on catalogue
-                    # availability or the acquired universe's current listing.
-                    instrument = prior
-                else:
-                    instrument = acquired_instrument(db, body.instrument_id, now)
-                    if prior and any(prior[key] != instrument[key] for key in ("symbol", "exchange", "currency")):
-                        raise md.DataError(422, "This portfolio already records a different listing for this instrument.")
-                    instrument = prior or instrument
-                event.pop("instrument_id")
-                event["instrument"] = instrument
-                event["commission_eur"] = euros(body.commission_eur)
-            else:
-                event["amount_eur"] = euros(body.amount_eur)
+            event = build_event(db, body, events, now)
             replay([*events, event])
             result = db.portfolios.update_one({**scope(owner, customer_id, portfolio_id), "revision": document["revision"]},
                                                {"$push": {"transactions": event}, "$inc": {"revision": 1}})
