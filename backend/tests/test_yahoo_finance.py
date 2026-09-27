@@ -108,6 +108,77 @@ def test_long_history_chunks_preserve_evidence_and_replay(transport):
         validate_index_page(damaged, SYMBOL)
 
 
+def no_data_response(url, params, **error_changes):
+    return response(url, {"chart": {"result": None, "error": {
+        "code": "Bad Request", "description": f"Data doesn't exist for startDate = {params['period1']}, endDate = {params['period2']}",
+        **error_changes,
+    }}}, 400)
+
+
+def test_pre_listing_chunk_preserves_rejection_then_downloads_and_replays(transport):
+    from yahoo_finance import validate_index_page
+    state, calls = transport
+    for payload in (state['meta'], state['history']):
+        payload['chart']['result'][0]['meta'].update(instrumentType='INDEX', firstTradeDate=stamp(START))
+    def handler(session, method, url, kwargs):
+        params = kwargs.get('params', {})
+        if 'period2' in params and params['period2'] < stamp(START):
+            return no_data_response(url, params)
+    state['handler'] = handler
+    with YahooFinanceClient() as client:
+        page = client.eod_page(SYMBOL, 'YAHOO', '1900-01-01', END)
+        assert [row['date'] for row in page['data']] == [START, END]
+        chunks = page['raw']['history_chunks']
+        evidence = chunks[0]['raw']['empty_history']
+        assert evidence['response']['chart']['error']['code'] == 'Bad Request'
+        assert evidence['request']['period2'] <= evidence['metadata']['firstTradeDate']
+        validate_index_page(page, SYMBOL)
+        count = len(calls)
+        splits = client.splits_page(SYMBOL, '1900-01-01', END)
+        assert len(calls) == count
+        assert len([c for c in calls if 'period1' in c[2].get('params', {})]) == 2
+    persisted = json.loads(json.dumps(page))
+    assert splits_from_eod_page(persisted, SYMBOL, '1900-01-01', END) == splits
+    assert len(splits['data']) == 1
+    damaged = deepcopy(page)
+    damaged['raw']['history_chunks'][0]['raw']['empty_history']['metadata']['firstTradeDate'] = 0
+    with pytest.raises(MarketDataError):
+        validate_index_page(damaged, SYMBOL)
+    with pytest.raises(MarketDataError):
+        splits_from_eod_page(damaged, SYMBOL, '1900-01-01', END)
+
+
+@pytest.mark.parametrize('first_trade', [None, True, '1711627200', 0, stamp(START)])
+def test_no_data_error_overlapping_or_without_valid_inception_still_fails(transport, first_trade):
+    state, calls = transport
+    state['meta']['chart']['result'][0]['meta']['firstTradeDate'] = first_trade
+    def handler(session, method, url, kwargs):
+        if 'period1' in kwargs.get('params', {}):
+            return no_data_response(url, kwargs['params'])
+    state['handler'] = handler
+    with YahooFinanceClient() as client:
+        with pytest.raises(MarketDataError) as error:
+            client.eod_page(SYMBOL, 'XLON', START, END)
+        assert error.value.code == 'http_error'
+    assert len([c for c in calls if 'period1' in c[2].get('params', {})]) == 1
+
+
+@pytest.mark.parametrize('change', [{'description': 'Data unavailable'}, {'code': 'Not Found'},
+                                    {'description': "Data doesn't exist for startDate = 0, endDate = 1"}])
+def test_other_400_responses_are_never_treated_as_empty_history(transport, change):
+    state, calls = transport
+    state['meta']['chart']['result'][0]['meta']['firstTradeDate'] = stamp(END) + 86400
+    def handler(session, method, url, kwargs):
+        if 'period1' in kwargs.get('params', {}):
+            return no_data_response(url, kwargs['params'], **change)
+    state['handler'] = handler
+    with YahooFinanceClient() as client:
+        with pytest.raises(MarketDataError) as error:
+            client.eod_page(SYMBOL, 'XLON', START, END)
+        assert error.value.code == 'http_error'
+    assert len([c for c in calls if 'period1' in c[2].get('params', {})]) == 1
+
+
 def test_chunk_boundary_rows_and_actions_are_not_duplicated(transport, monkeypatch):
     monkeypatch.setattr("yahoo_finance._HISTORY_CHUNK_DAYS", 3)
     with YahooFinanceClient() as client:
