@@ -139,6 +139,12 @@ included; index profiles are excluded from ETF acquired inventory and selectors.
 All routes require authentication:
 
 - `GET /indices?limit=20&offset=0` → `{items,total,limit,offset}` (limit 1–100).
+- `GET /indices/search?q=MSCI%20World%20net&limit=15` → `{items}` with
+  `{symbol,name,currency,return_variant}` candidates. Query: 2–100 characters;
+  limit: 1–20. Performs an explicit Yahoo search using the bounded provider client,
+  keeps only `quoteType=INDEX`, deduplicates symbols, and does not persist records
+  or enqueue history downloads. Currency may be null; return variant is always
+  `unknown` (never inferred). Provider failures return a safe retryable 503.
 - `POST /indices` → record (201), body `{symbol,name,currency:null,return_variant:"unknown"}`.
   Currency is optional/null or three letters. Return variant defaults to `unknown`;
   other accepted values are `price`, `net_total_return`, `gross_total_return`.

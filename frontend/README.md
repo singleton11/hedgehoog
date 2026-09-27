@@ -42,13 +42,18 @@ and refresh to try again.
 ## Index catalogue
 
 Open **Indices** in the workspace navigation (`#/indices`) to browse the separate
-index catalogue. **Add index** saves a Yahoo symbol and metadata without downloading
-prices. Leave currency and return variant unknown unless independently verified.
+index catalogue. **Add index** opens a debounced Yahoo name/symbol search (for example,
+`MSCI World net`). Select a suggestion with the mouse or arrow keys and Enter, then
+**Save index** without filling in metadata or downloading prices. Only index results
+are offered, not ETFs or futures. Currency is shown when supplied by search; return
+variant remains unknown rather than being inferred from names or symbols. Exact
+series availability depends on Yahoo. **Manual entry (advanced)** remains available.
 **Download data** / **Refresh data** requires confirmation and submits a background
 job; the table polls saved status and shows the published quote count/date range.
 A failed refresh leaves previous published data available. API, RabbitMQ and the
-worker must be running for downloads. Browsing and adding catalogue entries make
-no market-data provider calls. This first scope does not enable benchmarks or ETF
+worker must be running for downloads. Browsing the saved catalogue and saving entries
+make no market-data provider calls; typing at least two characters in the add form
+explicitly searches Yahoo after a 350 ms pause. Search never downloads price history. This first scope does not enable benchmarks or ETF
 proxy assignments, and the starter list is not a complete global directory.
 
 ## Build

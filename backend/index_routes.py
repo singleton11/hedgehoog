@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth import CurrentUser
 from celery_app import enqueue_acquisition
-from indices import add_index, index_detail, list_indices, remove_index, require_index
+from indices import add_index, index_detail, list_indices, remove_index, require_index, search_indices
 from instrument_routes import Generation, QuotesResponse, knowledge_time
 from market_data import read_quotes, request_acquisition
 
@@ -53,6 +53,11 @@ def catalogue(request: Request, user: CurrentUser, limit: Annotated[int, Query(g
 @router.post("", status_code=201)
 def create_index(body: IndexRequest, request: Request, user: CurrentUser):
     return add_index(request.app.state.database, body.model_dump(), str(user["_id"]))
+
+
+@router.get("/search")
+def search(request: Request, user: CurrentUser, q: Annotated[str, Query(min_length=2, max_length=100)], limit: Annotated[int, Query(ge=1, le=20)] = 15):
+    return {"items": search_indices(request.app.state.settings, q, limit)}
 
 
 @router.get("/{instrument_id}")

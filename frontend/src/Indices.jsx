@@ -6,7 +6,7 @@ const PAGE_SIZE = 20;
 const VARIANTS = { unknown: 'Unknown', price: 'Price', net_total_return: 'Net total return', gross_total_return: 'Gross total return' };
 const pending = (job) => ['queued', 'running'].includes(job?.status);
 
-function AddIndex({ busy, onSave, onCancel }) {
+function ManualIndex({ busy, onSave, onCancel }) {
   const [name, setName] = useState('');
   const [symbol, setSymbol] = useState('');
   const [currency, setCurrency] = useState('');
@@ -30,6 +30,91 @@ function AddIndex({ busy, onSave, onCancel }) {
     <p className="muted">Leave currency and return variant unknown unless you have verified the exact index series. User-supplied metadata is not provider verification.</p>
     <div className="button-group"><button disabled={busy || !name.trim() || !symbol.trim()}>Save index</button>
       <button type="button" className="secondary" onClick={onCancel} disabled={busy}>Cancel</button></div>
+  </form>;
+}
+
+function AddIndex({ busy, onSave, onCancel }) {
+  const { request } = useAuth();
+  const [manual, setManual] = useState(false);
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [error, setError] = useState(null);
+  const [attempt, setAttempt] = useState(0);
+  const [active, setActive] = useState(-1);
+  const [expanded, setExpanded] = useState(true);
+  const version = useRef(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const current = version.current;
+    if (manual || selected || query.trim().length < 2) return () => controller.abort();
+    setLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const data = await request(`/indices/search?q=${encodeURIComponent(query.trim())}`, { signal: controller.signal });
+        if (controller.signal.aborted || current !== version.current) return;
+        if (!Array.isArray(data?.items) || data.items.some((item) => typeof item.name !== 'string' || typeof item.symbol !== 'string')) {
+          throw new Error('The backend returned unexpected index search results. Please retry.');
+        }
+        setResults(data.items); setSearched(true);
+      } catch (err) {
+        if (!controller.signal.aborted && current === version.current) setError(err.message);
+      } finally {
+        if (!controller.signal.aborted && current === version.current) setLoading(false);
+      }
+    }, 350);
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [query, manual, selected, request, attempt]);
+
+  function reset() {
+    version.current += 1;
+    setResults([]); setSelected(null); setError(null); setSearched(false); setLoading(false); setActive(-1); setExpanded(true);
+  }
+  function choose(item) {
+    version.current += 1;
+    setSelected(item); setQuery(item.name); setResults([]); setLoading(false); setExpanded(false); setActive(-1);
+  }
+  if (manual) return <>
+    <button type="button" className="secondary" disabled={busy} onClick={() => { reset(); setManual(false); }}>Search instead</button>
+    <ManualIndex busy={busy} onSave={onSave} onCancel={onCancel} />
+  </>;
+  const visible = expanded && results.length > 0;
+  return <form className="acquisition-form index-form" aria-label="Add index" onSubmit={(event) => {
+    event.preventDefault();
+    if (selected && !busy) onSave({ name: selected.name, symbol: selected.symbol, currency: selected.currency || null, return_variant: 'unknown' });
+  }}>
+    <h3>Find an index</h3>
+    <p>Search Yahoo Finance by name or symbol. Only indices are shown, never ETFs. Saving does not download market data.</p>
+    <label htmlFor="index-search">Search indices</label>
+    <input id="index-search" role="combobox" autoComplete="off" aria-autocomplete="list" aria-controls="index-suggestions"
+      aria-expanded={Boolean(visible)} aria-activedescendant={visible && active >= 0 ? `index-suggestion-${active}` : undefined}
+      placeholder="MSCI World net" maxLength={100} value={query} disabled={busy}
+      onChange={(event) => { reset(); setQuery(event.target.value); }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') { event.preventDefault(); setExpanded(false); setActive(-1); }
+        if (results.length && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
+          event.preventDefault(); setExpanded(true);
+          setActive((value) => event.key === 'ArrowDown' ? (value + 1) % results.length : (value <= 0 ? results.length - 1 : value - 1));
+        }
+        if (event.key === 'Enter' && !selected) { event.preventDefault(); if (visible && active >= 0) choose(results[active]); }
+      }} />
+    <ul id="index-suggestions" role="listbox" aria-label="Matching indices" hidden={!visible}>
+      {results.map((item, i) => <li key={item.symbol} id={`index-suggestion-${i}`} role="option" aria-selected={active === i}
+        onMouseDown={(event) => event.preventDefault()} onClick={() => { if (!busy) choose(item); }}>
+        {item.name} · {item.symbol} · {item.currency || 'Unknown currency'} · Unknown return variant
+      </li>)}
+    </ul>
+    {loading && <p role="status">Searching indices…</p>}
+    {error && <><p role="alert">{error}</p><button type="button" className="secondary" onClick={() => { reset(); setAttempt((value) => value + 1); }}>Retry search</button></>}
+    {searched && !loading && !error && !results.length && !selected && <p role="status">No matching indices found. Yahoo may not carry this exact series; try another name or use manual entry.</p>}
+    {selected && <p role="status">Selected: {selected.name} ({selected.symbol}) · {selected.currency || 'Unknown currency'}</p>}
+    <p className="muted">Check the exact series before adding. Search does not verify price, net or gross total-return semantics; the return variant remains unknown.</p>
+    <div className="button-group"><button disabled={busy || !selected}>Save index</button>
+      <button type="button" className="secondary" disabled={busy} onClick={() => { reset(); setManual(true); }}>Manual entry (advanced)</button>
+      <button type="button" className="secondary" disabled={busy} onClick={onCancel}>Cancel</button></div>
   </form>;
 }
 

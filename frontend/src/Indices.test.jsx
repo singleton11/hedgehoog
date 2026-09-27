@@ -16,6 +16,7 @@ function server() {
     if (url === '/api/auth/me') return response(200, { id: 'u', login: 'alice', role: 'user' });
     if (url === '/api/instruments/budget') return response(200, { provider: 'yfinance', metered: false });
     if (url.startsWith('/api/instruments/acquired?')) return response(200, page([]));
+    if (url.startsWith('/api/indices/search?')) return state.search ? state.search(url, options) : response(200, { items: [] });
     if (url.startsWith('/api/indices?')) {
       if (state.list) return state.list(url, options);
       const offset = Number(new URL(url, 'http://localhost').searchParams.get('offset'));
@@ -106,6 +107,7 @@ it('shows a separate catalogue without downloading on direct load or navigation'
 it('adds catalogue metadata without acquisition, with unknown defaults', async () => {
   const s = server(); await open();
   fireEvent.click(screen.getByRole('button', { name: 'Add index' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Manual entry (advanced)' }));
   fireEvent.change(screen.getByLabelText('Index name'), { target: { value: 'My index' } });
   fireEvent.change(screen.getByLabelText('Yahoo symbol'), { target: { value: '^test' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save index' })); await flush();
@@ -114,6 +116,61 @@ it('adds catalogue metadata without acquisition, with unknown defaults', async (
   expect(JSON.parse(s.posts()[0][1].body)).toEqual({ name: 'My index', symbol: '^TEST', currency: null, return_variant: 'unknown' });
   expect(screen.getByText('My index')).toBeInTheDocument();
   expect(screen.getByText('Index saved. No market data was downloaded.')).toBeInTheDocument();
+});
+
+it('debounces index search and saves a keyboard-selected result without downloading', async () => {
+  const s = server();
+  s.search = () => response(200, { items: [{ name: 'MSCI World Net', symbol: '^WORLD', currency: null, return_variant: 'unknown' }] });
+  await open(); fireEvent.click(screen.getByRole('button', { name: 'Add index' }));
+  const input = screen.getByRole('combobox', { name: 'Search indices' });
+  fireEvent.change(input, { target: { value: 'M' } }); await advance(400);
+  expect(s.fetch.mock.calls.filter(([url]) => url.includes('/search?'))).toHaveLength(0);
+  fireEvent.change(input, { target: { value: 'MSCI World net' } }); await advance(349);
+  expect(s.fetch.mock.calls.filter(([url]) => url.includes('/search?'))).toHaveLength(0);
+  await advance(1);
+  expect(screen.getByRole('option')).toHaveTextContent('MSCI World Net · ^WORLD · Unknown currency · Unknown return variant');
+  expect(screen.getByRole('button', { name: 'Save index' })).toBeDisabled();
+  fireEvent.keyDown(input, { key: 'ArrowDown' }); fireEvent.keyDown(input, { key: 'Enter' });
+  expect(s.posts()).toHaveLength(0);
+  fireEvent.click(screen.getByRole('button', { name: 'Save index' })); await flush();
+  expect(s.posts()).toHaveLength(1);
+  expect(JSON.parse(s.posts()[0][1].body)).toEqual({ name: 'MSCI World Net', symbol: '^WORLD', currency: null, return_variant: 'unknown' });
+});
+
+it('ignores stale search responses and clears selection when editing', async () => {
+  const s = server(); const old = deferred();
+  s.search = (url) => url.includes('Old') ? old.promise : response(200, { items: [{ name: 'New index', symbol: '^NEW' }] });
+  await open(); fireEvent.click(screen.getByRole('button', { name: 'Add index' }));
+  const input = screen.getByRole('combobox');
+  fireEvent.change(input, { target: { value: 'Old' } }); await advance(350);
+  const oldCall = s.fetch.mock.calls.find(([url]) => url.includes('q=Old'));
+  fireEvent.change(input, { target: { value: 'New' } }); await advance(350);
+  expect(oldCall[1].signal.aborted).toBe(true);
+  old.resolve(response(200, { items: [{ name: 'Old index', symbol: '^OLD' }] })); await flush();
+  expect(screen.getByRole('option')).toHaveTextContent('New index');
+  fireEvent.click(screen.getByRole('option'));
+  expect(screen.getByRole('button', { name: 'Save index' })).toBeEnabled();
+  fireEvent.change(input, { target: { value: 'x' } });
+  expect(screen.getByRole('button', { name: 'Save index' })).toBeDisabled();
+  expect(s.posts()).toHaveLength(0);
+});
+
+it('handles empty search, provider errors, retry and cancellation', async () => {
+  const s = server(); await open(); fireEvent.click(screen.getByRole('button', { name: 'Add index' }));
+  const input = screen.getByRole('combobox');
+  fireEvent.change(input, { target: { value: 'World' } }); await advance(350);
+  expect(screen.getByText(/No matching indices found/)).toBeInTheDocument();
+  s.search = () => response(503, { detail: 'Search unavailable' });
+  fireEvent.change(input, { target: { value: 'World net' } }); await advance(350);
+  expect(screen.getByText('Search unavailable')).toBeInTheDocument();
+  const pending = deferred(); s.search = () => pending.promise;
+  fireEvent.click(screen.getByRole('button', { name: 'Retry search' })); await advance(350);
+  const call = s.fetch.mock.calls.filter(([url]) => url.includes('/search?')).at(-1);
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(call[1].signal.aborted).toBe(true);
+  pending.resolve(response(200, { items: [{ name: 'Late', symbol: '^LATE' }] })); await flush();
+  expect(screen.queryByRole('option')).not.toBeInTheDocument();
+  expect(s.posts()).toHaveLength(0);
 });
 
 it('requires confirmation, polls saved status and displays downloaded coverage', async () => {
@@ -181,6 +238,7 @@ it('does not allow an aborted pre-save read to replace the updated catalogue', a
   const old = deferred(); s.list = () => old.promise; await advance(2000);
   // The row is pending, so use add metadata to exercise cancellation of that read.
   fireEvent.click(screen.getByRole('button', { name: 'Add index' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Manual entry (advanced)' }));
   fireEvent.change(screen.getByLabelText('Index name'), { target: { value: 'New index' } });
   fireEvent.change(screen.getByLabelText('Yahoo symbol'), { target: { value: '^NEW' } });
   s.list = null; fireEvent.click(screen.getByRole('button', { name: 'Save index' })); await flush();
@@ -205,6 +263,7 @@ it('rejects malformed catalogue responses and allows a read-only retry', async (
 it('keeps manual metadata after a duplicate error and never requests market data', async () => {
   const s = server(); s.add = () => response(409, { detail: 'This Yahoo symbol is already in the catalogue' });
   await open(); fireEvent.click(screen.getByRole('button', { name: 'Add index' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Manual entry (advanced)' }));
   fireEvent.change(screen.getByLabelText('Index name'), { target: { value: 'Duplicate' } });
   fireEvent.change(screen.getByLabelText('Yahoo symbol'), { target: { value: '^GSPC' } });
   fireEvent.change(screen.getByLabelText('Currency (optional)'), { target: { value: 'usd' } });

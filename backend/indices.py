@@ -20,6 +20,38 @@ SEEDS = (("^GSPC", "S&P 500"), ("^DJI", "Dow Jones Industrial Average"),
          ("^IXIC", "NASDAQ Composite"), ("^FTSE", "FTSE 100"), ("^GDAXI", "DAX"))
 
 
+def search_indices(settings, query, limit=15):
+    """Search Yahoo candidates only; never acquire history or infer return semantics."""
+    from market_data import provider_client
+    from market_provider import MarketDataError
+
+    query = query.strip()
+    if len(query) < 2:
+        raise DataError(422, "Enter at least two characters to search indices.")
+    try:
+        with provider_client(settings, "yfinance", lambda: None) as client:
+            rows = client.tickerslist_page(query)["data"]
+    except MarketDataError:
+        raise DataError(503, "Index search is unavailable. Please retry or use manual entry.") from None
+    results, seen = [], set()
+    for row in rows:
+        if not isinstance(row, dict) or row.get("quoteType") != "INDEX":
+            continue
+        symbol = row.get("symbol")
+        name = row.get("longname") or row.get("shortname")
+        if (not isinstance(symbol, str) or not re.fullmatch(r"[A-Z0-9^][A-Z0-9._^=\-]{0,63}", symbol)
+                or not isinstance(name, str) or not name.strip() or len(name.strip()) > 200 or symbol in seen):
+            continue
+        currency = row.get("currency")
+        results.append({"symbol": symbol, "name": name.strip(),
+                        "currency": currency if isinstance(currency, str) and re.fullmatch(r"[A-Z]{3}", currency) else None,
+                        "return_variant": "unknown"})
+        seen.add(symbol)
+        if len(results) >= limit:
+            break
+    return results
+
+
 def ensure_catalogue(db):
     db.indices.create_index("symbol", unique=True)
     db.indices.create_index("instrument_id", unique=True)
