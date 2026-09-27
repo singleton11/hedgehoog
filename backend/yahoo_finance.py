@@ -266,7 +266,8 @@ def _chart(payload: Any, symbol: str) -> dict:
 
 def _no_history_response(payload: Any, params: dict) -> bool:
     start, end = params.get("period1"), params.get("period2")
-    if type(start) is not int or type(end) is not int or start >= end:
+    if (any(not isinstance(value, int) or isinstance(value, bool) for value in (start, end))
+            or start >= end):
         return False
     chart = payload.get("chart") if isinstance(payload, dict) else None
     return (isinstance(chart, dict) and chart.get("result") is None
@@ -285,7 +286,8 @@ def _empty_history_meta(payload: dict, symbol: str) -> dict | None:
     if not isinstance(meta, dict) or not isinstance(params, dict):
         raise _error("malformed_response")
     first = meta.get("firstTradeDate")
-    if (type(first) is not int or not _no_history_response(evidence.get("response"), params)
+    if (not isinstance(first, int) or isinstance(first, bool)
+            or not _no_history_response(evidence.get("response"), params)
             or params["period2"] > first):
         raise _error("http_error")
     if meta.get("symbol") != symbol:

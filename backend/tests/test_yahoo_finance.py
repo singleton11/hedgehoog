@@ -137,7 +137,11 @@ def test_pre_listing_chunk_preserves_rejection_then_downloads_and_replays(transp
         splits = client.splits_page(SYMBOL, '1900-01-01', END)
         assert len(calls) == count
         assert len([c for c in calls if 'period1' in c[2].get('params', {})]) == 2
-    persisted = json.loads(json.dumps(page))
+    from bson import BSON
+    from bson.int64 import Int64
+    persisted = BSON.encode(json.loads(json.dumps(page))).decode()
+    assert isinstance(persisted['raw']['history_chunks'][0]['raw']['empty_history']['request']['period1'], Int64)
+    validate_index_page(persisted, SYMBOL)
     assert splits_from_eod_page(persisted, SYMBOL, '1900-01-01', END) == splits
     assert len(splits['data']) == 1
     damaged = deepcopy(page)
