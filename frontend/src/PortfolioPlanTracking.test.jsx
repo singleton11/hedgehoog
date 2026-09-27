@@ -11,17 +11,30 @@ const result = {
 };
 const props = { portfolioPath: '/customers/c/portfolios/p', planId: 'plan1', revision: 0 };
 describe('Portfolio plan tracking', () => {
-  it('shows probability, change and the revised payment', async () => {
+  it('shows metrics without differences, explanatory text or warnings', async () => {
     render(<PortfolioPlanTracking {...props} request={vi.fn().mockResolvedValue(result)} />);
     expect(await screen.findByText('Below target probability')).toBeInTheDocument();
     expect(screen.getByText('70.0%')).toBeInTheDocument();
-    expect(screen.getAllByText('-20.0 pp')).toHaveLength(2);
+    expect(screen.queryByText(/pp|Gap to target|Change from saved plan|Monthly change from plan/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Model and valuation warnings|Model uncertainty|From today's portfolio|Buy and hold/)).not.toBeInTheDocument();
     const section = screen.getByRole('region', { name: 'Plan progress' });
     expect(section.querySelectorAll('dl.facts')).toHaveLength(2);
-    expect(section.querySelectorAll('dl.facts > div')).toHaveLength(8);
+    expect(section.querySelectorAll('dl.facts > div')).toHaveLength(5);
     expect(screen.getByText('Below target probability')).toHaveClass('return-negative');
     expect(screen.getByText('Planned monthly investment')).toBeInTheDocument();
     expect(screen.getByText('Monthly investment needed to reach target')).toBeInTheDocument();
+  });
+  it.each([
+    ['99.99', true, 'Ahead of plan'],
+    ['100.00', true, 'On track'],
+    ['0.00', true, 'Ahead of plan'],
+    ['99.99', false, 'Below target probability'],
+  ])('classifies a required payment of %s with on_track=%s as %s', async (required, onTrack, status) => {
+    render(<PortfolioPlanTracking {...props} request={vi.fn().mockResolvedValue({
+      ...result, on_track: onTrack, success_probability: onTrack ? 0.95 : 0.7,
+      required_monthly_contribution_eur: required,
+    })} />);
+    expect(await screen.findByText(status)).toHaveClass(onTrack ? 'return-positive' : 'return-negative');
   });
   it('does not request calculations without a plan', () => {
     const request = vi.fn();
