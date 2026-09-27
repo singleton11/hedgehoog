@@ -4,7 +4,7 @@ import PerformanceSettings from './PerformanceSettings.jsx';
 
 const { auth, request } = vi.hoisted(() => ({ auth: { user: { id: 'a', role: 'admin' } }, request: vi.fn() }));
 vi.mock('./Auth.jsx', () => ({ useAuth: () => ({ ...auth, request: auth.request || request }) }));
-const instrument = { instrument_id: 'IE00B4L5Y983', name: 'Overnight ETF', symbol: 'TEST' };
+const instrument = { instrument_id: 'idx-00000000-0000-0000-0000-000000000001', name: 'Overnight index', symbol: '^TEST' };
 const flush = async () => act(async () => {});
 beforeEach(() => {
   auth.user = { id: 'a', role: 'admin' }; delete auth.request;
@@ -17,19 +17,21 @@ afterEach(cleanup);
 
 it('loads saved choices and explicitly saves an app-wide selection or clears it', async () => {
   render(<PerformanceSettings />); await flush();
+  expect(request).toHaveBeenCalledWith('/settings/performance/indices?limit=100&offset=0', expect.anything());
+  expect(screen.getByRole('link', { name: 'Acquire an index' })).toHaveAttribute('href', '#/indices');
   expect(request.mock.calls.every(([, options]) => !options.method)).toBe(true);
-  fireEvent.change(screen.getByLabelText('Saved EUR instrument'), { target: { value: instrument.instrument_id } });
+  fireEvent.change(screen.getByLabelText('Saved EUR index'), { target: { value: instrument.instrument_id } });
   fireEvent.click(screen.getByRole('button', { name: 'Save settings' })); await flush();
   expect(request).toHaveBeenCalledWith('/settings/performance', { method: 'PUT', body: { instrument_id: instrument.instrument_id } });
   expect(screen.getByRole('status')).toHaveTextContent('Saved for all users');
-  fireEvent.change(screen.getByLabelText('Saved EUR instrument'), { target: { value: '' } });
+  fireEvent.change(screen.getByLabelText('Saved EUR index'), { target: { value: '' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save settings' })); await flush();
   expect(request).toHaveBeenLastCalledWith('/settings/performance', { method: 'PUT', body: { instrument_id: null } });
 });
 
 it('is read-only for non-admins', async () => {
   auth.user.role = 'user'; render(<PerformanceSettings />); await flush();
-  expect(screen.getByLabelText('Saved EUR instrument')).toBeDisabled();
+  expect(screen.getByLabelText('Saved EUR index')).toBeDisabled();
   expect(screen.queryByRole('button', { name: 'Save settings' })).not.toBeInTheDocument();
 });
 

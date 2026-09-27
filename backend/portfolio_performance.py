@@ -119,7 +119,9 @@ def performance(db, document, benchmark_id=None, *, now=None):
         state = db.instrument_state.find_one({"_id": proxy["instrument_id"]}) or {}
         listing = {key: proxy[key] for key in ("symbol", "exchange")}
         # Pin the saved choice: a relisted or removed source is not silently substituted.
-        rows = ledger.quote_rows(db, proxy, now) if state.get("listing") == listing else []
+        active_index = db.indices.find_one({"instrument_id": proxy["instrument_id"],
+                                            "symbol": proxy["symbol"], "removed_at": {"$exists": False}})
+        rows = ledger.quote_rows(db, proxy, now) if active_index and state.get("listing") == listing else []
         proxy_marks = SavedMarks(rows, required_currency="EUR", currency_override=state.get("price_currency_override"))
     ratios = RiskRatios()
     result = {"portfolio_id": document["_id"], "currency": "EUR", "method": "daily_twr",

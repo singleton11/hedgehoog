@@ -6,7 +6,20 @@ import pytest
 
 from portfolio_performance import RiskRatios
 from test_market_data import ISIN, LISTING, NOW, api, clock, config, db
-from test_portfolio_tracker import tracker, quote, second_instrument, SECOND_ISIN, SECOND_LISTING
+from test_portfolio_tracker import tracker, quote
+
+SECOND_ISIN = 'idx-00000000-0000-0000-0000-000000000001'
+SECOND_LISTING = {'symbol': '^EURTEST', 'exchange': 'YAHOO'}
+
+
+def second_instrument(db, days=('2026-09-15', '2026-09-16')):
+    db.indices.insert_one({'instrument_id': SECOND_ISIN, 'name': 'EUR overnight index',
+                           'symbol': SECOND_LISTING['symbol'], 'currency': 'EUR'})
+    db.instrument_state.insert_one({'_id': SECOND_ISIN, 'listing': SECOND_LISTING})
+    db.instruments.insert_one({'instrument_id': SECOND_ISIN, **SECOND_LISTING,
+                               'collected_at': NOW, 'data': {}})
+    for day, close in zip(days, ('20', '30')):
+        quote(db, day, close, isin=SECOND_ISIN, listing=SECOND_LISTING)
 from test_portfolio_performance import get, invest, index_history
 
 
@@ -32,14 +45,54 @@ def test_settings_auth_and_admin_only(tracker, db):
     assert client.put('/settings/performance', json={'instrument_id': None}).status_code == 401
 
 
-def test_setting_requires_acquired_eur_price_instrument_and_explicit_clear(tracker, db):
+def test_setting_requires_acquired_eur_index_and_explicit_clear(tracker, db):
     client, _, _, _ = tracker
-    for body in ({}, {'instrument_id': '^IRX'}, {'instrument_id': SECOND_ISIN}, {'instrument_id': None, 'extra': 1}):
+    for body in ({}, {'instrument_id': '^IRX'}, {'instrument_id': ISIN}, {'instrument_id': None, 'extra': 1}):
         assert client.put('/settings/performance', json=body).status_code == 422
+    assert client.put('/settings/performance', json={'instrument_id': SECOND_ISIN}).status_code == 404
     second_instrument(db)
+    configure(client)
     db.quotes.update_many({'instrument_id': SECOND_ISIN}, {'$set': {'data.price_currency': 'USD'}})
     assert client.put('/settings/performance', json={'instrument_id': SECOND_ISIN}).status_code == 422
-    configure(client, ISIN)
+    assert configure(client, None)['proxy'] is None
+
+
+def test_proxy_choices_filter_unacquired_non_eur_removed_and_paginate(tracker, db):
+    client, _, _, _ = tracker
+    endpoint = '/settings/performance/indices'
+    assert client.get(endpoint).json()['items'] == []
+    second_instrument(db)
+    page = client.get(endpoint, params={'limit': 1}).json()
+    assert page['total'] == 1 and page['items'][0]['instrument_id'] == SECOND_ISIN
+    assert client.get(endpoint, params={'limit': 1, 'offset': 1}).json()['items'] == []
+    for currency in ('USD', None):
+        db.quotes.update_many({'instrument_id': SECOND_ISIN}, {'$set': {'data.price_currency': currency}})
+        assert client.get(endpoint).json()['items'] == []
+        assert client.put('/settings/performance', json={'instrument_id': SECOND_ISIN}).status_code == 422
+    db.quotes.update_many({'instrument_id': SECOND_ISIN}, {'$set': {'data.price_currency': 'EUR'}})
+    db.instruments.delete_many({'instrument_id': SECOND_ISIN})
+    assert client.get(endpoint).json()['items'] == []
+    assert client.put('/settings/performance', json={'instrument_id': SECOND_ISIN}).status_code == 422
+    db.indices.update_one({'instrument_id': SECOND_ISIN}, {'$set': {'removed_at': NOW}})
+    assert client.put('/settings/performance', json={'instrument_id': SECOND_ISIN}).status_code == 404
+    client.post('/auth/logout')
+    assert client.get(endpoint).status_code == 401
+
+
+def test_removed_index_and_legacy_etf_setting_make_ratios_unavailable(tracker, db):
+    client, _, _, url = tracker
+    invest(client, url)
+    second_instrument(db, days=('2026-09-14', '2026-09-16'))
+    configure(client)
+    assert get(client, url)['summary']['sharpe'] is not None
+    db.indices.update_one({'instrument_id': SECOND_ISIN}, {'$set': {'removed_at': NOW}})
+    assert get(client, url)['summary']['sharpe'] is None
+    db.app_settings.update_one({'_id': 'portfolio_performance'}, {'$set': {
+        'proxy': {'instrument_id': ISIN, 'name': 'Legacy ETF', **LISTING, 'currency': 'EUR'},
+    }})
+    result = get(client, url)
+    assert result['summary']['sharpe'] is None
+    assert result['summary']['twr_percent'] == '10.00000000'
     assert configure(client, None)['proxy'] is None
 
 

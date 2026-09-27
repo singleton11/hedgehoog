@@ -25,7 +25,7 @@ function Settings({ request, admin }) {
         const items = [], seen = new Set();
         let offset = 0, total;
         do {
-          const page = await request(`/portfolio-instruments?limit=100&offset=${offset}`, { signal: controller.signal });
+          const page = await request(`/settings/performance/indices?limit=100&offset=${offset}`, { signal: controller.signal });
           if (controller.signal.aborted) return;
           if (!Array.isArray(page?.items) || !Number.isInteger(page.total) || page.total < 0 || page.offset !== offset || page.limit !== 100
             || (total !== undefined && total !== page.total) || page.items.length > 100 || page.items.length > page.total - offset
@@ -60,18 +60,18 @@ function Settings({ request, admin }) {
   return <article className="customer-planner" aria-label="Settings">
     <h2>Settings</h2><h3>Portfolio risk-return proxy</h3>
     <p>This app-wide setting applies to all users and portfolios. Only administrators can change it.</p>
-    <p>Choose an acquired EUR-priced ETF whose saved price returns will serve as both Sharpe’s risk-free proxy and Sortino’s minimum-return target. An overnight-rate ETF is a practical proxy, not a guaranteed risk-free investment. Inflation indices and yield quotes are not price-return proxies.</p>
-    <p>Missing history makes ratios unavailable; there is no zero-rate fallback. Cash distributions are not reinvested. Changing this setting recalculates historical ratios when portfolios are reopened or refreshed.</p>
+    <p>Choose an acquired EUR-denominated index whose saved level returns will serve as both Sharpe’s risk-free proxy and Sortino’s minimum-return target. Use an appropriate overnight-rate or money-market return index; an equity index is not risk-free. Inflation indices and annual yield quotes are not return proxies.</p>
+    <p>Missing history makes ratios unavailable; there is no zero-rate fallback. Returns follow the saved index levels and their return variant. Changing this setting recalculates historical ratios when portfolios are reopened or refreshed.</p>
     {!current && <p role="status">Loading settings…</p>}
     {current?.error && <><p role="alert">{current.error}</p><button onClick={() => setAttempt(attempt + 1)}>Retry settings</button></>}
     {current?.items && <form onSubmit={save}>
-      <label htmlFor="risk-proxy">Saved EUR instrument</label>
+      <label htmlFor="risk-proxy">Saved EUR index</label>
       <select id="risk-proxy" value={selection} disabled={!admin || busy} onChange={(event) => setSelection(event.target.value)}>
         <option value="">Not configured — ratios unavailable</option>
-        {selection && !current.items.some((item) => item.instrument_id === selection) && <option value={selection}>Selected instrument (unavailable)</option>}
+        {selection && !current.items.some((item) => item.instrument_id === selection) && <option value={selection}>Previous selection (unavailable — choose an index)</option>}
         {current.items.map((item) => <option key={item.instrument_id} value={item.instrument_id}>{item.name} ({item.symbol})</option>)}
       </select>
-      <p><a href="#/add">Acquire an ETF</a></p>
+      <p><a href="#/indices">Acquire an index</a></p>
       {admin && <button disabled={busy}>{busy ? 'Saving…' : 'Save settings'}</button>}
     </form>}
     {message && <p role="status">{message}</p>}
