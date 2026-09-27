@@ -4,11 +4,13 @@ from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from pymongo.errors import ConnectionFailure
 
 import market_data as md
 from config import Settings
+from main import create_app
 from manual_splits import ManualSplitRequest, add_split
 from return_statistics import refresh_statistics
 from split_adjustments import BASIS, adjusted_rows
@@ -34,7 +36,7 @@ class Yahoo(Provider):
             for index, event in enumerate(splits["data"]):
                 timestamp = int(datetime.fromisoformat(event["date"]).replace(tzinfo=timezone.utc).timestamp())
                 events[str(index)] = {"date": timestamp, "numerator": event["split_factor"], "denominator": "1"}
-            result["raw"] = {"chart": {"result": [{"meta": {"symbol": LISTING["symbol"], "exchangeTimezoneName": "UTC"}, "events": {"splits": events}}]}}
+            result["raw"] = {"chart": {"result": [{"meta": {"symbol": args[0], "exchangeTimezoneName": "UTC"}, "events": {"splits": events}}]}}
         return result
 
     def factory(self, key, before_request):
@@ -45,6 +47,13 @@ class Yahoo(Provider):
         self.before_request()
         self.calls.append(("search", ticker, isin))
         return LISTING.copy(), {"source": "yahoo_search", "query": ticker, "name": "Test ETF", "data": {"symbol": LISTING["symbol"]}}
+
+    def resolve_symbol(self, symbol):
+        self.before_request()
+        self.calls.append(("resolve_symbol", symbol))
+        if symbol == "UNKNOWN.DE":
+            raise md.MarketDataError("unknown_exchange", "The Yahoo exchange is not mapped.")
+        return {"symbol": symbol, "exchange": "XETR"}, {"source": "yahoo_chart_metadata", "query": symbol, "exchangeName": "GER", "data": {"symbol": symbol}}
 
 
 def quote(day="2026-09-15", close="100", adj="90"):
@@ -70,6 +79,149 @@ def test_default_free_provider_requires_no_key_or_monthly_budget(db, config):
     assert provider.calls[0] == ("search", "SXR8", ISIN)
     assert db.marketstack_usage.count_documents({}) == 0
     assert db.instrument_state.find_one({"_id": ISIN})["listing_resolution"]["source"] == "yahoo_search"
+
+
+def test_symbol_only_manual_override_resolves_mic_in_worker_and_caches_after_success(db, config):
+    job = md.request_acquisition(db, config, ISIN, {"symbol": "SPYI.DE"}, "update", "user", Mock())
+    assert job["status"] == "queued"
+    assert db.instrument_state.find_one({"_id": ISIN}) is None
+    source = Yahoo([page([quote()])])
+    result = md.run_acquisition(db, config, job["id"], source.factory)
+    assert result["status"] == "succeeded"
+    assert source.calls[0] == ("resolve_symbol", "SPYI.DE")
+    assert not any(call[0] == "search" for call in source.calls)
+    state = db.instrument_state.find_one({"_id": ISIN})
+    assert state["listing"] == {"symbol": "SPYI.DE", "exchange": "XETR"}
+    assert state["listing_resolution"]["source"] == "yahoo_chart_metadata"
+    assert db.acquisition_jobs.find_one({"_id": job["id"]})["requested_listing"] == {"symbol": "SPYI.DE"}
+
+
+def test_symbol_only_api_accepts_yfinance_without_http_in_request(db, config, monkeypatch):
+    config.mongodb_database = db.name
+    monkeypatch.setattr("main.enqueue_etf_import", Mock())
+    publish = Mock()
+    monkeypatch.setattr("instrument_routes.enqueue_acquisition", publish)
+    with TestClient(create_app(config, client_factory=lambda *a, **kw: db.client)) as client:
+        client.post("/auth/login", json={"login": "admin", "password": "admin"})
+        path = f"/instruments/{ISIN}/acquisitions"
+        assert client.post(path, json={"confirmed": True, "exchange": "XETR"}).status_code == 422
+        response = client.post(path, json={"confirmed": True, "symbol": "spyi.de"})
+        assert response.status_code == 202
+        job_id = response.json()["job"]["id"]
+    publish.assert_called_once()
+    saved = db.acquisition_jobs.find_one({"_id": job_id})
+    assert saved["requested_listing"] == {"symbol": "SPYI.DE"}
+    assert saved["listing"] is None
+    assert db.instrument_state.find_one({"_id": ISIN}) is None
+
+
+def test_symbol_only_active_job_is_idempotent_after_resolution(db, config, clock, monkeypatch):
+    job = md.request_acquisition(db, config, ISIN, {"symbol": "SPYI.DE"}, "update", "user", Mock())
+    original = db.raw_eod_pages.find_one
+    interrupted = [False]
+
+    def fail_after_resolution(*args, **kwargs):
+        if not interrupted[0]:
+            interrupted[0] = True
+            raise ConnectionFailure("restart after symbol resolution")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(db.raw_eod_pages, "find_one", fail_after_resolution)
+    source = Yahoo([page([quote()])])
+    with pytest.raises(ConnectionFailure):
+        md.run_acquisition(db, config, job["id"], source.factory)
+    assert db.acquisition_jobs.find_one({"_id": job["id"]})["listing"] == {"symbol": "SPYI.DE", "exchange": "XETR"}
+    assert md.request_acquisition(db, config, ISIN, {"symbol": "SPYI.DE"}, "update", "user", Mock())["id"] == job["id"]
+    clock[0] += timedelta(seconds=md.LEASE_SECONDS + 1)
+    fresh = Yahoo([page([quote()])])
+    fresh.resolve_symbol = Mock(side_effect=AssertionError("resolved listing should be durable"))
+    result = md.run_acquisition(db, config, job["id"], fresh.factory)
+    assert result["status"] == "succeeded"
+    fresh.resolve_symbol.assert_not_called()
+
+
+def test_symbol_only_failure_does_not_replace_saved_listing_before_quotes(db, config):
+    db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING, "listing_resolution": {"source": "old"}})
+    job = md.request_acquisition(db, config, ISIN, {"symbol": "SPYI.DE"}, "update", "user", Mock())
+    result = md.run_acquisition(db, config, job["id"], Yahoo([md.MarketDataError("http_error", "failed")]).factory)
+    assert result["status"] == "failed"
+    assert db.instrument_state.find_one({"_id": ISIN}) == {"_id": ISIN, "listing": LISTING, "listing_resolution": {"source": "old"}}
+
+
+def test_symbol_only_rejects_mismatch_unknown_exchange_and_quote_lock(db, config):
+    class Mismatch(Yahoo):
+        def resolve_symbol(self, symbol):
+            self.before_request()
+            self.calls.append(("resolve_symbol", symbol))
+            return {"symbol": "OTHER.DE", "exchange": "XETR"}, {"source": "yahoo_chart_metadata"}
+
+    job = md.request_acquisition(db, config, ISIN, {"symbol": "SPYI.DE"}, "update", "user", Mock())
+    assert md.run_acquisition(db, config, job["id"], Mismatch().factory)["status"] == "failed"
+    assert db.acquisition_jobs.find_one({"_id": job["id"]})["error_code"] == "identity_mismatch"
+    assert db.instrument_state.find_one({"_id": ISIN}) is None
+    unknown = md.request_acquisition(db, config, ISIN, {"symbol": "UNKNOWN.DE"}, "update", "user", Mock())
+    assert md.run_acquisition(db, config, unknown["id"], Yahoo().factory)["status"] == "failed"
+    assert db.acquisition_jobs.find_one({"_id": unknown["id"]})["error_code"] == "unknown_exchange"
+    db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
+    db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "job_id": "old", "date": "2026-09-15", "collected_at": md.utcnow(), "data": quote()})
+    with pytest.raises(md.DataError, match="cannot be changed"):
+        md.request_acquisition(db, config, ISIN, {"symbol": "SPYI.DE"}, "update", "user", Mock())
+
+
+@pytest.mark.parametrize("symbol", ["SPYI.DE", LISTING["symbol"]])
+@pytest.mark.parametrize("newer_first", [True, False])
+def test_stale_listing_cache_write_cannot_replace_a_newer_job(db, config, clock, monkeypatch, symbol, newer_first):
+    job = md.request_acquisition(db, config, ISIN, {"symbol": LISTING["symbol"]}, "update", "user", Mock())
+    collection = db.instrument_state
+    original_update = type(collection).update_one
+    replacement = {"symbol": symbol, "exchange": "XETR"}
+    takeover = []
+
+    def paused(self, query, update, **kwargs):
+        if self.full_name == collection.full_name and update.get("$set", {}).get("listing") == LISTING and not takeover:
+            takeover.append(True)
+            # Pause after the original worker's final checkpoint, then let a
+            # new explicitly requested job publish and cache another listing.
+            clock[0] += timedelta(seconds=md.LEASE_SECONDS + 1)
+            next_job = md.request_acquisition(db, config, ISIN, replacement, "update", "user", Mock())
+            takeover.append(next_job["id"])
+            if newer_first:
+                assert md.run_acquisition(db, config, next_job["id"], Yahoo().factory)["status"] == "succeeded"
+            else:
+                # The old write can also land after the new request has queued
+                # but before it caches. The newer worker must still make progress.
+                result = original_update(self, query, update, **kwargs)
+                assert md.run_acquisition(db, config, next_job["id"], Yahoo().factory)["status"] == "succeeded"
+                return result
+        return original_update(self, query, update, **kwargs)
+
+    monkeypatch.setattr(type(collection), "update_one", paused)
+    md.run_acquisition(db, config, job["id"], Yahoo().factory)
+    assert takeover
+    cached = db.instrument_state.find_one({"_id": ISIN})
+    assert cached["listing"] == replacement
+    assert cached["listing_job_id"] == takeover[1]
+    assert cached["last_complete_quote_date"] == "2026-09-15"
+    assert md.read_quotes(db, ISIN)["total"] == 1
+
+
+def test_cache_redelivery_does_not_reset_replacement_workers_watermark(db, config, clock, monkeypatch):
+    job = md.request_acquisition(db, config, ISIN, {"symbol": LISTING["symbol"]}, "update", "user", Mock())
+    collection = db.instrument_state
+    original_update = type(collection).update_one
+    takeover = []
+
+    def paused(self, query, update, **kwargs):
+        if self.full_name == collection.full_name and update.get("$set", {}).get("listing") == LISTING and not takeover:
+            takeover.append(True)
+            clock[0] += timedelta(seconds=md.LEASE_SECONDS + 1)
+            assert md.run_acquisition(db, config, job["id"], Yahoo().factory)["status"] == "succeeded"
+        return original_update(self, query, update, **kwargs)
+
+    monkeypatch.setattr(type(collection), "update_one", paused)
+    assert md.run_acquisition(db, config, job["id"], Yahoo().factory)["status"] == "succeeded"
+    assert takeover
+    assert db.instrument_state.find_one({"_id": ISIN})["last_complete_quote_date"] == "2026-09-15"
 
 
 def test_every_update_requests_full_history_and_publishes_one_generation(db, config, clock):

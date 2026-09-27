@@ -489,6 +489,22 @@ class YahooFinanceClient:
             raise _error("malformed_response")
         return self._page(deepcopy(payload["quotes"]), payload)
 
+    def resolve_symbol(self, symbol: str) -> tuple[dict, dict]:
+        symbol = _symbol(symbol)
+        meta = self._get_chart_meta(symbol)
+        exchange_name = meta.get("exchangeName")
+        if not isinstance(exchange_name, str):
+            raise _error("unknown_exchange")
+        mic = YAHOO_EXCHANGE_MICS.get(exchange_name)
+        if mic is None:
+            raise _error("unknown_exchange")
+        data = _safe(deepcopy(meta), self._session.secrets)
+        return {"symbol": symbol, "exchange": mic}, {
+            "source": "yahoo_chart_metadata", "query": symbol,
+            "name": data.get("longName") or data.get("shortName"),
+            "exchangeName": exchange_name, "data": data,
+        }
+
     def resolve_listing(self, ticker: str, isin: str) -> tuple[dict, dict]:
         ticker = _symbol(ticker)
         if not isinstance(isin, str):

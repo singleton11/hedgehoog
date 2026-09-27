@@ -46,7 +46,7 @@ function mockServer() {
   };
   server.post = async (isin, body) => {
     const accepted = job('queued', { instrument_id: isin, mode: body.mode });
-    server.details[isin] = { ...server.details[isin], listing: body.symbol ? { symbol: body.symbol, exchange: body.exchange } : server.details[isin].listing, acquisition: accepted };
+    server.details[isin] = { ...server.details[isin], listing: body.symbol && body.exchange ? { symbol: body.symbol, exchange: body.exchange } : server.details[isin].listing, acquisition: accepted };
     return { job: accepted };
   };
   server.saveCurrency = async (isin, body) => {
@@ -1138,6 +1138,114 @@ describe('explicit acquisition and complete charts', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm older history' }));
     await flush();
     expect(JSON.parse(server.posts()[0][1].body)).toEqual({ confirmed: true, mode: 'backfill' });
+  });
+
+  it('accepts SPYI.DE alone after authorization and detects its exchange in the worker', async () => {
+    const server = mockServer();
+    await open(A);
+    await review();
+    fireEvent.click(manualOverride());
+    const symbol = screen.getByLabelText('Provider symbol');
+    const exchange = screen.getByLabelText('Exchange MIC');
+    const confirm = screen.getByRole('button', { name: 'Confirm request' });
+    expect(exchange).not.toBeRequired();
+    expect(exchange).toHaveValue('');
+    expect(exchange).toHaveAttribute('placeholder', 'Auto-detect');
+    expect(exchange).toHaveAccessibleDescription(/Optional.*Leave blank/);
+    fireEvent.change(symbol, { target: { value: ' spyi.de ' } });
+    expect(confirm).toBeDisabled();
+    fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
+    expect(server.posts()).toHaveLength(0);
+    fireEvent.click(authorization());
+    expect(confirm).toBeEnabled();
+    fireEvent.click(confirm);
+    await flush();
+    expect(server.posts()).toHaveLength(1);
+    expect(JSON.parse(server.posts()[0][1].body)).toEqual({ symbol: 'SPYI.DE', confirmed: true, mode: 'update' });
+    expect(screen.getByText('Acquisition: queued')).toBeInTheDocument();
+    expect(server.details[A].listing).toBeNull();
+    server.details[A] = { ...server.details[A], listing: { symbol: 'SPYI.DE', exchange: 'XETR' }, acquisition: job('running') };
+    await advance(POLL_INTERVAL);
+    expect(screen.getByText(/SPYI.DE \/ XETR/)).toBeInTheDocument();
+    expect(server.posts()).toHaveLength(1);
+  });
+
+  it('does not carry the MIC from a failed saved listing into a new Yahoo symbol', async () => {
+    const server = mockServer();
+    server.details[A] = detail(A, { listing: { symbol: 'WRONG.L', exchange: 'XLON' }, acquisition: job('failed') });
+    await open(A);
+    await review();
+    fireEvent.click(manualOverride());
+    expect(screen.getByLabelText('Exchange MIC')).toHaveValue('');
+    fireEvent.change(screen.getByLabelText('Provider symbol'), { target: { value: 'SPYI.DE' } });
+    fireEvent.click(authorization());
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm request' }));
+    await flush();
+    expect(JSON.parse(server.posts()[0][1].body)).toEqual({ symbol: 'SPYI.DE', confirmed: true, mode: 'update' });
+  });
+
+  it.each(['', '   ', 'SPYI DE', 'SPYI/DE', 'SPYI.DE?', '.DE', 'A'.repeat(65)])('explains invalid manual symbol %j and blocks even a direct submit', async (value) => {
+    const server = mockServer();
+    await open(A);
+    await review();
+    fireEvent.click(manualOverride());
+    const symbol = screen.getByLabelText('Provider symbol');
+    fireEvent.change(symbol, { target: { value } });
+    fireEvent.click(authorization());
+    expect(symbol).toHaveAttribute('aria-invalid', 'true');
+    expect(symbol).toHaveAccessibleDescription(/Enter a (valid )?provider symbol/);
+    expect(screen.getByRole('button', { name: 'Confirm request' })).toBeDisabled();
+    fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
+    expect(server.posts()).toHaveLength(0);
+  });
+
+  it.each(['', '   '])('allows clearing an invalid optional MIC with %j after renewed authorization', async (cleared) => {
+    const server = mockServer();
+    await open(A);
+    await review();
+    fireEvent.click(manualOverride());
+    fireEvent.change(screen.getByLabelText('Provider symbol'), { target: { value: 'SPYI.DE' } });
+    const exchange = screen.getByLabelText('Exchange MIC');
+    fireEvent.change(exchange, { target: { value: 'GER' } });
+    fireEvent.click(authorization());
+    expect(exchange).toHaveAttribute('aria-invalid', 'true');
+    expect(exchange).toHaveAccessibleDescription(/four-character exchange MIC, or leave it blank/);
+    expect(screen.getByRole('button', { name: 'Confirm request' })).toBeDisabled();
+    fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
+    expect(server.posts()).toHaveLength(0);
+    fireEvent.change(exchange, { target: { value: cleared } });
+    expect(exchange).toHaveValue('');
+    expect(exchange.checkValidity()).toBe(true);
+    expect(exchange).toHaveAttribute('aria-invalid', 'false');
+    expect(authorization()).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Confirm request' })).toBeDisabled();
+    fireEvent.click(authorization());
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm request' }));
+    await flush();
+    expect(JSON.parse(server.posts()[0][1].body)).toEqual({ symbol: 'SPYI.DE', confirmed: true, mode: 'update' });
+  });
+
+  it('still requires a MIC for the legacy provider', async () => {
+    const server = mockServer();
+    server.details[A] = detail(A, { provider: 'marketstack', price_basis: 'unadjusted' });
+    await open(A);
+    await review();
+    fireEvent.click(manualOverride());
+    const exchange = screen.getByLabelText('Exchange MIC');
+    const consent = screen.getByRole('checkbox', { name: 'Allow this request to use provider quota.' });
+    expect(exchange).toBeRequired();
+    fireEvent.change(screen.getByLabelText('Provider symbol'), { target: { value: 'SPYI.DE' } });
+    fireEvent.click(consent);
+    expect(exchange).toHaveAccessibleDescription('Enter a four-character exchange MIC.');
+    expect(screen.getByRole('button', { name: 'Confirm request' })).toBeDisabled();
+    fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
+    expect(server.posts()).toHaveLength(0);
+    fireEvent.change(exchange, { target: { value: 'XETR' } });
+    expect(consent).not.toBeChecked();
+    fireEvent.click(consent);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm request' }));
+    await flush();
+    expect(JSON.parse(server.posts()[0][1].body)).toEqual({ symbol: 'SPYI.DE', exchange: 'XETR', confirmed: true, mode: 'update' });
   });
 
   it('lets a no-data failure explicitly override its saved listing and requires renewed authorization after edits', async () => {
