@@ -255,7 +255,8 @@ summary::marker { color: #839a8b; }
 .portfolio-name-form label { display: block; margin-bottom: 0.4rem; }
 .portfolio-name-form fieldset { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; border: 0; padding: 0; margin: 0; min-width: 0; }
 .portfolio-name-form input { flex: 1 1 14rem; min-width: 0; width: 100%; margin: 0; }
-.portfolio-goal-form { max-width: 40rem; margin-bottom: 1.5rem; }
+.portfolio-plan-form { max-width: 40rem; margin-bottom: 1.5rem; }
+.plan-badge { display: inline-block; padding: 0.25rem 0.65rem; border: 1px solid var(--green); border-radius: 1rem; color: var(--green); background: var(--mint); font-weight: 600; }
 .portfolio-section-controls { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem; margin-top: 1.5rem; }
 .portfolio-tabs { display: flex; border-bottom: 1px solid var(--line); }
 .portfolio-tabs [role='tab'] { min-height: 44px; border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; color: var(--muted); }

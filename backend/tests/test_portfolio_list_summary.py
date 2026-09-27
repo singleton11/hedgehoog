@@ -9,7 +9,7 @@ import pytest
 import portfolio_tracker as tracker_api
 from test_market_data import ISIN, api, clock, config, db
 from test_portfolio_tracker import (
-    SECOND_ISIN, cash, customer, detail, goal, portfolio, quote, record, second_instrument, trade, tracker,
+    SECOND_ISIN, cash, customer, detail, goal, plan, portfolio, quote, record, second_instrument, trade, tracker,
 )
 
 FIELDS = {"net_worth_eur", "realized_pnl_eur", "unrealized_pnl_eur", "today_pnl_eur", "total_pnl_eur",
@@ -25,8 +25,8 @@ def summaries(client, cid, query=""):
 
 def test_list_shows_separate_linked_and_unlinked_totals_and_is_read_only(tracker, db):
     client, cid, first, url = tracker
-    target = goal(client, cid)
-    second, other = portfolio(client, cid, goal_id=target)
+    target = plan(client, db, cid)
+    second, other = portfolio(client, cid, plan_id=target)
     record(client, url, cash())
     record(client, url, trade(quantity="4", price="80", commission_eur="4"))
     record(client, url, trade("sell", quantity="1", price="105", day="2026-09-16", commission_eur="1"))
@@ -38,8 +38,8 @@ def test_list_shows_separate_linked_and_unlinked_totals_and_is_read_only(tracker
     result = summaries(client, cid)
     assert (result["total"], result["limit"], result["offset"]) == (2, 20, 0)
     rows = {item["id"]: item for item in result["items"]}
-    assert rows[first["id"]]["goal_id"] is None
-    assert rows[second["id"]]["goal_id"] == target
+    assert rows[first["id"]]["plan_id"] is None
+    assert rows[second["id"]]["plan_id"] == target
     assert {key: rows[first["id"]][key] for key in FIELDS} == {
         "net_worth_eur": "1410.00", "realized_pnl_eur": "20.00", "unrealized_pnl_eur": "90.00",
         "today_pnl_eur": "34.00", "total_pnl_eur": "110.00",

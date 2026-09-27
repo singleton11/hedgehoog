@@ -258,7 +258,7 @@ def test_preview_exactly_matches_existing_simulation_and_save_is_not_recalculati
     client, customer, goal, url = planner
     expected = client.post("/goals/simulate", json=request_body()).json()
     preview = calculate(client, url)
-    assert set(preview) == {"id", "customer_id", "goal_id", "calculated_at", "saved_at", "inputs", "strategy_definition", "result"}
+    assert set(preview) == {"id", "customer_id", "goal_id", "calculated_at", "saved_at", "inputs", "strategy_definition", "result", "is_plan"}
     assert preview["result"] == expected
     assert preview["inputs"] == request_body()
     assert preview["strategy_definition"] == gs.STRATEGIES[STRATEGY].public_definition()
@@ -438,7 +438,8 @@ def test_history_projects_compact_summaries_only_and_paginates_newest_first(plan
         assert [item["id"] for item in page["items"]] == expected
         for item in page["items"]:
             full = reports[item["id"]]
-            assert item == {"id": full["id"], "calculated_at": full["calculated_at"], "saved_at": full["saved_at"],
+            assert item == {"id": full["id"], "goal_id": full["goal_id"], "is_plan": False,
+                            "calculated_at": full["calculated_at"], "saved_at": full["saved_at"],
                             "inputs": full["inputs"], "strategy_name": full["strategy_definition"]["name"],
                             "monthly_contribution_eur": full["result"]["monthly_contribution_eur"],
                             "success_probability": full["result"]["success_probability"]}

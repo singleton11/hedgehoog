@@ -8,7 +8,7 @@ import pytest
 import portfolio_tracker as tracker_api
 from test_market_data import ISIN, api, clock, config, db
 from test_portfolio_tracker import (
-    SECOND_ISIN, cash, customer, detail, goal, portfolio, quote, record, second_instrument, trade, tracker,
+    SECOND_ISIN, cash, customer, detail, goal, plan, portfolio, quote, record, second_instrument, trade, tracker,
 )
 
 
@@ -20,8 +20,8 @@ def summary(client):
 
 def test_all_portfolios_include_losses_sales_fees_and_ignore_external_flows(tracker, db):
     client, cid, _, url = tracker
-    target = goal(client, cid)
-    _, other = portfolio(client, cid, goal_id=target)
+    target = plan(client, db, cid)
+    _, other = portfolio(client, cid, plan_id=target)
     record(client, url, cash())
     record(client, url, trade(quantity="4", price="80", commission_eur="4"))
     record(client, url, trade("sell", quantity="1", price="105", day="2026-09-16", commission_eur="1"))

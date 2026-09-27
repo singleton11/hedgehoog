@@ -54,7 +54,7 @@ function simulation(inputs, monthly = '456.78') {
 }
 function summary(run) {
   const { id, calculated_at, saved_at, inputs, strategy_definition, result } = run;
-  return { id, calculated_at, saved_at, inputs: structuredClone(inputs), strategy_name: strategy_definition.name,
+  return { id, is_plan: run.is_plan || false, calculated_at, saved_at, inputs: structuredClone(inputs), strategy_name: strategy_definition.name,
     monthly_contribution_eur: result.monthly_contribution_eur, success_probability: result.success_probability };
 }
 function page(items, query) {
@@ -117,18 +117,23 @@ function mockServer({ seed = true } = {}) {
   };
   server.simulate = async (cid, gid, body) => server.preview(gid, body);
   server.save = async (cid, gid, sid) => server.persist(sid);
+  server.makePlan = async (cid, gid, sid) => {
+    const run = await server.report(cid, gid, sid);
+    run.is_plan = true;
+    return run;
+  };
   server.strategies = async () => ({ items: server.definitions });
   server.acquired = async (query) => page(server.acquiredItems, query);
   server.stats = async (isin) => statistics(isin);
   async function dispatch(path, options) {
     const url = new URL(path, 'http://localhost'), post = options.method === 'POST';
     if (url.pathname === '/customers') return post ? server.createCustomer(options.body, options) : server.customerList(url.searchParams, options);
-    if (/^\/customers\/[^/]+\/portfolios$/.test(url.pathname)) return page([], url.searchParams);
+    if (/^\/customers\/[^/]+\/(portfolios|plans)$/.test(url.pathname)) return page([], url.searchParams);
     if (path === '/goals/strategies') return server.strategies(options);
     if (url.pathname === '/instruments/acquired') return server.acquired(url.searchParams, options);
     const stats = url.pathname.match(/^\/instruments\/([^/]+)\/statistics$/);
     if (stats) return server.stats(stats[1], options);
-    const match = url.pathname.match(/^\/customers\/([^/]+)(?:\/goals(?:\/([^/]+)(?:\/(simulate|simulations)(?:\/([^/]+)(?:\/(save))?)?)?)?)?$/);
+    const match = url.pathname.match(/^\/customers\/([^/]+)(?:\/goals(?:\/([^/]+)(?:\/(simulate|simulations)(?:\/([^/]+)(?:\/(save|plan))?)?)?)?)?$/);
     if (!match) throw new Error(`Unexpected request: ${path}`);
     const [, cid, gid, operation, sid, save] = match;
     if (!gid) {
@@ -137,7 +142,8 @@ function mockServer({ seed = true } = {}) {
     }
     if (operation === 'simulate' && post) return server.simulate(cid, gid, options.body, options);
     if (operation === 'simulations') {
-      if (save && post) return server.save(cid, gid, sid, options);
+      if (save === 'plan' && post) return server.makePlan(cid, gid, sid, options);
+      if (save === 'save' && post) return server.save(cid, gid, sid, options);
       return sid ? server.report(cid, gid, sid, options) : server.history(cid, gid, url.searchParams, options);
     }
     return options.method === 'PATCH' ? server.updateGoal(cid, gid, options.body, options) : server.goal(cid, gid, options);
@@ -658,6 +664,47 @@ describe('editing existing goals', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.queryByText('Goal updated.')).not.toBeInTheDocument();
     expect(window.location.hash).toBe(route); expect(patches()).toHaveLength(1);
+  });
+});
+
+describe('simulation plans', () => {
+  it('promotes each saved simulation from its list or report and persists the label', async () => {
+    const server = mockServer(), first = server.seedRun(), second = server.seedRun();
+    await open(goalRoute());
+    const row = within(comparison()).getAllByRole('row').find((item) => within(item).queryByRole('link')?.getAttribute('href') === reportRoute(first.id));
+    fireEvent.click(within(row).getByRole('button', { name: 'Make plan' })); await flush();
+    expect(within(row).getByText('Plan')).toBeInTheDocument();
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0]).toEqual([`${reportPath(first.id)}/plan`, expect.objectContaining({ method: 'POST', body: {} })]);
+    expect(server.saved.get(first.id)).toEqual({ ...first, is_plan: true });
+    await navigate(reportRoute(first.id));
+    expect(screen.getByText('Plan')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Make plan' })).not.toBeInTheDocument();
+    await navigate(reportRoute(second.id));
+    fireEvent.click(screen.getByRole('button', { name: 'Make plan' })); await flush();
+    expect(screen.getByText('Plan')).toBeInTheDocument();
+    await navigate(goalRoute());
+    expect(within(comparison()).getAllByText('Plan')).toHaveLength(3);
+    expect(screen.queryByRole('button', { name: 'Make plan' })).not.toBeInTheDocument();
+    expect(server.saved.get(second.id)).toEqual({ ...second, is_plan: true });
+  });
+
+  it('shows promotion errors, supports retry and aborts stale requests on navigation', async () => {
+    const server = mockServer(), run = server.seedRun(), promote = server.makePlan;
+    server.makePlan = async () => { throw new Error('Plan unavailable.'); };
+    await open(reportRoute(run.id));
+    fireEvent.click(screen.getByRole('button', { name: 'Make plan' })); await flush();
+    expect(screen.getByRole('alert')).toHaveTextContent('Plan unavailable.');
+    const pending = deferred(); server.makePlan = () => pending.promise;
+    fireEvent.click(screen.getByRole('button', { name: 'Make plan' })); await flush();
+    expect(screen.getByRole('button', { name: 'Making plan…' })).toBeDisabled();
+    const signal = posts().at(-1)[1].signal;
+    await navigate(goalRoute()); expect(signal.aborted).toBe(true);
+    await act(async () => pending.resolve({ ...run, is_plan: true }));
+    expect(screen.getByRole('button', { name: 'Make plan' })).toBeInTheDocument();
+    server.makePlan = promote;
+    fireEvent.click(screen.getByRole('button', { name: 'Make plan' })); await flush();
+    expect(screen.queryByRole('button', { name: 'Make plan' })).not.toBeInTheDocument();
   });
 });
 

@@ -10,10 +10,13 @@ const A = 'IE00B4L5Y983', B = 'IE00B5BMR087';
 const instrument = { instrument_id: A, name: 'World ETF', symbol: 'WORLD', exchange: 'XETR', currency: 'EUR' };
 const held = { ...instrument, instrument_id: B, name: 'Retired ETF', symbol: 'HELD' };
 const goal = { id: 'goal-a', customer_id: cid, name: 'Retirement', goal_eur: '100000.00', goal_date: '2036-09-24' };
+const asPlan = (goal) => ({ id: goal.id, goal_id: 'source-goal', is_plan: true, strategy_name: goal.name,
+  saved_at: '2026-09-24T00:00:00Z', inputs: { goal_date: goal.goal_date } });
+const planLabel = (goal) => `${goal.name} · ${goal.goal_date} · ${goal.id}`;
 const base = `/customers/${cid}/portfolios`, detailPath = `${base}/${pid}`, transactionsPath = `${detailPath}/transactions`;
 const customerRoute = `#/goal/customers/${cid}`, goalsRoute = `${customerRoute}/goals`, listRoute = `${customerRoute}/portfolios`, detailRoute = `${listRoute}/${pid}`;
 const pagePath = (path, offset = 0, limit = 20) => `${path}?limit=${limit}&offset=${offset}`;
-const metadata = (extra = {}) => ({ id: pid, customer_id: cid, name: 'Long term', goal_id: null, currency: 'EUR', created_at: '2026-09-24T00:00:00Z', revision: 0, ...extra });
+const metadata = (extra = {}) => ({ id: pid, customer_id: cid, name: 'Long term', plan_id: null, currency: 'EUR', created_at: '2026-09-24T00:00:00Z', revision: 0, ...extra });
 const portfolioSummary = (extra = {}) => ({ ...metadata(), net_worth_eur: '1137.50', realized_pnl_eur: '0.00',
   unrealized_pnl_eur: '12.50', today_pnl_eur: '-1.25', total_pnl_eur: '12.50', today_from_date: '2026-09-22', today_to_date: '2026-09-23', ...extra });
 const position = (extra = {}) => ({ instrument, quantity: '1.25000001', average_price_eur: '100.00000001', cost_basis_eur: '125.00', market_price_eur: '110.00', price_date: '2026-09-23', previous_price_date: '2026-09-22', position_value_eur: '137.50', unrealized_pnl_eur: '12.50', daily_unrealized_pnl_eur: '-1.25', warning: null, ...extra });
@@ -43,6 +46,10 @@ function mockServer() {
     const url = new URL(path, 'http://localhost');
     if (url.pathname === `/customers/${cid}`) return server.customer(options);
     if (url.pathname === `/customers/${cid}/goals`) return server.goalList(url.searchParams, options);
+    if (url.pathname === `/customers/${cid}/plans`) {
+      const result = await server.goalList(url.searchParams, options);
+      return { ...result, items: result.items.map(asPlan) };
+    }
     if (url.pathname === '/indices') return page([], url.searchParams);
     if (url.pathname.endsWith('/performance')) return { portfolio_id: url.pathname.split('/').at(-2), currency: 'EUR', method: 'daily_twr', cash_flow_timing: 'deposits_start_withdrawals_end', as_of: '2026-09-24T00:00:00Z', start_date: null, end_date: null, points: [], benchmark: null, warnings: [] };
     if (url.pathname === '/portfolio-instruments') return server.instrumentList(url.searchParams, options);
@@ -98,13 +105,13 @@ describe('portfolio routes, creation and optional goals', () => {
     expect(screen.getByText(/No portfolios yet/)).toBeInTheDocument(); expect(writes()).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: 'Add portfolio' }));
     change('Portfolio name', '  Emergency fund  '); await submit(screen.getByRole('form', { name: 'New portfolio' }));
-    expect(writes()[0]).toEqual([base, expect.objectContaining({ method: 'POST', body: { name: 'Emergency fund', goal_id: null }, signal: expect.any(AbortSignal) })]);
+    expect(writes()[0]).toEqual([base, expect.objectContaining({ method: 'POST', body: { name: 'Emergency fund', plan_id: null }, signal: expect.any(AbortSignal) })]);
     expect(screen.queryByRole('form', { name: 'New portfolio' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add portfolio' })).toHaveFocus();
     fireEvent.click(screen.getByRole('button', { name: 'Add portfolio' }));
     expect(screen.getByLabelText('Portfolio name')).toHaveValue('');
-    change('Portfolio name', 'Retirement investments'); change('Linked goal (optional)', goal.id); await submit(screen.getByRole('form', { name: 'New portfolio' }));
-    expect(writes()[1][1].body).toEqual({ name: 'Retirement investments', goal_id: goal.id });
+    change('Portfolio name', 'Retirement investments'); change('Linked plan (optional)', goal.id); await submit(screen.getByRole('form', { name: 'New portfolio' }));
+    expect(writes()[1][1].body).toEqual({ name: 'Retirement investments', plan_id: goal.id });
     expect(screen.getByRole('link', { name: /Emergency fund/ })).toBeInTheDocument();
     await follow(/Emergency fund/);
     expect(screen.getByRole('link', { name: 'Alice · Goals' })).toHaveAttribute('href', goalsRoute);
@@ -114,18 +121,18 @@ describe('portfolio routes, creation and optional goals', () => {
     await navigate(listRoute); await navigate(`${listRoute}/portfolio-0`);
     fireEvent.click(screen.getByRole('button', { name: 'Edit portfolio name' }));
     change('Portfolio name', 'Safety net'); await submit(settings());
-    expect(writes().at(-1)[1].body).toEqual({ name: 'Safety net', goal_id: null });
+    expect(writes().at(-1)[1].body).toEqual({ name: 'Safety net', plan_id: null });
     expect(screen.getByRole('heading', { name: 'Safety net' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Assign goal' }));
-    change('Linked goal (optional)', goal.id); await submit(screen.getByRole('form', { name: 'Assign portfolio goal' }));
-    expect(writes().at(-1)[1].body).toEqual({ name: 'Safety net', goal_id: goal.id });
-    fireEvent.click(screen.getByRole('button', { name: 'Change goal' }));
-    change('Linked goal (optional)', 'goal-b'); await submit(screen.getByRole('form', { name: 'Assign portfolio goal' }));
-    expect(writes().at(-1)[1].body).toEqual({ name: 'Safety net', goal_id: 'goal-b' });
-    fireEvent.click(screen.getByRole('button', { name: 'Change goal' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Unassign goal' })); await flush();
-    expect(writes().at(-1)[1].body).toEqual({ name: 'Safety net', goal_id: null });
-    expect(screen.getByText('EUR · No linked goal')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Assign plan' }));
+    change('Linked plan (optional)', goal.id); await submit(screen.getByRole('form', { name: 'Assign portfolio plan' }));
+    expect(writes().at(-1)[1].body).toEqual({ name: 'Safety net', plan_id: goal.id });
+    fireEvent.click(screen.getByRole('button', { name: 'Change plan' }));
+    change('Linked plan (optional)', 'goal-b'); await submit(screen.getByRole('form', { name: 'Assign portfolio plan' }));
+    expect(writes().at(-1)[1].body).toEqual({ name: 'Safety net', plan_id: 'goal-b' });
+    fireEvent.click(screen.getByRole('button', { name: 'Change plan' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Unassign plan' })); await flush();
+    expect(writes().at(-1)[1].body).toEqual({ name: 'Safety net', plan_id: null });
+    expect(screen.getByText('EUR · No linked plan')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
@@ -186,14 +193,14 @@ describe('portfolio routes, creation and optional goals', () => {
     server.goals = Array.from({ length: 101 }, (_, i) => ({ ...goal, id: `g-${i}`, name: `Goal ${i}` }));
     await open(listRoute);
     fireEvent.click(screen.getByRole('button', { name: 'Add portfolio' }));
-    expect(screen.getByRole('option', { name: 'Goal 100', exact: true })).toBeInTheDocument();
-    expect(request).toHaveBeenCalledWith(`/customers/${cid}/goals?limit=100&offset=100`, expect.anything());
+    expect(screen.getByRole('option', { name: 'Goal 100 · 2036-09-24 · g-100', exact: true })).toBeInTheDocument();
+    expect(request).toHaveBeenCalledWith(`/customers/${cid}/plans?limit=100&offset=100`, expect.anything());
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Portfolios pagination' })).getByRole('button', { name: 'Next' })); await flush();
     expect(screen.getByRole('link', { name: /Portfolio 20/ })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /^Portfolio 0/ })).not.toBeInTheDocument();
     expect(screen.getByText('21–21 of 21')).toBeInTheDocument();
-    change('Portfolio name', 'New last goal portfolio'); change('Linked goal (optional)', 'g-100'); await submit(screen.getByRole('form', { name: 'New portfolio' }));
-    expect(writes()[0][1].body.goal_id).toBe('g-100'); expect(screen.getByText('1–20 of 22')).toBeInTheDocument();
+    change('Portfolio name', 'New last goal portfolio'); change('Linked plan (optional)', 'g-100'); await submit(screen.getByRole('form', { name: 'New portfolio' }));
+    expect(writes()[0][1].body.plan_id).toBe('g-100'); expect(screen.getByText('1–20 of 22')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /New last goal portfolio/ })).toBeInTheDocument();
   });
 
@@ -206,21 +213,21 @@ describe('portfolio routes, creation and optional goals', () => {
   });
 
   it('does not implicitly detach a linked goal when goals are unavailable, and exposes retry and save errors', async () => {
-    const server = mockServer(); server.details.set(pid, snapshot(metadata({ goal_id: goal.id })));
+    const server = mockServer(); server.details.set(pid, snapshot(metadata({ plan_id: goal.id })));
     server.goalList = async () => { throw new Error('Goals temporarily unavailable.'); };
     server.patch = async () => { throw new Error('Could not save settings.'); };
-    await open(); fireEvent.click(screen.getByRole('button', { name: 'Change goal' }));
+    await open(); fireEvent.click(screen.getByRole('button', { name: 'Change plan' }));
     expect(screen.getByText('Goals temporarily unavailable.')).toHaveAttribute('role', 'alert');
-    fireEvent.click(within(screen.getByRole('form', { name: 'Assign portfolio goal' })).getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(within(screen.getByRole('form', { name: 'Assign portfolio plan' })).getByRole('button', { name: 'Cancel' }));
     fireEvent.click(screen.getByRole('button', { name: 'Edit portfolio name' }));
     change('Portfolio name', 'Rename only'); await submit(settings());
-    expect(writes()[0][1].body).toEqual({ name: 'Rename only', goal_id: goal.id });
+    expect(writes()[0][1].body).toEqual({ name: 'Rename only', plan_id: goal.id });
     expect(screen.getByText('Could not save settings.')).toHaveAttribute('role', 'alert');
     fireEvent.click(within(settings()).getByRole('button', { name: 'Cancel' }));
     server.goalList = async (query) => page(server.goals, query);
-    fireEvent.click(screen.getByRole('button', { name: 'Change goal' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Retry goals' })); await flush();
-    expect(screen.getByRole('option', { name: 'Retirement' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Change plan' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry plans' })); await flush();
+    expect(screen.getByRole('option', { name: planLabel(goal) })).toBeInTheDocument();
   });
 });
 
@@ -236,20 +243,20 @@ describe('portfolio list creation and financial summary', () => {
     expect(add).toBeDisabled(); expect(add).toHaveAttribute('aria-expanded', 'true');
     expect(add).toHaveAttribute('aria-controls', screen.getByRole('form', { name: 'New portfolio' }).id);
     expect(screen.getByLabelText('Portfolio name')).toHaveFocus();
-    change('Portfolio name', 'Discard this'); change('Linked goal (optional)', goal.id);
+    change('Portfolio name', 'Discard this'); change('Linked plan (optional)', goal.id);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(add).toHaveFocus(); expect(add).toBeEnabled(); expect(writes()).toHaveLength(0);
     expect(screen.queryByRole('form', { name: 'New portfolio' })).not.toBeInTheDocument();
     fireEvent.click(add);
     expect(screen.getByLabelText('Portfolio name')).toHaveValue('');
-    expect(screen.getByLabelText('Linked goal (optional)')).toHaveValue('');
+    expect(screen.getByLabelText('Linked plan (optional)')).toHaveValue('');
     expect(table()).toBeInTheDocument();
   });
 
   it('retains failed creation drafts and disables cancellation and duplicate submission while pending', async () => {
     const server = mockServer(), pending = deferred(); server.create = () => pending.promise;
     await open(listRoute); fireEvent.click(screen.getByRole('button', { name: 'Add portfolio' }));
-    change('Portfolio name', 'Keep this'); change('Linked goal (optional)', goal.id);
+    change('Portfolio name', 'Keep this'); change('Linked plan (optional)', goal.id);
     const form = screen.getByRole('form', { name: 'New portfolio' });
     await submit(form); await submit(form);
     expect(writes()).toHaveLength(1);
@@ -258,23 +265,23 @@ describe('portfolio list creation and financial summary', () => {
     await act(async () => pending.reject(new Error('Could not create portfolio.')));
     expect(screen.getByRole('alert')).toHaveTextContent('Could not create portfolio.');
     expect(screen.getByLabelText('Portfolio name')).toHaveValue('Keep this');
-    expect(screen.getByLabelText('Linked goal (optional)')).toHaveValue(goal.id);
+    expect(screen.getByLabelText('Linked plan (optional)')).toHaveValue(goal.id);
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
   });
 
   it('matches customer financial columns and formats exact money, signs, goals and unavailable values', async () => {
     const server = mockServer();
-    server.portfolios = [portfolioSummary({ name: 'Linked investments', goal_id: goal.id, net_worth_eur: '9007199254740993.01',
+    server.portfolios = [portfolioSummary({ name: 'Linked investments', plan_id: goal.id, net_worth_eur: '9007199254740993.01',
       realized_pnl_eur: '-12.34', unrealized_pnl_eur: '0.00', today_pnl_eur: '12.34', total_pnl_eur: '-12.34' }),
     portfolioSummary({ id: 'missing', name: 'Missing prices', net_worth_eur: null, unrealized_pnl_eur: null,
       today_pnl_eur: null, total_pnl_eur: null, today_from_date: null, today_to_date: null })];
     await open(listRoute);
     expect(within(table()).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
-      'Portfolio', 'Linked goal', 'Net worth (EUR)', 'Realized P&L (incl. fees, EUR)', 'Unrealized P&L (EUR)', 'Today P&L (EUR)', 'Total P&L (EUR)',
+      'Portfolio', 'Linked plan', 'Net worth (EUR)', 'Realized P&L (incl. fees, EUR)', 'Unrealized P&L (EUR)', 'Today P&L (EUR)', 'Total P&L (EUR)',
     ]);
     const rows = within(table()).getAllByRole('row');
     expect(within(rows[1]).getByRole('link', { name: 'Linked investments' })).toHaveAttribute('href', detailRoute);
-    expect(within(rows[1]).getByText('Retirement')).toBeInTheDocument();
+    expect(within(rows[1]).getByText(planLabel(goal))).toBeInTheDocument();
     expect(within(rows[1]).getByText('€9,007,199,254,740,993.01')).toBeInTheDocument();
     expect(within(rows[1]).getByText('€12.34')).toHaveClass('return-positive');
     expect(within(rows[1]).getAllByText('-€12.34').every((cell) => cell.classList.contains('return-negative'))).toBe(true);
@@ -282,7 +289,7 @@ describe('portfolio list creation and financial summary', () => {
     expect(within(rows[1]).queryByText(/2026-09-2[23]/)).not.toBeInTheDocument();
     expect(within(rows[1]).getAllByRole('cell')[4]).toHaveTextContent(/^€12\.34$/);
     expect(within(rows[1]).getAllByRole('cell')[4]).toHaveAttribute('title', 'Price date: 2026-09-23');
-    expect(within(rows[2]).getByText('No goal')).toBeInTheDocument();
+    expect(within(rows[2]).getByText('No plan')).toBeInTheDocument();
     expect(within(rows[2]).getAllByText('Unavailable')).toHaveLength(4);
     expect(within(rows[2]).getAllByRole('cell')[4]).not.toHaveAttribute('title');
     expect(within(rows[2]).getByText('Some holdings cannot be valued.')).toBeInTheDocument();
@@ -354,7 +361,7 @@ describe('exact manually dated cash and trade transactions', () => {
     expect(transactionEntry()).not.toBeVisible();
     expect(screen.queryByRole('form', { name: 'Add transaction' })).not.toBeInTheDocument();
     expect(screen.queryByRole('form', { name: 'Rename portfolio' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('form', { name: 'Assign portfolio goal' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'Assign portfolio plan' })).not.toBeInTheDocument();
     addTransaction(); expect(screen.getByLabelText('Transaction date (UTC)')).toHaveValue('2026-09-24'); expect(writes()).toHaveLength(0);
     change('Amount (EUR)', '9007199254740993.01'); await submit(cashForm());
     expect(transactionEntry()).not.toBeVisible(); addTransaction('withdrawal');
@@ -586,12 +593,12 @@ describe('portfolio detail interactions', () => {
 
   it.each(['name', 'goal'])('allows canceling a %s draft after a portfolio refresh fails but blocks stale saves', async (editor) => {
     const server = mockServer(); await open();
-    fireEvent.click(screen.getByRole('button', { name: editor === 'name' ? 'Edit portfolio name' : 'Assign goal' }));
-    const form = screen.getByRole('form', { name: editor === 'name' ? 'Rename portfolio' : 'Assign portfolio goal' });
+    fireEvent.click(screen.getByRole('button', { name: editor === 'name' ? 'Edit portfolio name' : 'Assign plan' }));
+    const form = screen.getByRole('form', { name: editor === 'name' ? 'Rename portfolio' : 'Assign portfolio plan' });
     server.detail = async () => { throw new Error('Portfolio refresh unavailable.'); };
     fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolio' })); await flush();
     expect(screen.getByRole('alert')).toHaveTextContent('Portfolio refresh unavailable.');
-    expect(within(form).getByRole('button', { name: editor === 'name' ? 'Save name' : 'Save goal' })).toBeDisabled();
+    expect(within(form).getByRole('button', { name: editor === 'name' ? 'Save name' : 'Save plan' })).toBeDisabled();
     await submit(form); expect(writes()).toHaveLength(0);
     expect(within(form).getByRole('button', { name: 'Cancel' })).toBeEnabled();
     fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }));
@@ -653,14 +660,14 @@ describe('portfolio detail interactions', () => {
     fireEvent.click(within(settings()).getByRole('button', { name: 'Cancel' }));
     expect(screen.getByRole('button', { name: 'Edit portfolio name' })).toHaveFocus();
     expect(screen.queryByRole('form', { name: 'Rename portfolio' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Assign goal' }));
-    change('Linked goal (optional)', goal.id);
-    fireEvent.click(within(screen.getByRole('form', { name: 'Assign portfolio goal' })).getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Assign plan' }));
+    change('Linked plan (optional)', goal.id);
+    fireEvent.click(within(screen.getByRole('form', { name: 'Assign portfolio plan' })).getByRole('button', { name: 'Cancel' }));
     expect(writes()).toHaveLength(0);
-    fireEvent.click(screen.getByRole('button', { name: 'Assign goal' }));
-    expect(screen.getByLabelText('Linked goal (optional)')).toHaveValue('');
-    change('Linked goal (optional)', goal.id); await submit(screen.getByRole('form', { name: 'Assign portfolio goal' }));
-    expect(writes()[0][1].body).toEqual({ name: 'Long term', goal_id: goal.id });
+    fireEvent.click(screen.getByRole('button', { name: 'Assign plan' }));
+    expect(screen.getByLabelText('Linked plan (optional)')).toHaveValue('');
+    change('Linked plan (optional)', goal.id); await submit(screen.getByRole('form', { name: 'Assign portfolio plan' }));
+    expect(writes()[0][1].body).toEqual({ name: 'Long term', plan_id: goal.id });
   });
 });
 

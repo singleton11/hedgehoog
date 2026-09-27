@@ -22,10 +22,12 @@ const portfoliosPath = (cid) => `${customerPath(cid)}/portfolios`;
 const portfolioPath = (cid, pid) => `${portfoliosPath(cid)}/${encodeURIComponent(pid)}`;
 const customerRoute = (cid) => `#/goal/customers/${encodeURIComponent(cid)}`;
 export const portfoliosRoute = (cid, pid) => `${customerRoute(cid)}/portfolios${pid ? `/${encodeURIComponent(pid)}` : ''}`;
-const validGoal = (item) => identifier(item?.id) && text(item.name);
+const validPlan = (item) => identifier(item?.id) && identifier(item.goal_id) && item.is_plan === true
+  && text(item.strategy_name) && text(item.saved_at) && text(item.inputs?.goal_date);
+const planName = (plan) => plan ? `${plan.strategy_name} · ${plan.inputs.goal_date} · ${plan.id}` : 'Linked plan';
 const validInstrument = (item) => typeof item?.instrument_id === 'string' && /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(item.instrument_id) && item.currency === 'EUR';
 const validPortfolio = (item, cid) => identifier(item?.id) && item.customer_id === cid && text(item.name)
-  && item.currency === 'EUR' && (item.goal_id === null || identifier(item.goal_id));
+  && item.currency === 'EUR' && (item.plan_id === null || identifier(item.plan_id));
 const validPortfolioSummary = (item, cid) => validPortfolio(item, cid)
   && (item.net_worth_eur === null || (money(item.net_worth_eur) && !item.net_worth_eur.startsWith('-')))
   && money(item.realized_pnl_eur)
@@ -143,19 +145,19 @@ function Pagination({ label, offset, total, count, setOffset, loading }) {
     <button type="button" className="secondary" disabled={loading || offset + count >= total} onClick={() => setOffset(offset + PAGE_SIZE)}>Next</button>
   </nav>;
 }
-function GoalChoice({ goals, value, onChange, prefix, autoFocus = false }) {
-  return <div><label htmlFor={`${prefix}-goal`}>Linked goal (optional)</label>
-    <select id={`${prefix}-goal`} value={value} autoFocus={autoFocus} onChange={(event) => onChange(event.target.value)}>
-      <option value="">No goal</option>
-      {value && !goals.data?.some((goal) => goal.id === value) && <option value={value}>Current goal ({value})</option>}
-      {(goals.data || []).map((goal) => <option key={goal.id} value={goal.id}>{goal.name}</option>)}
+function PlanChoice({ plans, value, onChange, prefix, autoFocus = false }) {
+  return <div><label htmlFor={`${prefix}-plan`}>Linked plan (optional)</label>
+    <select id={`${prefix}-plan`} value={value} autoFocus={autoFocus} onChange={(event) => onChange(event.target.value)}>
+      <option value="">No plan</option>
+      {value && !plans.data?.some((plan) => plan.id === value) && <option value={value}>Current plan ({value})</option>}
+      {(plans.data || []).map((plan) => <option key={plan.id} value={plan.id}>{planName(plan)}</option>)}
     </select>
-    <p className="muted">A goal is optional. Attach, change or detach it later without changing transactions.</p>
+    <p className="muted">A plan is optional. Mark a saved simulation as a plan first. Attach, change or detach it without changing transactions.</p>
   </div>;
 }
-function MetadataForm({ request, customerId, goals, onSaved, onCancel }) {
+function MetadataForm({ request, customerId, plans, onSaved, onCancel }) {
   const [name, setName] = useState('');
-  const [goalId, setGoalId] = useState('');
+  const [planId, setPlanId] = useState('');
   const mutation = useMutation(request);
   const prefix = 'new-portfolio';
   async function save(event) {
@@ -163,51 +165,51 @@ function MetadataForm({ request, customerId, goals, onSaved, onCancel }) {
     if (mutation.busy) return;
     if (!name.trim()) { mutation.fail('Enter a portfolio name.'); return; }
     await mutation.submit(portfoliosPath(customerId), 'POST',
-      { name: name.trim(), goal_id: goalId || null }, (data) => validPortfolio(data, customerId),
-      (data) => { setName(''); setGoalId(''); onSaved(data); }, 'Portfolio created.');
+      { name: name.trim(), plan_id: planId || null }, (data) => validPortfolio(data, customerId),
+      (data) => { setName(''); setPlanId(''); onSaved(data); }, 'Portfolio created.');
   }
   return <form id={`${prefix}-form`} className="goal-form planner-create" aria-label="New portfolio" onSubmit={save} noValidate>
     <h3>New portfolio</h3>
     <fieldset disabled={mutation.busy}>
       <div className="goal-fields"><div><label htmlFor={`${prefix}-name`}>Portfolio name</label>
         <input id={`${prefix}-name`} value={name} required maxLength={200} autoComplete="off" autoFocus={Boolean(onCancel)} onChange={(event) => setName(event.target.value)} /></div>
-        <GoalChoice goals={goals} value={goalId} onChange={setGoalId} prefix={prefix} />
+        <PlanChoice plans={plans} value={planId} onChange={setPlanId} prefix={prefix} />
       </div>
       <div className="button-group">
         <button type="submit">{mutation.busy ? 'Saving…' : 'Create portfolio'}</button>
         {onCancel && <button type="button" className="secondary" onClick={onCancel}>Cancel</button>}
       </div>
     </fieldset>
-    <ReadStatus resource={goals} label="goals" />
+    <ReadStatus resource={plans} label="plans" />
     <MutationStatus mutation={mutation} />
   </form>;
 }
-function PortfolioHeader({ request, customerId, portfolio, goals, onSaved, onRefresh, disabled }) {
+function PortfolioHeader({ request, customerId, portfolio, plans, onSaved, onRefresh, disabled }) {
   const [editor, setEditor] = useState(null);
   const [name, setName] = useState('');
-  const [goalId, setGoalId] = useState('');
-  const renameButton = useRef(null), goalButton = useRef(null), previousEditor = useRef(null);
+  const [planId, setPlanId] = useState('');
+  const renameButton = useRef(null), planButton = useRef(null), previousEditor = useRef(null);
   const mutation = useMutation(request);
   const blocked = disabled || mutation.busy;
   useEffect(() => {
     if (editor) previousEditor.current = editor;
     else if (previousEditor.current && !blocked) {
-      (previousEditor.current === 'name' ? renameButton : goalButton).current?.focus();
+      (previousEditor.current === 'name' ? renameButton : planButton).current?.focus();
       previousEditor.current = null;
     }
   }, [editor, blocked]);
   function edit(field) {
-    setName(portfolio.name); setGoalId(portfolio.goal_id || ''); mutation.reset(); setEditor(field);
+    setName(portfolio.name); setPlanId(portfolio.plan_id || ''); mutation.reset(); setEditor(field);
   }
   async function save(event, unassign = false) {
     event.preventDefault();
     if (blocked) return;
     const nextName = editor === 'name' ? name.trim() : portfolio.name;
     if (!nextName) { mutation.fail('Enter a portfolio name.'); return; }
-    const nextGoal = editor === 'goal' ? (unassign ? null : goalId || null) : portfolio.goal_id;
-    await mutation.submit(portfolioPath(customerId, portfolio.id), 'PATCH', { name: nextName, goal_id: nextGoal },
+    const nextPlan = editor === 'plan' ? (unassign ? null : planId || null) : portfolio.plan_id;
+    await mutation.submit(portfolioPath(customerId, portfolio.id), 'PATCH', { name: nextName, plan_id: nextPlan },
       (data) => validPortfolio(data, customerId) && data.id === portfolio.id,
-      () => { setEditor(null); onSaved(); }, editor === 'name' ? 'Portfolio name saved.' : nextGoal ? 'Goal assigned.' : 'Goal unassigned.');
+      () => { setEditor(null); onSaved(); }, editor === 'name' ? 'Portfolio name saved.' : nextPlan ? 'Plan assigned.' : 'Plan unassigned.');
   }
   const cancel = () => { mutation.reset(); setEditor(null); };
   const cancelOnEscape = (event) => { if (event.key === 'Escape' && !mutation.busy) { event.preventDefault(); cancel(); } };
@@ -225,26 +227,26 @@ function PortfolioHeader({ request, customerId, portfolio, goals, onSaved, onRef
             <h2 className="instrument-name">{portfolio.name}</h2>
             <button ref={renameButton} className="secondary portfolio-rename" type="button" aria-label="Edit portfolio name" title="Edit portfolio name" disabled={blocked || Boolean(editor)} onClick={() => edit('name')}><Icon name="edit" /></button>
           </>}
-          <button ref={goalButton} className="secondary" type="button" disabled={blocked || Boolean(editor)} aria-expanded={editor === 'goal'} aria-controls={editor === 'goal' ? 'portfolio-goal-form' : undefined} onClick={() => edit('goal')}>{portfolio.goal_id ? 'Change goal' : 'Assign goal'}</button>
+          <button ref={planButton} className="secondary" type="button" disabled={blocked || Boolean(editor)} aria-expanded={editor === 'plan'} aria-controls={editor === 'plan' ? 'portfolio-plan-form' : undefined} onClick={() => edit('plan')}>{portfolio.plan_id ? 'Change plan' : 'Assign plan'}</button>
         </div>
-        <p className="muted">EUR · {portfolio.goal_id ? goals.data?.find((goal) => goal.id === portfolio.goal_id)?.name || 'Linked goal' : 'No linked goal'}</p>
+        <p className="muted">EUR · {portfolio.plan_id ? planName(plans.data?.find((plan) => plan.id === portfolio.plan_id)) : 'No linked plan'}</p>
       </div>
       <button className="secondary" type="button" onClick={onRefresh}>Refresh portfolio</button>
     </div>
-    {editor === 'goal' && <form id="portfolio-goal-form" className="goal-form planner-create portfolio-goal-form" aria-label="Assign portfolio goal" onSubmit={save} onKeyDown={cancelOnEscape}>
-      <h3>{portfolio.goal_id ? 'Change goal' : 'Assign goal'}</h3>
+    {editor === 'plan' && <form id="portfolio-plan-form" className="goal-form planner-create portfolio-plan-form" aria-label="Assign portfolio plan" onSubmit={save} onKeyDown={cancelOnEscape}>
+      <h3>{portfolio.plan_id ? 'Change plan' : 'Assign plan'}</h3>
       <fieldset disabled={mutation.busy}>
-        <div className="goal-fields"><GoalChoice goals={goals} value={goalId} onChange={setGoalId} prefix="portfolio" autoFocus /></div>
-        <div className="button-group"><button type="submit" disabled={disabled}>{mutation.busy ? 'Saving…' : 'Save goal'}</button>
-          {portfolio.goal_id && <button type="button" className="secondary" disabled={disabled} onClick={(event) => save(event, true)}>Unassign goal</button>}
+        <div className="goal-fields"><PlanChoice plans={plans} value={planId} onChange={setPlanId} prefix="portfolio" autoFocus /></div>
+        <div className="button-group"><button type="submit" disabled={disabled}>{mutation.busy ? 'Saving…' : 'Save plan'}</button>
+          {portfolio.plan_id && <button type="button" className="secondary" disabled={disabled} onClick={(event) => save(event, true)}>Unassign plan</button>}
           <button type="button" className="secondary" onClick={cancel}>Cancel</button></div>
       </fieldset>
-      <ReadStatus resource={goals} label="goals" />
+      <ReadStatus resource={plans} label="plans" />
     </form>}
     <MutationStatus mutation={mutation} />
   </header>;
 }
-function PortfolioList({ request, customerId, goals }) {
+function PortfolioList({ request, customerId, plans }) {
   const [offset, setOffset] = useState(0);
   const [revision, setRevision] = useState(0);
   const [creating, setCreating] = useState(false);
@@ -260,7 +262,7 @@ function PortfolioList({ request, customerId, goals }) {
     <div className="section-heading page-heading portfolio-list-actions">
       <button ref={addButton} type="button" disabled={creating} aria-expanded={creating} aria-controls={creating ? 'new-portfolio-form' : undefined} onClick={() => setCreating(true)}>Add portfolio</button>
     </div>
-    {creating && <MetadataForm request={request} customerId={customerId} goals={goals} onCancel={() => setCreating(false)}
+    {creating && <MetadataForm request={request} customerId={customerId} plans={plans} onCancel={() => setCreating(false)}
       onSaved={() => { setOffset(0); setRevision((value) => value + 1); setCreating(false); }} />}
     <section className="planner-list" aria-label="Portfolios">
       <div className="section-heading"><h3>Portfolios</h3><button className="secondary" type="button" onClick={resource.retry}>Refresh portfolios</button></div>
@@ -270,12 +272,12 @@ function PortfolioList({ request, customerId, goals }) {
         <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Portfolios table" aria-describedby="portfolio-summary-scroll">
           <table className="planner-table planner-summary-table portfolios-table">
             <caption>Portfolio summary</caption>
-            <thead><tr><th scope="col">Portfolio</th><th scope="col">Linked goal</th><th scope="col">Net worth (EUR)</th>
+            <thead><tr><th scope="col">Portfolio</th><th scope="col">Linked plan</th><th scope="col">Net worth (EUR)</th>
               {pnlColumns.map(([label, key]) => <th key={key} scope="col">{label}</th>)}
             </tr></thead>
             <tbody>{resource.data.items.map((portfolio) => <tr key={portfolio.id}>
               <th scope="row"><a href={portfoliosRoute(customerId, portfolio.id)}>{portfolio.name}</a></th>
-              <td>{portfolio.goal_id ? goals.data?.find((goal) => goal.id === portfolio.goal_id)?.name || 'Linked goal' : 'No goal'}</td>
+              <td>{portfolio.plan_id ? planName(plans.data?.find((plan) => plan.id === portfolio.plan_id)) : 'No plan'}</td>
               <td>{formatEuros(portfolio.net_worth_eur)}{portfolio.net_worth_eur === null && <span className="simulation-parameter">Some holdings cannot be valued.</span>}</td>
               {pnlColumns.map(([, key]) => <td key={key} title={key === 'today_pnl_eur' && portfolio.today_to_date ? `Price date: ${portfolio.today_to_date}` : undefined}>
                 <span className={pnlClass(portfolio[key])}>{formatEuros(portfolio[key])}</span>
@@ -443,7 +445,7 @@ function Transactions({ request, path, revision, onRemoved }) {
     </>}</>}
   </section>;
 }
-function PortfolioDetail({ request, customerId, portfolioId, goals }) {
+function PortfolioDetail({ request, customerId, portfolioId, plans }) {
   const [revision, setRevision] = useState(0);
   const [tab, setTab] = useState('positions');
   const [adding, setAdding] = useState(false);
@@ -469,7 +471,7 @@ function PortfolioDetail({ request, customerId, portfolioId, goals }) {
   return <>
     <ReadStatus resource={resource} label="portfolio" invalid={!valid} />
     {valid && <>
-      <PortfolioHeader request={request} customerId={customerId} portfolio={resource.data.portfolio} goals={goals} onSaved={refresh} onRefresh={refresh} disabled={resource.loading || Boolean(resource.error)} />
+      <PortfolioHeader request={request} customerId={customerId} portfolio={resource.data.portfolio} plans={plans} onSaved={refresh} onRefresh={refresh} disabled={resource.loading || Boolean(resource.error)} />
       <Summary data={resource.data} />
       <PortfolioPerformance request={request} portfolioPath={path} portfolioId={portfolioId} revision={revision} />
       <div className="portfolio-section-controls">
@@ -491,7 +493,7 @@ function PortfolioDetail({ request, customerId, portfolioId, goals }) {
 }
 function PortfolioPage({ request, customerId, portfolioId, isin }) {
   const customer = useRead(request, customerPath(customerId));
-  const goals = useRead(request, `${customerPath(customerId)}/goals`, { all: true, validate: validGoal });
+  const plans = useRead(request, `${customerPath(customerId)}/plans`, { all: true, validate: validPlan });
   const validCustomer = customer.data?.id === customerId && text(customer.data?.name);
   return <article className="customer-planner portfolio-tracker" aria-label="Portfolio tracker">
     <nav className="planner-breadcrumbs" aria-label="Portfolio navigation"><a href={`#/goal${isin ? `?instrument=${encodeURIComponent(isin)}` : ''}`}>← Customers</a>
@@ -499,9 +501,9 @@ function PortfolioPage({ request, customerId, portfolioId, isin }) {
         <a href={portfoliosRoute(customerId)}>Portfolios</a></>}
     </nav>
     <ReadStatus resource={customer} label="customer" invalid={!validCustomer} />
-    {validCustomer && (portfolioId ? <PortfolioDetail request={request} customerId={customerId} portfolioId={portfolioId} goals={goals} /> : <>
+    {validCustomer && (portfolioId ? <PortfolioDetail request={request} customerId={customerId} portfolioId={portfolioId} plans={plans} /> : <>
       <CustomerTabs customer={customer.data} active="portfolios" isin={isin} />
-      <PortfolioList request={request} customerId={customerId} goals={goals} />
+      <PortfolioList request={request} customerId={customerId} plans={plans} />
     </>)}
   </article>;
 }

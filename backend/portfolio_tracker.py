@@ -15,7 +15,7 @@ from fastapi import APIRouter, Body, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth import CurrentUser
-from customer_planner import Name, Limit, Offset, CREATED_ORDER, _customer, _goal, _page, _timestamp
+from customer_planner import Name, Limit, Offset, CREATED_ORDER, _customer, _plan, _page, _timestamp
 import market_data as md
 
 router = APIRouter(tags=["portfolios"])
@@ -26,13 +26,13 @@ CENT = Decimal("0.01")
 ZERO = Decimal(0)
 Money = Annotated[Decimal, Field(ge=0, le=MAX_AMOUNT, decimal_places=2, allow_inf_nan=False)]
 Units = Annotated[Decimal, Field(gt=0, le=MAX_AMOUNT, decimal_places=8, allow_inf_nan=False)]
-META_FIELDS = ("customer_id", "name", "goal_id", "currency", "created_at", "revision")
+META_FIELDS = ("customer_id", "name", "plan_id", "currency", "created_at", "revision")
 
 
 class PortfolioRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Name
-    goal_id: str | None = Field(default=None, min_length=1, max_length=100)
+    plan_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class DatedRequest(BaseModel):
@@ -88,7 +88,7 @@ def euros(value):
 
 
 def metadata(document):
-    return {"id": document["_id"], **{key: document[key] for key in META_FIELDS}}
+    return {"id": document["_id"], **{key: document.get(key) if key == "plan_id" else document[key] for key in META_FIELDS}}
 
 
 def event_public(event):
@@ -449,9 +449,9 @@ def portfolios(customer_id: str, request: Request, user: CurrentUser, limit: Lim
 def create_portfolio(customer_id: str, body: PortfolioRequest, request: Request, user: CurrentUser):
     db, owner = request.app.state.database, str(user["_id"])
     _customer(db, owner, customer_id)
-    if body.goal_id:
-        _goal(db, owner, customer_id, body.goal_id)
-    document = {"_id": str(ObjectId()), **scope(owner, customer_id), "name": body.name, "goal_id": body.goal_id,
+    if body.plan_id:
+        _plan(db, owner, customer_id, body.plan_id)
+    document = {"_id": str(ObjectId()), **scope(owner, customer_id), "name": body.name, "plan_id": body.plan_id,
                 "currency": "EUR", "created_at": _timestamp(md.utcnow()), "revision": 0, "transactions": []}
     db.portfolios.insert_one(document)
     return metadata(document)
@@ -468,10 +468,10 @@ def update_portfolio(customer_id: str, portfolio_id: str, body: PortfolioRequest
     from pymongo import ReturnDocument
     db, owner = request.app.state.database, str(user["_id"])
     require_portfolio(db, owner, customer_id, portfolio_id)
-    if body.goal_id:
-        _goal(db, owner, customer_id, body.goal_id)
+    if body.plan_id:
+        _plan(db, owner, customer_id, body.plan_id)
     document = db.portfolios.find_one_and_update(scope(owner, customer_id, portfolio_id),
-        {"$set": {"name": body.name, "goal_id": body.goal_id}, "$inc": {"revision": 1}}, return_document=ReturnDocument.AFTER)
+        {"$set": {"name": body.name, "plan_id": body.plan_id}, "$inc": {"revision": 1}}, return_document=ReturnDocument.AFTER)
     return metadata(document)
 
 

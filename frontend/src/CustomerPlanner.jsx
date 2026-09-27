@@ -284,6 +284,35 @@ function Time({ value }) {
 function Parameters({ strategy }) {
   return Object.entries(strategy.parameters).map(([key, value]) => <span key={key} className="simulation-parameter">{key.replaceAll('_', ' ')}: {String(value)}</span>);
 }
+function MakePlan({ request, goal, run }) {
+  const [promoted, setPromoted] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const pending = useRef(null);
+  useEffect(() => () => pending.current?.abort(), []);
+  async function promote() {
+    if (pending.current) return;
+    const abort = new AbortController();
+    pending.current = abort;
+    setBusy(true); setError(null);
+    try {
+      const data = await request(`${goalPath(goal.customer_id, goal.id)}/simulations/${encodeURIComponent(run.id)}/plan`,
+        { method: 'POST', body: {}, signal: abort.signal });
+      if (abort.signal.aborted) return;
+      if (data?.id !== run.id || data.customer_id !== goal.customer_id || data.goal_id !== goal.id || data.is_plan !== true) {
+        throw new Error('The backend returned an unexpected response.');
+      }
+      setPromoted(true);
+    } catch (failure) {
+      if (!abort.signal.aborted) setError(failure.message || 'Unable to make plan.');
+    } finally {
+      if (!abort.signal.aborted) { pending.current = null; setBusy(false); }
+    }
+  }
+  return <>{run.is_plan || promoted ? <span className="plan-badge" role="status">Plan</span>
+    : <button type="button" className="secondary" disabled={busy} onClick={promote}>{busy ? 'Making plan…' : 'Make plan'}</button>}
+    {error && <p role="alert">{error}</p>}</>;
+}
 function SimulationHistory({ request, goal, isin, onUpdated }) {
   const [editing, setEditing] = useState(false);
   const [updated, setUpdated] = useState(false);
@@ -308,13 +337,14 @@ function SimulationHistory({ request, goal, isin, onUpdated }) {
       empty="No saved simulations yet. Calculate a simulation, then choose Save simulation to keep it.">
       {(items) => <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Simulation comparison">
         <table className="planner-table"><caption>Saved simulations for {goal.name}</caption>
-          <thead><tr>{['Saved', 'Goal target / date', 'Strategy / parameters', 'Starting capital', 'Reliability target', 'Monthly contribution', 'Estimated success'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+          <thead><tr>{['Saved', 'Goal target / date', 'Strategy / parameters', 'Starting capital', 'Reliability target', 'Monthly contribution', 'Estimated success', 'Plan'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
           <tbody>{items.map((run) => <tr key={run.id}>
             <th scope="row"><a href={simulationRoute(goal.customer_id, goal.id, run.id)}><Time value={run.saved_at} /></a></th>
             <td>{formatEuros(run.inputs.goal_eur)}<span className="simulation-parameter">{run.inputs.goal_date}</span></td>
             <td>{run.strategy_name}<Parameters strategy={run.inputs.strategy} /></td>
             <td>{formatEuros(run.inputs.starting_capital_eur)}</td><td>{percent(run.inputs.reliability)}</td>
             <td>{formatEuros(run.monthly_contribution_eur)}</td><td>{percent(run.success_probability)}</td>
+            <td><MakePlan key={run.id} request={request} goal={goal} run={run} /></td>
           </tr>)}</tbody>
         </table>
       </div>}
@@ -337,6 +367,7 @@ function SavedSimulation({ request, goal, simulationId }) {
           <div><dt>Strategy</dt><dd>{run.strategy_definition.name}<Parameters strategy={run.inputs.strategy} /></dd></div>
         </dl>
         <a className="button-link" href={`${goalRoute(goal.customer_id, goal.id)}/new`}>New simulation</a>
+        <MakePlan key={run.id} request={request} goal={goal} run={run} />
         <SimulationResult result={run.result} strategy={run.strategy_definition} />
       </>}
     </LoadState>

@@ -50,6 +50,16 @@ def goal(client, customer_id):
     return response.json()["id"]
 
 
+def plan(client, db, customer_id):
+    goal_id = goal(client, customer_id)
+    target = db.planner_goals.find_one({"_id": goal_id})
+    plan_id = str(ObjectId())
+    db.planner_simulations.insert_one({"_id": plan_id, "user_id": target["user_id"],
+                                      "customer_id": customer_id, "goal_id": goal_id,
+                                      "saved_at": "2026-09-17T12:00:00Z", "is_plan": True})
+    return plan_id
+
+
 def portfolio(client, customer_id, **changes):
     response = client.post(f"/customers/{customer_id}/portfolios", json={"name": "Investments", **changes})
     assert response.status_code == 201, response.text
@@ -121,17 +131,17 @@ def test_portfolio_mutations_preserve_origin_protection(tracker, db, headers):
 
 def test_named_multiple_portfolios_attach_detach_and_independent_balances(tracker, db):
     client, customer_id, first, url = tracker
-    assert first == {"id": first["id"], "customer_id": customer_id, "name": "Investments", "goal_id": None,
+    assert first == {"id": first["id"], "customer_id": customer_id, "name": "Investments", "plan_id": None,
                      "currency": "EUR", "created_at": "2026-09-17T12:00:00.000000Z", "revision": 0}
-    target = goal(client, customer_id)
-    second, other_url = portfolio(client, customer_id, name="  Zoë's house \n", goal_id=target)
-    assert second["name"] == "Zoë's house" and second["goal_id"] == target
+    target = plan(client, db, customer_id)
+    second, other_url = portfolio(client, customer_id, name="  Zoë's house \n", plan_id=target)
+    assert second["name"] == "Zoë's house" and second["plan_id"] == target
     assert second["id"] != first["id"]
     record(client, url, cash(amount="12.34"))
-    for goal_id, name in [(target, "Attached"), (None, "Detached")]:
-        response = client.patch(url, json={"name": name, "goal_id": goal_id})
+    for plan_id, name in [(target, "Attached"), (None, "Detached")]:
+        response = client.patch(url, json={"name": name, "plan_id": plan_id})
         assert response.status_code == 200, response.text
-        assert response.json()["goal_id"] == goal_id
+        assert response.json()["plan_id"] == plan_id
         assert response.json()["name"] == name
         assert response.json()["created_at"] == first["created_at"]
         assert detail(client, url)["cash_eur"] == "12.34"
@@ -149,8 +159,8 @@ def test_named_multiple_portfolios_attach_detach_and_independent_balances(tracke
 
 def test_customer_net_worth_sums_cash_and_holdings_across_linked_and_unlinked_portfolios(tracker, db):
     client, customer_id, _, url = tracker
-    target = goal(client, customer_id)
-    _, other_url = portfolio(client, customer_id, goal_id=target)
+    target = plan(client, db, customer_id)
+    _, other_url = portfolio(client, customer_id, plan_id=target)
     record(client, url, cash(amount="1000"))
     record(client, url, trade(quantity="2", price="100", commission_eur="1.23"))
     record(client, url, cash("withdrawal", amount="50", day="2026-09-16"))
@@ -260,16 +270,16 @@ def test_customer_net_worth_reads_only_the_current_owners_customer_page(tracker,
 def test_owner_customer_and_goal_scoping_cannot_be_crossed(tracker, db):
     client, customer_id, first, url = tracker
     event = record(client, url, cash())
-    own_goal = goal(client, customer_id)
+    own_goal = plan(client, db, customer_id)
     other_customer = customer(client, "Second customer, same owner")
-    other_goal = goal(client, other_customer)
+    other_goal = plan(client, db, other_customer)
     other, _ = portfolio(client, other_customer)
     admin = db.users.find_one({"login": "admin"})
     db.users.insert_one({"login": "reader", "password_hash": admin["password_hash"], "role": "user"})
     assert client.post("/auth/logout").status_code == 204
     assert client.post("/auth/login", json={"login": "reader", "password": "admin"}).status_code == 200
     foreign_customer = customer(client, "Another owner")
-    foreign_goal = goal(client, foreign_customer)
+    foreign_goal = plan(client, db, foreign_customer)
     foreign, foreign_url = portfolio(client, foreign_customer)
     # Admin is not an ownership bypass, nor can another user read admin's data.
     for endpoint in (f"/customers/{customer_id}/portfolios", url, url + "/transactions"):
@@ -286,11 +296,11 @@ def test_owner_customer_and_goal_scoping_cannot_be_crossed(tracker, db):
                      f"/customers/{customer_id}/portfolios/{foreign['id']}", url + "-missing"):
         assert client.get(endpoint).status_code == 404
         assert client.get(endpoint + "/transactions").status_code == 404
-        assert client.patch(endpoint, json={"name": "Bad", "goal_id": own_goal}).status_code == 404
+        assert client.patch(endpoint, json={"name": "Bad", "plan_id": own_goal}).status_code == 404
         assert client.post(endpoint + "/transactions", json=cash()).status_code == 404
         assert client.delete(endpoint + "/transactions/" + event["id"]).status_code == 404
     for invalid_goal in (other_goal, foreign_goal, str(ObjectId())):
-        body = {"name": "Bad attachment", "goal_id": invalid_goal}
+        body = {"name": "Bad attachment", "plan_id": invalid_goal}
         assert client.post(f"/customers/{customer_id}/portfolios", json=body).status_code == 404
         assert client.patch(url, json=body).status_code == 404
     assert client.get(f"/customers/{foreign_customer}/portfolios").status_code == 404
@@ -300,7 +310,7 @@ def test_owner_customer_and_goal_scoping_cannot_be_crossed(tracker, db):
 
 @pytest.mark.parametrize("change", [
     {"name": value} for value in (None, True, 12, [], "", " \n", "x" * 201)
-] + [{"goal_id": ""}, {"currency": "USD"}, {"user_id": "foreign"}, {"transactions": []}, {"revision": 99}])
+] + [{"plan_id": ""}, {"currency": "USD"}, {"user_id": "foreign"}, {"transactions": []}, {"revision": 99}])
 def test_portfolio_metadata_rejects_invalid_or_server_owned_fields(tracker, db, change):
     client, customer_id, metadata, url = tracker
     before = db.portfolios.find_one({"_id": metadata["id"]})

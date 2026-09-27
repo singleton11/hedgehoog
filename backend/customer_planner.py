@@ -23,9 +23,10 @@ CREATED_ORDER = [("created_at", -1), ("_id", -1)]
 SIMULATION_ORDER = [("calculated_at", -1), ("_id", -1)]
 CUSTOMER_FIELDS = ("name", "created_at")
 GOAL_FIELDS = ("customer_id", "name", "goal_eur", "goal_date", "created_at")
-SIMULATION_FIELDS = ("customer_id", "goal_id", "calculated_at", "saved_at", "inputs", "strategy_definition", "result")
+SIMULATION_FIELDS = ("customer_id", "goal_id", "calculated_at", "saved_at", "inputs", "strategy_definition", "result", "is_plan")
 SUMMARY_PROJECTION = {
     "calculated_at": 1, "saved_at": 1, "inputs": 1, "strategy_definition.name": 1,
+    "is_plan": 1, "goal_id": 1,
     "result.monthly_contribution_eur": 1, "result.success_probability": 1,
 }
 
@@ -74,6 +75,10 @@ def ensure_indexes(db):
         [("user_id", 1), ("customer_id", 1), ("goal_id", 1), *SIMULATION_ORDER],
         name="planner_simulations_owner_goal_order",
     )
+    db.planner_simulations.create_index(
+        [("user_id", 1), ("customer_id", 1), ("is_plan", 1), *SIMULATION_ORDER],
+        name="planner_simulations_owner_plans_order",
+    )
     db.planner_simulations.create_index("expires_at", expireAfterSeconds=0, name="planner_preview_expiry")
 
 
@@ -84,7 +89,10 @@ def _timestamp(now):
 
 
 def _public(document, fields):
-    return {"id": document["_id"], **{field: document[field] for field in fields}}
+    # Old snapshots are simulations until explicitly promoted; no read-time migration.
+    return {"id": document["_id"], **{
+        field: document.get(field, False) if field == "is_plan" else document[field] for field in fields
+    }}
 
 
 def _page(collection, query, projection, order, serialize, limit, offset):
@@ -113,7 +121,8 @@ def _simulation_scope(owner, customer_id, goal_id):
 
 
 def _summary(document):
-    return {"id": document["_id"], "calculated_at": document["calculated_at"], "saved_at": document["saved_at"],
+    return {"id": document["_id"], "is_plan": document.get("is_plan", False), "goal_id": document["goal_id"],
+            "calculated_at": document["calculated_at"], "saved_at": document["saved_at"],
             "inputs": document["inputs"], "strategy_name": document["strategy_definition"]["name"],
             "monthly_contribution_eur": document["result"]["monthly_contribution_eur"],
             "success_probability": document["result"]["success_probability"]}
@@ -151,6 +160,25 @@ def create_customer(body: CustomerRequest, request: Request, user: CurrentUser):
 @router.get("/{customer_id}")
 def customer(customer_id: str, request: Request, user: CurrentUser):
     return _public(_customer(request.app.state.database, str(user["_id"]), customer_id), CUSTOMER_FIELDS)
+
+
+def _plan(db, owner, customer_id, plan_id):
+    document = db.planner_simulations.find_one({
+        "_id": plan_id, "user_id": owner, "customer_id": customer_id,
+        "is_plan": True, "saved_at": {"$ne": None},
+    })
+    if document is None:
+        raise md.DataError(404, "Plan not found.")
+    return document
+
+
+@router.get("/{customer_id}/plans")
+def plans(customer_id: str, request: Request, user: CurrentUser, limit: Limit = 20, offset: Offset = 0):
+    db, owner = request.app.state.database, str(user["_id"])
+    _customer(db, owner, customer_id)
+    return _page(db.planner_simulations,
+                 {"user_id": owner, "customer_id": customer_id, "is_plan": True, "saved_at": {"$ne": None}},
+                 SUMMARY_PROJECTION, SIMULATION_ORDER, _summary, limit, offset)
 
 
 @router.get("/{customer_id}/goals")
@@ -199,7 +227,7 @@ def update_goal(customer_id: str, goal_id: str, body: CustomerGoalUpdate, reques
     )
     if document is None:
         raise md.DataError(404, "Goal not found.")
-    # Simulation inputs/results and portfolio goal attachments are untouched.
+    # Simulation inputs/results and portfolio plan attachments are untouched.
     return _public(document, GOAL_FIELDS)
 
 
@@ -249,6 +277,20 @@ def save_simulation(customer_id: str, goal_id: str, simulation_id: str, request:
             raise md.DataError(404, "Simulation preview not found or expired.")
         if document["saved_at"] is None:
             raise md.DataError(410, "Simulation preview expired. Calculate a new preview before saving.")
+    return _public(document, SIMULATION_FIELDS)
+
+
+@router.post("/{customer_id}/goals/{goal_id}/simulations/{simulation_id}/plan")
+def make_plan(customer_id: str, goal_id: str, simulation_id: str, request: Request, user: CurrentUser,
+              body: SaveRequest | None = None):
+    db, owner = request.app.state.database, str(user["_id"])
+    _goal(db, owner, customer_id, goal_id)
+    document = db.planner_simulations.find_one_and_update(
+        {"_id": simulation_id, **_simulation_scope(owner, customer_id, goal_id), "saved_at": {"$ne": None}},
+        {"$set": {"is_plan": True}}, return_document=ReturnDocument.AFTER,
+    )
+    if document is None:
+        raise md.DataError(404, "Saved simulation not found.")
     return _public(document, SIMULATION_FIELDS)
 
 

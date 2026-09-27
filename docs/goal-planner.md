@@ -403,16 +403,25 @@ Origin protections as other commands. None calls the market-data provider.
     Target/date are loaded from the saved goal, never overridden by the client.
     Returns a temporary preview envelope with `id`, `customer_id`, `goal_id`,
     `calculated_at`, `saved_at: null`, full `inputs`, `strategy_definition` and
-    `result` (the existing simulation payload).
+    `result` (the existing simulation payload), and `is_plan: false`.
   - `POST /simulations/{simulationId}/save` takes no report body. It atomically
     saves the unexpired server preview and returns its envelope with `saved_at`.
     Repeated saves return the same record and timestamp, without recalculating.
-  - `GET /simulations` lists only saved compact summaries: ID, calculation/save
-    times, inputs, strategy name, monthly contribution and success probability.
+  - `POST /simulations/{simulationId}/plan` marks an already saved simulation as
+    a plan. Accepts no body or `{}`; rejects client report fields. The atomic,
+    idempotent operation sets only `is_plan: true`, returning the full envelope.
+    Inputs, results and calculation/save timestamps do not change. Previews and
+    foreign/mismatched IDs return 404. Multiple simulations can be plans.
+  - `GET /simulations` lists only saved compact summaries: ID, goal ID, `is_plan`,
+    calculation/save times, inputs, strategy name, monthly contribution and success probability.
   - `GET /simulations/{simulationId}` loads the full saved envelope without
     fetching current statistics, strategy definitions or provider data.
 
-All three lists accept `limit` (default 20, maximum 100) and `offset`, returning
+- `GET /customers/{customerId}/plans` lists marked saved simulations across that
+  customer's goals using the same compact summary, excluding unmarked runs and previews.
+  Portfolios assign these simulation IDs via `plan_id`, not `goal_id`.
+
+All lists accept `limit` (default 20, maximum 100) and `offset`, returning
 `{items, total, limit, offset}` in deterministic newest-first order (creation
 for customers/goals, calculation for simulations, with an ID tie breaker). Unknown or
 foreign customer/goal/simulation IDs are not accessible, including mismatched
@@ -422,7 +431,10 @@ MongoDB TTL cleanup eventually removes them. A saved record has no expiry.
 The workspace routes mirror this hierarchy:
 `#/goal/customers/{customerId}`, then `/goals/{goalId}`, `/new` for a new
 simulation and `/simulations/{simulationId}` for a saved report. No existing
-planner data migration is needed: the previous planner did not persist plans.
+simulation data migration is needed: older records without `is_plan` read as false.
+The simulation list and saved report offer **Make plan**, replaced with a **Plan**
+badge after success. Promotion is one-way; unassigning a portfolio does not unmark
+the simulation.
 
 ### Statistics and standalone calculation compatibility
 

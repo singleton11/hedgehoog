@@ -1,15 +1,23 @@
 # Portfolio tracker
 
 Open **Customers → a customer → Portfolios**. A customer can have multiple named
-portfolios. A portfolio may have no goal; create it with a goal or attach, change,
-or detach a goal later using **Assign goal** / **Change goal** beside the portfolio
-name. **Unassign goal** removes the link completely. Use the pencil button beside
-the name to rename the portfolio inline. A linked goal must belong to the
-same customer and account. Linking is organizational: it neither changes a goal
-nor funds/recalculates its simulations.
+portfolios. A portfolio may have no plan; create it with a plan or attach, change,
+or detach a plan later using **Assign plan** / **Change plan** beside the portfolio
+name. **Unassign plan** removes the link completely. Use the pencil button beside
+the name to rename the portfolio inline. First select **Make plan** on a saved
+simulation, either in its goal's simulation list or on the saved report. Only
+marked, saved simulations belonging to the same customer and account can be
+assigned. Linking does not fund a portfolio or recalculate a simulation.
+
+A plan is the original saved simulation with `is_plan: true`, not a copy. Multiple
+simulations may be plans, and the same plan may be assigned to multiple portfolios.
+Plan choices include strategy, target date and simulation ID to distinguish runs.
+Existing portfolio `goal_id` values remain untouched in storage but are no longer
+assignments; these portfolios expose `plan_id: null` until a plan is selected.
+No simulation is automatically chosen from an old goal link.
 
 Select **Add portfolio** to open the creation form; **Cancel** discards the draft.
-The portfolio list mirrors the customers table: portfolio name, linked goal,
+The portfolio list mirrors the customers table: portfolio name, linked plan,
 net worth, realized, unrealized, Today and total PnL in EUR. Select a portfolio
 name to open its ledger. Net worth is that portfolio's cash plus holdings.
 Summary PnL follows the customer accounting below, calculated separately for each
@@ -330,10 +338,10 @@ protection. Browser requests use the `/api` prefix.
 | --- | --- |
 | `GET /portfolio-instruments?limit=20&offset=0` | Eligible acquired EUR listing snapshots |
 | `GET /customers/{cid}/portfolios?limit=20&offset=0` | Customer-scoped portfolio metadata plus net worth, realized/unrealized/Today/total PnL and Today interval dates |
-| `POST /customers/{cid}/portfolios` | `{name, goal_id?: string|null}` |
+| `POST /customers/{cid}/portfolios` | `{name, plan_id?: string|null}` |
 | `GET /customers/{cid}/portfolios/{pid}` | Metadata, balances, positions, PnL and warnings |
 | `GET /customers/{cid}/portfolios/{pid}/performance?benchmark_id=idx-UUID` | Read-only cumulative daily TWR and optional saved index comparison; omit `benchmark_id` for TWR only |
-| `PATCH /customers/{cid}/portfolios/{pid}` | `{name, goal_id?: string|null}`; null/omission detaches goal |
+| `PATCH /customers/{cid}/portfolios/{pid}` | `{name, plan_id?: string|null}`; null/omission detaches plan |
 | `GET /customers/{cid}/portfolios/{pid}/transactions?limit=20&offset=0` | Ledger newest date/entry first |
 | `POST /customers/{cid}/portfolios/{pid}/transactions` | Append a validated transaction |
 | `DELETE /customers/{cid}/portfolios/{pid}/transactions/{tid}` | Remove one entry after validating the remaining timeline; returns `{id, removed: true}` |
