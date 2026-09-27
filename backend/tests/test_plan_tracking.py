@@ -28,6 +28,10 @@ def test_same_state_replays_saved_probability_and_payment(planner, db):
     assert result['probability_change_pp'] == 0
     assert result['monthly_contribution_change_eur'] == '0.00'
     assert result['on_track']
+    assert result['forecast_status'] == 'reached'
+    assert result['forecast_goal_date'] <= result['goal_date']
+    assert result['schedule_difference_months'] <= 0
+    assert result['schedule_difference_years'] == result['schedule_difference_months'] / 12
     assert db.planner_simulations.find_one({'_id': saved['id']}) == before
 
 
@@ -67,6 +71,9 @@ def test_current_equity_and_remaining_time_change_projection(planner, db):
     assert Decimal(richer['required_monthly_contribution_eur']) < Decimal(baseline['required_monthly_contribution_eur'])
     assert Decimal(later['required_monthly_contribution_eur']) > Decimal(baseline['required_monthly_contribution_eur'])
     assert later['goal_date'] == saved['inputs']['goal_date']
+    assert richer['forecast_goal_date'] <= baseline['forecast_goal_date']
+    assert later['forecast_status'] == 'reached'
+    assert later['schedule_difference_months'] > 0
 
 
 def test_missing_plan_and_owner_scope(planner, db):

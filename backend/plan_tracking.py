@@ -1,5 +1,8 @@
 """Read-only progress against an immutable saved plan, using refreshed estimates."""
 from decimal import Decimal
+from datetime import date
+
+from goal_forecast import calendar_month_difference
 
 from pydantic import TypeAdapter
 
@@ -35,7 +38,14 @@ def track_plan(db, plan, snapshot, today):
     parameters = strategy.resolve_parameters(selection["parameters"], db)
     result = strategy.track(parameters, inputs, db, today, paths=paths, seed=seed, fixed_monthly=monthly)
     probability = result["fixed_contribution_success_probability"]
+    forecast = result["forecast_goal_date"]
+    # Positive means late; negative means ahead of the saved deadline.
+    months = calendar_month_difference(inputs.goal_date, date.fromisoformat(forecast)) if forecast else None
     return {
+        "forecast_goal_date": forecast, "forecast_status": result["forecast_status"],
+        "forecast_search_end_date": result["forecast_search_end_date"],
+        "schedule_difference_months": months,
+        "schedule_difference_years": months / 12 if months is not None else None,
         "plan_id": plan["_id"], "valuation_date": today.isoformat(),
         "goal_date": inputs.goal_date.isoformat(), "goal_eur": money_string(inputs.goal_eur),
         "equity_eur": snapshot["equity_eur"], "strategy_name": strategy.name,

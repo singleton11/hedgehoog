@@ -8,6 +8,8 @@ const result = {
   equity_eur: '12000.00', monthly_contribution_eur: '100.00', required_monthly_contribution_eur: '150.00',
   monthly_contribution_change_eur: '50.00', goal_eur: '100000.00', goal_date: '2036-01-01',
   strategy_name: 'Buy and hold', warnings: ['Model uncertainty'],
+  forecast_status: 'reached', forecast_goal_date: '2037-07-01', forecast_search_end_date: '2076-01-01',
+  schedule_difference_months: 18, schedule_difference_years: 1.5,
 };
 const props = { portfolioPath: '/customers/c/portfolios/p', planId: 'plan1', revision: 0 };
 describe('Portfolio plan tracking', () => {
@@ -18,8 +20,8 @@ describe('Portfolio plan tracking', () => {
     expect(screen.queryByText(/pp|Gap to target|Change from saved plan|Monthly change from plan/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Model and valuation warnings|Model uncertainty|From today's portfolio|Buy and hold/)).not.toBeInTheDocument();
     const section = screen.getByRole('region', { name: 'Plan progress' });
-    expect(section.querySelectorAll('dl.facts')).toHaveLength(2);
-    expect(section.querySelectorAll('dl.facts > div')).toHaveLength(5);
+    expect(section.querySelectorAll('dl.facts')).toHaveLength(3);
+    expect(section.querySelectorAll('dl.facts > div')).toHaveLength(7);
     expect(screen.getByText('Below target probability')).toHaveClass('return-negative');
     expect(screen.getByText('Planned monthly investment')).toBeInTheDocument();
     expect(screen.getByText('Monthly investment needed to reach target')).toBeInTheDocument();
@@ -35,6 +37,24 @@ describe('Portfolio plan tracking', () => {
       required_monthly_contribution_eur: required,
     })} />);
     expect(await screen.findByText(status)).toHaveClass(onTrack ? 'return-positive' : 'return-negative');
+  });
+  it.each([[-18, '18.0 months (1.5 years) ahead'], [18, '18.0 months (1.5 years) late'], [0, 'On schedule']])('shows signed timing %s', async (months, label) => {
+    render(<PortfolioPlanTracking {...props} request={vi.fn().mockResolvedValue({
+      ...result, schedule_difference_months: months, schedule_difference_years: months / 12,
+    })} />);
+    expect(await screen.findByText(label)).toBeInTheDocument();
+    expect(screen.getByText('2037-07-01')).toBeInTheDocument();
+  });
+  it.each([['not_reached', 'Target probability not reached within 50 years'], ['unavailable', 'Forecast unavailable']])('shows %s without inventing timing', async (status, label) => {
+    render(<PortfolioPlanTracking {...props} request={vi.fn().mockResolvedValue({
+      ...result, forecast_status: status, forecast_goal_date: null,
+      schedule_difference_months: null, schedule_difference_years: null,
+    })} />);
+    expect(await screen.findByText(label)).toBeInTheDocument();
+  });
+  it('rejects malformed timing', async () => {
+    render(<PortfolioPlanTracking {...props} request={vi.fn().mockResolvedValue({ ...result, schedule_difference_months: null })} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unexpected');
   });
   it('does not request calculations without a plan', () => {
     const request = vi.fn();

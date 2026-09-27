@@ -139,7 +139,11 @@ def simulate_buy_and_hold(estimates, body: GoalInputs, today, *, paths=PATHS, se
         raise md.DataError(422, "This history and horizon produce numerically unstable projections. Check price quality or choose a shorter horizon.") from None
     success = float(np.mean(terminal >= float(body.goal_eur)))
     quantiles = np.quantile(terminal, [0.05, 0.5, 0.95], method="higher")
+    # Lazy import avoids a cycle with the shared calendar/draw helpers.
+    from goal_forecast import forecast_goal_date
     return {
+        **(forecast_goal_date(estimates, body, today, fixed_monthly, paths=paths, seed=seed)
+           if fixed_monthly is not None else {}),
         **({"fixed_contribution_success_probability": float(np.mean(
             initial_wealth + float(fixed_monthly) * annuity >= float(body.goal_eur)
         ))} if fixed_monthly is not None else {}),
