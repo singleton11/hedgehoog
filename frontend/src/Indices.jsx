@@ -190,7 +190,7 @@ export default function Indices() {
         <table className="acquired-table"><caption className="sr-only">Indices, metadata, downloaded history and acquisition status</caption>
           <thead><tr><th scope="col">Index</th><th scope="col">Currency / variant</th><th scope="col">Identity</th><th scope="col">Saved quotes</th><th scope="col">Market data</th></tr></thead>
           <tbody>{page.items.map((item) => <tr key={item.instrument_id}>
-            <th scope="row">{item.name}<span className="muted">{item.symbol} · Yahoo Finance</span></th>
+            <th scope="row"><a href={`#/indices/${encodeURIComponent(item.instrument_id)}`}>{item.name}</a><span className="muted">{item.symbol} · Yahoo Finance</span></th>
             <td>{item.currency || 'Unknown currency'}<span className="muted">{VARIANTS[item.return_variant] || 'Unknown'}{item.return_variant !== 'unknown' ? ' (catalogue metadata)' : ''}</span></td>
             <td>{item.verification_status === 'verified' ? 'Verified index' : item.verification_status === 'unverified' ? 'Unverified' : item.verification_status?.replaceAll('_', ' ') || 'Unverified'}</td>
             <td>{item.summary?.quote_count > 0 ? <>{item.summary.quote_count.toLocaleString()} quotes<span className="muted">{item.summary.first_date} – {item.summary.last_date}</span></> : 'No saved data'}</td>

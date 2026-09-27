@@ -88,7 +88,7 @@ export async function loadAcquiredInstruments(request, signal) {
   return items;
 }
 
-export async function loadAllQuotes(request, isin, signal, snapshot = {}) {
+export async function loadAllQuotes(request, isin, signal, snapshot = {}, resource = 'instruments') {
   const items = [];
   let total = null;
   // Use the server's knowledge-time cutoff, not an untrusted browser clock.
@@ -100,7 +100,7 @@ export async function loadAllQuotes(request, isin, signal, snapshot = {}) {
     const query = new URLSearchParams({ limit: '1000', offset: String(items.length) });
     if (asOf) query.set('as_of', asOf);
     if (generation) query.set('generation', generation);
-    const page = await request(`/instruments/${encodeURIComponent(isin)}/quotes?${query}`, { signal });
+    const page = await request(`/${resource}/${encodeURIComponent(isin)}/quotes?${query}`, { signal });
     if (signal.aborted) return null;
     if (!Array.isArray(page?.items) || !Number.isInteger(page.total) || page.total < 0
         || page.offset !== items.length || (total !== null && total !== page.total)) {
