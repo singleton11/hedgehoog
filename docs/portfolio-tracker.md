@@ -73,9 +73,12 @@ The **Portfolio performance** graph above the detail tabs shows cumulative
 The default is **No benchmark**. Choose a downloaded index to overlay its
 percentage change on the same graph; clear the choice to show only portfolio
 TWR. The selection is local to the open portfolio view, not a saved portfolio
-setting. Use the date slider or hover over the graph for individual values.
-On narrow screens the graph scrolls horizontally. Expand **Calculation and data
-notes** for the timing and price assumptions; data-quality warnings remain visible.
+setting. Hover or tap a point for values; focus the graph and use Left/Right or
+Home/End to inspect dates with the keyboard. There is no date slider or permanent
+value readout. On narrow screens the graph scrolls horizontally. Benchmark
+currency and return variant appear in its legend tooltip. The calculation notes
+are documented below rather than repeated on screen; data-quality warnings remain
+visible.
 
 The index selector loads the complete active index catalogue. Indices without
 saved history must first be explicitly downloaded on **Indices**. Opening,

@@ -491,10 +491,10 @@ main.login-page { display: grid; grid-template-columns: 1fr 1fr; width: min(calc
 .portfolio-performance { margin: 1.5rem 0; padding: 1rem; border: 1px solid var(--line); border-radius: 8px; }
 .portfolio-performance select { display: block; max-width: 100%; margin: .5rem 0; }
 .performance-chart svg { display: block; width: 100%; min-width: 680px; height: auto; }
-.performance-notes summary { cursor: pointer; font-weight: 600; padding: .5rem 0; }
-.performance-notes p { font-size: .85rem; }
 .performance-chart svg text { fill: currentColor; font-size: 11px; }
-.performance-chart input[type="range"] { display: block; width: 100%; }
+.performance-plot { position: relative; }
+.performance-tooltip { position: absolute; top: .5rem; right: .5rem; display: grid; gap: .15rem; max-width: calc(100% - 1rem); padding: .6rem .8rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); pointer-events: none; overflow-wrap: anywhere; }
+.performance-indices-link { font-size: .8rem; }
 .performance-grid { stroke: currentColor; opacity: .18; }
 .performance-legend { display: flex; flex-wrap: wrap; gap: 1.5rem; padding-left: 1.5rem; }
 .performance-portfolio { color: #1768aa; }

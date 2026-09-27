@@ -19,8 +19,8 @@ function validPerformance(data, portfolioId, benchmarkId) {
 export function PerformanceChart({ points, benchmark = null }) {
   const id = useId();
   const [position, setPosition] = useState(null);
-  const index = Math.min(position ?? points.length - 1, points.length - 1);
-  const selected = points[index];
+  const index = position === null ? null : Math.min(position, points.length - 1);
+  const selected = index === null ? null : points[index];
   const series = [{ key: 'twr_percent', label: 'Portfolio TWR', className: 'performance-portfolio' },
     ...(benchmark ? [{ key: 'benchmark_percent', label: benchmark.name, className: 'performance-benchmark' }] : [])];
   const values = points.flatMap((point) => series.map(({ key }) => number(point[key]))).filter((value) => value !== null);
@@ -32,15 +32,24 @@ export function PerformanceChart({ points, benchmark = null }) {
   const first = Date.parse(points[0]?.date), last = Date.parse(points.at(-1)?.date);
   const x = (point) => first === last ? 390 : 90 + (Date.parse(point.date) - first) / (last - first) * 600;
   const y = (value) => 220 - (value / scale - bottom) / (top - bottom) * 190;
-  const display = (value) => number(value) === null ? 'Unavailable' : `${value}%`;
-  if (!points.length) return <p>No performance history yet. Add a funded transaction to begin.</p>;
+  const display = (value) => number(value) === null ? 'Unavailable' : `${number(value).toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+  function navigate(event) {
+    const lastIndex = points.length - 1;
+    const current = index ?? lastIndex;
+    const next = { ArrowLeft: Math.max(0, current - 1), ArrowRight: Math.min(lastIndex, current + 1), Home: 0, End: lastIndex }[event.key];
+    if (next !== undefined) { event.preventDefault(); setPosition(next); }
+  }
+  if (!points.length) return <p>No performance history yet.</p>;
   return <div className="performance-chart">
-    <ul className="performance-legend" aria-label="Chart legend">{series.map((item) => <li key={item.key} className={item.className}>{item.label}</li>)}</ul>
+    <ul className="performance-legend" aria-label="Chart legend">{series.map((item) => <li key={item.key} className={item.className}
+      title={item.key === 'benchmark_percent' ? `${benchmark.currency || 'Unknown currency'} · ${variants[benchmark.return_variant]} · No FX conversion` : 'Cumulative daily TWR, including fees'}>{item.label}</li>)}</ul>
     {!values.length && <p>No valid performance values are available for this period.</p>}
+    <div className="performance-plot" onMouseLeave={() => setPosition(null)}>
     <div className="chart-scroll" role="region" aria-label="Scrollable performance chart" tabIndex={0}>
-    <svg viewBox="0 0 720 260" role="img" aria-labelledby={`${id}-title`} aria-describedby={`${id}-description`}>
+    <svg viewBox="0 0 720 260" role="img" tabIndex={0} aria-labelledby={`${id}-title`} aria-describedby={`${id}-description`}
+      onFocus={() => setPosition(points.length - 1)} onBlur={() => setPosition(null)} onKeyDown={navigate}>
       <title id={`${id}-title`}>Cumulative performance (%)</title>
-      <desc id={`${id}-description`}>Daily percentage returns. Gaps indicate unavailable values. Use the date slider below for exact values.</desc>
+      <desc id={`${id}-description`}>Gaps indicate unavailable values. Hover or tap a point for values. With the chart focused, use Left and Right to browse dates, or Home and End.</desc>
       {[bottom, (bottom + top) / 2, top, ...(bottom < 0 && top > 0 ? [0] : [])].map((tick, i) => <g key={i}>
         <line x1="90" x2="690" y1={y(tick * scale)} y2={y(tick * scale)} className="performance-grid" />
         <text x="82" y={y(tick * scale) + 4} textAnchor="end">{(tick * scale).toLocaleString('en', { maximumFractionDigits: 2, notation: Math.abs(tick * scale) >= 100000 ? 'scientific' : 'standard' })}%</text>
@@ -55,17 +64,15 @@ export function PerformanceChart({ points, benchmark = null }) {
           return `${command}${x(point)},${y(value)}`;
         }).join(' ');
         return <g key={key} className={className}><path data-testid={`${key}-line`} d={path} fill="none" stroke="currentColor" strokeWidth="2" />
-          {points.map((point, i) => number(point[key]) !== null && <circle key={point.date} cx={x(point)} cy={y(number(point[key]))} r="3" fill="currentColor" onMouseEnter={() => setPosition(i)}>
+          {points.map((point, i) => number(point[key]) !== null && <circle key={point.date} cx={x(point)} cy={y(number(point[key]))} r={i === index ? '5' : '3'} fill="currentColor" onMouseEnter={() => setPosition(i)} onClick={() => setPosition(i)}>
             <title>{point.date}: {label} {display(point[key])}</title></circle>)}</g>;
       })}
     </svg>
     </div>
-    <p className="portfolio-scroll-hint">Scroll horizontally to view the full graph.</p>
-    <label htmlFor={`${id}-date`}>Performance date</label>
-    <input id={`${id}-date`} type="range" min="0" max={points.length - 1} value={index} disabled={points.length === 1}
-      aria-valuetext={selected && `${selected.date}; ${series.map(({ key, label }) => `${label}: ${display(selected[key])}`).join('; ')}`}
-      onChange={(event) => setPosition(Number(event.target.value))} />
-    <p aria-live="polite">{selected?.date}{series.map(({ key, label }) => <span key={key}> · {label}: {display(selected?.[key])}</span>)}</p>
+    {selected && <div className="performance-tooltip" role="status" aria-label="Performance values">
+      <strong>{selected.date}</strong>{series.map(({ key, label, className }) => <span key={key} className={className}>{label}: {display(selected[key])}</span>)}
+    </div>}
+    </div>
   </div>;
 }
 
@@ -126,7 +133,6 @@ export default function PortfolioPerformance({ request, portfolioPath, portfolio
   const benchmark = benchmarkId ? data?.benchmark : null;
   return <section className="portfolio-performance" aria-label="Portfolio performance">
     <h2>Performance</h2>
-    <p>Cumulative daily TWR, including fees. Saved prices, not live returns.</p>
     <label htmlFor={`${id}-benchmark`}>Index benchmark</label>
     <select id={`${id}-benchmark`} value={benchmarkId} onChange={(event) => setSelection({ request, portfolioPath, portfolioId, value: event.target.value })}>
       <option value="">No benchmark</option>
@@ -134,21 +140,14 @@ export default function PortfolioPerformance({ request, portfolioPath, portfolio
       {choices?.items?.filter((item) => item.active !== false).map((item) => <option key={item.instrument_id} value={item.instrument_id} disabled={item.summary.quote_count === 0}>
         {item.name} ({item.symbol}){item.summary.quote_count === 0 ? ' — download required' : ''}</option>)}
     </select>
-    <p className="muted">Download benchmark history on the <a href="#/indices">Indices page</a>. Selecting an index uses saved data only.</p>
+    {choices?.items && (!choices.items.length || choices.items.some((item) => item.summary.quote_count === 0)) && <a className="performance-indices-link" href="#/indices">Manage indices</a>}
     {!choices && <p role="status">Loading indices…</p>}
     {choices?.error && <div><p role="alert">{choices.error}</p><button type="button" onClick={() => setIndicesAttempt((value) => value + 1)}>Retry indices</button></div>}
     {!current && <p role="status">Loading performance…</p>}
     {current?.error && <div><p role="alert">{current.error}</p><button type="button" onClick={() => setAttempt((value) => value + 1)}>Retry performance</button></div>}
     {data && <>
-      <p className="muted">As of {data.as_of.slice(0, 10)}{benchmark && ` · ${benchmark.name} · ${benchmark.currency || 'Unknown currency'} · ${variants[benchmark.return_variant]}`}</p>
       {data.warnings.map((warning, i) => <p key={i} role="status">{warning}</p>)}
       <PerformanceChart key={key} points={data.points} benchmark={benchmark} />
     </>}
-    <p className="muted">Corporate actions are not included in portfolio returns. Benchmarks are not FX-converted to EUR.</p>
-    <details className="performance-notes"><summary>Calculation and data notes</summary>
-      <p>Daily TWR assumes deposits at the start of the day and withdrawals at the end. Buys, sells and commissions affect return but are not external cash flows. Daily growth factors are compounded from the first funding date.</p>
-      <p>Historical holdings use their last saved raw close on or before each date. Prices carry forward across missing observations and after the last close; future prices are never used. Missing or invalid required marks make cumulative TWR unavailable until the history is repaired.</p>
-      <p>The index line shows saved index-level change from the same baseline, in its own currency, without FX conversion. The recorded return variant may be price, net or gross total return, or unknown. The comparison does not imply equivalent EUR total returns. Splits, dividends and other corporate actions are not processed by the portfolio ledger.</p>
-    </details>
   </section>;
 }

@@ -31,19 +31,34 @@ describe('Portfolio performance', () => {
     render(<PortfolioPerformance {...props} request={request} />); await flush();
     expect(screen.getByLabelText('Index benchmark')).toHaveValue('');
     expect(screen.getByRole('option', { name: /empty.*download required/ })).toBeDisabled();
-    expect(screen.getByRole('link', { name: 'Indices page' })).toHaveAttribute('href', '#/indices');
+    expect(screen.getByRole('link', { name: 'Manage indices' })).toHaveAttribute('href', '#/indices');
     expect(screen.queryByTestId('benchmark_percent-line')).not.toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Scrollable performance chart' })).toHaveAttribute('tabindex', '0');
-    expect(screen.getByText('Calculation and data notes').closest('details')).not.toHaveAttribute('open');
-    expect(screen.getByRole('slider')).toHaveAttribute('aria-valuetext', '2026-09-22; Portfolio TWR: 10.00%');
+    expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+    expect(screen.queryByText('Performance date')).not.toBeInTheDocument();
+    expect(screen.queryByText('Calculation and data notes')).not.toBeInTheDocument();
+    expect(screen.queryByText(/As of|Daily TWR assumes|Saved prices, not live/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('status', { name: 'Performance values' })).not.toBeInTheDocument();
     choose('idx-one'); await flush();
     expect(request).toHaveBeenCalledWith(`${path}/performance?benchmark_id=idx-one`, expect.anything());
     expect(screen.getByTestId('benchmark_percent-line')).toBeInTheDocument();
     expect(within(screen.getByRole('list', { name: 'Chart legend' })).getByText('idx-one')).toBeInTheDocument();
-    expect(screen.getByText(/Unknown return variant/)).toBeInTheDocument();
+    expect(screen.getByText('idx-one')).toHaveAttribute('title', 'USD · Unknown return variant · No FX conversion');
     choose(''); await flush();
     expect(screen.queryByTestId('benchmark_percent-line')).not.toBeInTheDocument();
     expect(request.mock.calls.every(([url, options]) => !options.method && (url.startsWith('/indices?') || url.startsWith(`${path}/performance`)))).toBe(true);
+  });
+
+  it('keeps data-quality warnings visible without the explanatory paragraphs', async () => {
+    const good = server();
+    const warning = 'TWR unavailable: a required price is missing.';
+    const request = vi.fn((url, options) => url.startsWith('/indices?') ? good(url, options) : Promise.resolve(performance('', { warnings: [warning] })));
+    render(<PortfolioPerformance {...props} request={request} />); await flush();
+    expect(screen.getByText(warning)).toBeVisible();
+    expect(screen.getByText(warning)).toHaveAttribute('role', 'status');
+    expect(document.querySelector('.portfolio-performance details')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('.portfolio-performance p')).toHaveLength(1);
+    expect(screen.queryByRole('link', { name: 'Manage indices' })).not.toBeInTheDocument();
   });
 
   it('ignores malformed benchmark values when no benchmark is selected', async () => {
@@ -140,22 +155,47 @@ describe('Portfolio performance', () => {
 });
 
 describe('Performance chart', () => {
-  it('breaks null gaps, exposes dates via slider and hover, and includes negative and zero ticks', () => {
+  it('breaks null gaps and exposes values on hover, tap and keyboard focus without a slider', () => {
     const gapped = [...points, { date: '2026-09-23', twr_percent: null, benchmark_percent: null }, { date: '2026-09-24', twr_percent: '5', benchmark_percent: '6' }];
     render(<PerformanceChart points={gapped} benchmark={index()} />);
+    const graph = screen.getByRole('img');
+    const readout = () => screen.getByRole('status', { name: 'Performance values' });
     expect(screen.getByTestId('twr_percent-line').getAttribute('d').match(/M/g)).toHaveLength(2);
     expect(screen.getByText('-2.5%')).toBeInTheDocument(); expect(screen.getByText('0%')).toBeInTheDocument();
-    fireEvent.change(screen.getByRole('slider'), { target: { value: '3' } });
-    expect(screen.getByRole('slider')).toHaveAttribute('aria-valuetext', '2026-09-23; Portfolio TWR: Unavailable; idx-one: Unavailable');
+    expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+    expect(graph).not.toHaveAccessibleDescription(expect.stringContaining('slider'));
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    fireEvent.focus(graph);
+    expect(readout()).toHaveTextContent('2026-09-24');
+    fireEvent.keyDown(graph, { key: 'ArrowLeft' });
+    expect(readout()).toHaveTextContent('2026-09-23');
+    expect(readout()).toHaveTextContent('Portfolio TWR: Unavailable');
+    expect(readout()).toHaveTextContent('idx-one: Unavailable');
+    fireEvent.keyDown(graph, { key: 'Home' });
+    fireEvent.keyDown(graph, { key: 'ArrowLeft' });
+    expect(readout()).toHaveTextContent('2026-09-20');
+    fireEvent.keyDown(graph, { key: 'End' });
+    fireEvent.keyDown(graph, { key: 'ArrowRight' });
+    expect(readout()).toHaveTextContent('2026-09-24');
+    fireEvent.blur(graph);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
     fireEvent.mouseEnter(document.querySelector('circle'));
-    expect(screen.getByRole('slider')).toHaveValue('0');
+    expect(readout()).toHaveTextContent('2026-09-20');
+    expect(readout()).toHaveTextContent('Portfolio TWR: 0.00%');
+    fireEvent.mouseLeave(document.querySelector('.performance-plot'));
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    fireEvent.click(document.querySelectorAll('.performance-portfolio circle')[1]);
+    expect(readout()).toHaveTextContent('2026-09-21');
+    expect(readout()).toHaveTextContent('Portfolio TWR: -2.50%');
   });
   it('handles empty, all-null and a single date without invalid SVG numbers', () => {
     const view = render(<PerformanceChart points={[]} />);
     expect(screen.getByText(/No performance history/)).toBeInTheDocument();
     view.rerender(<PerformanceChart points={[{ date: '2026-09-20', twr_percent: null }]} />);
     expect(screen.getByText(/No valid performance/)).toBeInTheDocument();
-    expect(screen.getByRole('slider')).toBeDisabled();
+    expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+    fireEvent.focus(screen.getByRole('img'));
+    expect(screen.getByRole('status', { name: 'Performance values' })).toHaveTextContent('Unavailable');
     view.rerender(<PerformanceChart points={[{ date: '2026-09-20', twr_percent: '0' }]} />);
     expect(document.querySelector('circle')).toHaveAttribute('cx', '390');
     expect(screen.getByRole('img').outerHTML).not.toMatch(/NaN|Infinity/);
