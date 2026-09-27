@@ -463,6 +463,19 @@ def portfolio(customer_id: str, portfolio_id: str, request: Request, user: Curre
     return valuation(db, require_portfolio(db, str(user["_id"]), customer_id, portfolio_id))
 
 
+@router.get(BASE + "/{portfolio_id}/plan-tracking")
+def portfolio_plan_tracking(customer_id: str, portfolio_id: str, request: Request, user: CurrentUser):
+    from plan_tracking import track_plan
+
+    db, owner = request.app.state.database, str(user["_id"])
+    document = require_portfolio(db, owner, customer_id, portfolio_id)
+    if not document.get("plan_id"):
+        raise md.DataError(422, "Assign a saved plan to this portfolio to track its progress.")
+    plan = _plan(db, owner, customer_id, document["plan_id"])
+    now = md.utcnow()
+    return track_plan(db, plan, valuation(db, document, now=now), now.date())
+
+
 @router.patch(BASE + "/{portfolio_id}")
 def update_portfolio(customer_id: str, portfolio_id: str, body: PortfolioRequest, request: Request, user: CurrentUser):
     from pymongo import ReturnDocument

@@ -4,6 +4,7 @@ import CustomerTabs from './CustomerTabs.jsx';
 import Icon from './Icon.jsx';
 import DegiroImport from './DegiroImport.jsx';
 import PortfolioPerformance from './PortfolioPerformance.jsx';
+import PortfolioPlanTracking from './PortfolioPlanTracking.jsx';
 import { formatEuros as formatExactEuros } from './goalProjection.js';
 
 const PAGE_SIZE = 20;
@@ -475,6 +476,7 @@ function PortfolioDetail({ request, customerId, portfolioId, plans }) {
     {valid && <>
       <PortfolioHeader request={request} customerId={customerId} portfolio={resource.data.portfolio} plans={plans} onSaved={refresh} onRefresh={refresh} disabled={resource.loading || Boolean(resource.error)} />
       <Summary data={resource.data} performance={performance?.request === request && performance.portfolioPath === path && performance.revision === revision ? performance.summary : null} />
+      {!resource.loading && !resource.error && <PortfolioPlanTracking request={request} portfolioPath={path} planId={resource.data.portfolio.plan_id} revision={revision} />}
       <div className="portfolio-section-controls">
         <div className="portfolio-tabs" role="tablist" aria-label="Portfolio sections" onKeyDown={tabKey}>
           {['positions', 'transactions', 'performance'].map((value) => <button key={value} id={`portfolio-${value}-tab`} type="button" role="tab" aria-selected={tab === value} aria-controls={`portfolio-${value}-panel`} tabIndex={tab === value ? 0 : -1} onClick={() => setTab(value)}>{value === 'positions' ? 'Positions' : value === 'transactions' ? 'Transactions' : 'Performance'}</button>)}

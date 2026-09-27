@@ -96,7 +96,7 @@ def trajectory_points(steps, today, mean, variance, paths, seed, capital, monthl
     return points
 
 
-def simulate_buy_and_hold(estimates, body: GoalInputs, today, *, paths=PATHS, seed=SEED):
+def simulate_buy_and_hold(estimates, body: GoalInputs, today, *, paths=PATHS, seed=SEED, fixed_monthly=None):
     deposits = contribution_dates(today, body.goal_date)
     steps = [(day, True) for day in deposits]
     if deposits[-1] < body.goal_date:
@@ -140,6 +140,9 @@ def simulate_buy_and_hold(estimates, body: GoalInputs, today, *, paths=PATHS, se
     success = float(np.mean(terminal >= float(body.goal_eur)))
     quantiles = np.quantile(terminal, [0.05, 0.5, 0.95], method="higher")
     return {
+        **({"fixed_contribution_success_probability": float(np.mean(
+            initial_wealth + float(fixed_monthly) * annuity >= float(body.goal_eur)
+        ))} if fixed_monthly is not None else {}),
         "monthly_contribution_eur": money_string(monthly),
         "target_probability": body.reliability, "success_probability": success,
         "zero_contribution_success_probability": float(np.mean(initial_wealth >= float(body.goal_eur))),
