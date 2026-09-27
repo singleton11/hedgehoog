@@ -4,7 +4,6 @@ import { formatEuros } from './goalProjection.js';
 const probability = (value) => Number.isFinite(value) && value >= 0 && value <= 1;
 const money = (value) => typeof value === 'string' && /^-?\d+\.\d{2}$/.test(value);
 const percent = (value) => `${(value * 100).toFixed(1)}%`;
-const signed = (value) => `${value >= 0 ? '+' : ''}${value.toFixed(1)} pp`;
 function valid(data, planId) {
   return data?.plan_id === planId && typeof data.on_track === 'boolean'
     && ['success_probability', 'original_probability', 'target_probability'].every((key) => probability(data[key]))
@@ -29,27 +28,22 @@ export default function PortfolioPlanTracking({ request, portfolioPath, planId, 
   }, [request, portfolioPath, planId, revision, attempt]);
   const current = state?.request === request && state.portfolioPath === portfolioPath && state.planId === planId && state.revision === revision && state.attempt === attempt;
   const data = current ? state.data : null;
+  const ahead = data?.on_track && BigInt(data.required_monthly_contribution_eur.replace('.', '')) < BigInt(data.monthly_contribution_eur.replace('.', ''));
   return <section aria-label="Plan progress">
     <h3>Plan progress</h3>
     {!planId ? <p className="muted">Assign a saved plan to see whether this portfolio is on track.</p>
       : !current ? <p role="status">Calculating plan progress…</p>
         : state.error ? <><p role="alert">{state.error}</p><button className="secondary" onClick={() => setAttempt((value) => value + 1)}>Retry plan progress</button></>
           : <>
-            <p className="muted">{data.strategy_name} · Goal: {formatEuros(data.goal_eur)} by {data.goal_date}</p>
             <dl className="facts">
-              <div><dt>Plan status</dt><dd className={data.on_track ? 'return-positive' : 'return-negative'}>{data.on_track ? 'On track' : 'Below target probability'}</dd></div>
+              <div><dt>Plan status</dt><dd className={data.on_track ? 'return-positive' : 'return-negative'}>{ahead ? 'Ahead of plan' : data.on_track ? 'On track' : 'Below target probability'}</dd></div>
               <div><dt>Probability at planned payment</dt><dd>{percent(data.success_probability)}</dd></div>
-              <div><dt>Change from saved plan ({percent(data.original_probability)})</dt><dd className={data.probability_change_pp < 0 ? 'return-negative' : data.probability_change_pp > 0 ? 'return-positive' : undefined}>{signed(data.probability_change_pp)}</dd></div>
               <div><dt>Target probability</dt><dd>{percent(data.target_probability)}</dd></div>
-              <div><dt>Gap to target</dt><dd className={data.target_gap_pp < 0 ? 'return-negative' : data.target_gap_pp > 0 ? 'return-positive' : undefined}>{signed(data.target_gap_pp)}</dd></div>
             </dl>
             <dl className="facts">
               <div><dt>Planned monthly investment</dt><dd>{formatEuros(data.monthly_contribution_eur)}</dd></div>
               <div><dt>Monthly investment needed to reach target</dt><dd>{formatEuros(data.required_monthly_contribution_eur)}</dd></div>
-              <div><dt>Monthly change from plan</dt><dd>{formatEuros(data.monthly_contribution_change_eur)}</dd></div>
             </dl>
-            <p className="muted">From today's portfolio value of {formatEuros(data.equity_eur)} (cash + holdings), using refreshed historical estimates and the saved strategy, simulation path count and seed. Assumes all capital follows that strategy from now on, with payments starting one month from today. Uses latest saved prices, not live quotes. Model estimates are not guarantees.</p>
-            <details><summary>Model and valuation warnings</summary><ul>{data.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>
           </>}
   </section>;
 }
