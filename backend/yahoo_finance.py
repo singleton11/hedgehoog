@@ -162,6 +162,13 @@ class _Session(Session):
             if status in (401, 403, 429, 451):
                 self.abort({401: "authentication_error", 403: "plan_restricted", 429: "quota_exceeded", 451: "plan_restricted"}[status])
             if status >= 400 and not (parsed.hostname == "fc.yahoo.com" and status == 404):
+                payload = _json(response.content)
+                params = kwargs.get("params") or {}
+                if status == 400 and "/finance/chart/" in parsed.path and _no_history_response(payload, params):
+                    # Preserve the exact provider rejection, stop yfinance before
+                    # it can retry, and let _history verify the pre-listing bound.
+                    self.captures.append((parsed.path, dict(params), payload))
+                    raise _Abort()
                 self.abort("http_error")
             if 300 <= status < 400:
                 location = response.headers.get("Location")
@@ -257,6 +264,36 @@ def _chart(payload: Any, symbol: str) -> dict:
     return result
 
 
+def _no_history_response(payload: Any, params: dict) -> bool:
+    start, end = params.get("period1"), params.get("period2")
+    if type(start) is not int or type(end) is not int or start >= end:
+        return False
+    chart = payload.get("chart") if isinstance(payload, dict) else None
+    return (isinstance(chart, dict) and chart.get("result") is None
+            and chart.get("error") == {"code": "Bad Request",
+                "description": f"Data doesn't exist for startDate = {start}, endDate = {end}"})
+
+
+def _empty_history_meta(payload: dict, symbol: str) -> dict | None:
+    """Validate preserved pre-listing evidence, including during split replay."""
+    if "empty_history" not in payload:
+        return None
+    evidence = payload["empty_history"]
+    if not isinstance(evidence, dict):
+        raise _error("malformed_response")
+    meta, params = evidence.get("metadata"), evidence.get("request")
+    if not isinstance(meta, dict) or not isinstance(params, dict):
+        raise _error("malformed_response")
+    first = meta.get("firstTradeDate")
+    if (type(first) is not int or not _no_history_response(evidence.get("response"), params)
+            or params["period2"] > first):
+        raise _error("http_error")
+    if meta.get("symbol") != symbol:
+        raise _error("identity_mismatch")
+    _tz(meta)
+    return meta
+
+
 def validate_index_identity(meta: Any, symbol: str) -> None:
     """No ETF/equity proxies and no fuzzy or root-symbol identity matches."""
     if (not isinstance(meta, dict) or meta.get("symbol") != symbol
@@ -269,6 +306,10 @@ def validate_index_page(page: dict, symbol: str) -> None:
     if isinstance(raw, dict) and "history_chunks" in raw:
         for chunk in _history_chunks(raw):
             validate_index_page({"raw": chunk["raw"]}, symbol)
+        return
+    empty_meta = _empty_history_meta(raw, symbol) if isinstance(raw, dict) else None
+    if empty_meta is not None:
+        validate_index_identity(empty_meta, symbol)
         return
     result = _chart(raw, symbol)
     validate_index_identity(result["meta"], symbol)
@@ -360,6 +401,8 @@ def _splits_from_payload(payload: Any, symbol: str, start: date, end: date, secr
             if lower <= upper:
                 rows.extend(_splits_from_payload(chunk["raw"], symbol, lower, upper, secrets)["data"])
         return _page(rows, payload, secrets)
+    if isinstance(payload, dict) and _empty_history_meta(payload, symbol) is not None:
+        return _page([], payload, secrets)
     result = _chart(payload, symbol)
     zone = _tz(result["meta"])
     events = result.get("events")
@@ -480,11 +523,17 @@ class YahooFinanceClient:
             interval="1d", auto_adjust=False, back_adjust=False, repair=False,
             keepna=True, actions=True, rounding=False, timeout=self._timeout,
         ), tolerate_normalization=True)
-        captures = [payload for path, params, payload in self._session.captures
+        captures = [(params, payload) for path, params, payload in self._session.captures
                     if "/chart/" in path and "period1" in params and "period2" in params]
         if len(captures) != 1:
             raise _error("malformed_response")
-        payload = captures[0]
+        params, payload = captures[0]
+        if _no_history_response(payload, params):
+            evidence = {"empty_history": {"metadata": deepcopy(meta), "request": {
+                "period1": params["period1"], "period2": params["period2"]}, "response": payload}}
+            _empty_history_meta(evidence, symbol)
+            self._charts[key] = evidence
+            return evidence
         result = _chart(payload, symbol)
         _tz(result["meta"])
         self._charts[key] = payload
@@ -506,6 +555,8 @@ class YahooFinanceClient:
                 chunks.append({"date_from": lower.isoformat(), "date_to": upper.isoformat(), "raw": page["raw"]})
             return self._page(rows, {"history_chunks": chunks})
         payload = self._history(symbol, start, end)
+        if _empty_history_meta(payload, symbol) is not None:
+            return self._page([], payload)
         result = _chart(payload, symbol)
         meta = result["meta"]
         zone = _tz(meta)

@@ -177,6 +177,13 @@ are split into non-overlapping ranges of at most 99 × 365 days to stay below
 Yahoo's 100-year daily-data limit. Each response is retained separately under
 `raw.history_chunks` in one logical page; split replay uses those same responses
 without additional provider calls. Short ranges retain the original raw format.
+A pre-listing chunk may return Yahoo HTTP 400 with an exact, request-bound
+“Data doesn't exist” response. Only when its exclusive end is at or before the
+same symbol's reported `firstTradeDate` is it retained as `raw.empty_history`
+(metadata, date bounds, and original error response), allowing later chunks to
+proceed. This is provider-reported absence, not proof of actual index inception.
+Unknown inception, overlapping no-data errors, other HTTP failures and access
+restrictions remain failures; no retries or fabricated bars are introduced.
 A searchable symbol can still have no downloadable daily history. Failed
 refreshes preserve the previous published quotes and metadata. Close-only Yahoo
 indices retain null OHLC/volume/adjusted-close fields; nothing is synthesized.

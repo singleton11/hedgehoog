@@ -257,6 +257,29 @@ def test_real_yfinance_normalizes_close_only_index_and_preserves_raw(transport):
     assert len(calls) == 4
 
 
+def test_worker_publishes_index_with_preserved_empty_pre_listing_chunk(db, config, index, transport):
+    from test_yahoo_finance import stamp, no_data_response
+    state, calls = transport
+    for payload in (state['meta'], state['history']):
+        payload['chart']['result'][0]['meta'].update(
+            symbol=index['symbol'], instrumentType='INDEX', firstTradeDate=stamp(START), currency='EUR')
+    def handler(session, method, url, kwargs):
+        params = kwargs.get('params', {})
+        if 'period2' in params and params['period2'] < stamp(START):
+            return no_data_response(url, params)
+    state['handler'] = handler
+    job = request(db, config, index)
+    result = md.run_acquisition(db, config, job['id'],
+                               lambda key, before_request: YahooFinanceClient(before_request=before_request))
+    assert result['status'] == 'succeeded'
+    saved = md.read_quotes(db, index['instrument_id'])
+    assert saved['generation'] == job['id'] and saved['total'] == 2
+    raw = db.raw_eod_pages.find_one({'job_id': job['id']})['data']
+    assert 'empty_history' in raw['raw']['history_chunks'][0]['raw']
+    validate_index_page(raw, index['symbol'])
+    assert len([c for c in calls if 'period1' in c[2].get('params', {})]) == 2
+
+
 def test_eur_index_cannot_enter_portfolio_selector_or_goal_parameters(api, db, config, index):
     from goal_strategies import BuyAndHoldParameters
     from portfolio_tracker import acquired_instrument
