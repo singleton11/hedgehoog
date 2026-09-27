@@ -29,20 +29,24 @@ export default function PortfolioPlanTracking({ request, portfolioPath, planId, 
   }, [request, portfolioPath, planId, revision, attempt]);
   const current = state?.request === request && state.portfolioPath === portfolioPath && state.planId === planId && state.revision === revision && state.attempt === attempt;
   const data = current ? state.data : null;
-  return <section className="planner-create" aria-label="Plan progress">
+  return <section aria-label="Plan progress">
     <h3>Plan progress</h3>
     {!planId ? <p className="muted">Assign a saved plan to see whether this portfolio is on track.</p>
       : !current ? <p role="status">Calculating plan progress…</p>
         : state.error ? <><p role="alert">{state.error}</p><button className="secondary" onClick={() => setAttempt((value) => value + 1)}>Retry plan progress</button></>
           : <>
-            <h4 className={data.on_track ? 'return-positive' : 'return-negative'}>{data.on_track ? 'On track' : 'Below target probability'}</h4>
-            <p>{data.strategy_name} · Goal: {formatEuros(data.goal_eur)} by {data.goal_date}</p>
-            <dl>
-              <dt>Probability at the planned {formatEuros(data.monthly_contribution_eur)}/month</dt><dd>{percent(data.success_probability)}</dd>
-              <dt>Change from saved plan ({percent(data.original_probability)})</dt><dd>{signed(data.probability_change_pp)}</dd>
-              <dt>Target probability</dt><dd>{percent(data.target_probability)} ({signed(data.target_gap_pp)} gap)</dd>
-              <dt>Monthly investment needed to reach target</dt><dd>{formatEuros(data.required_monthly_contribution_eur)}</dd>
-              <dt>Monthly change from plan</dt><dd>{formatEuros(data.monthly_contribution_change_eur)}</dd>
+            <p className="muted">{data.strategy_name} · Goal: {formatEuros(data.goal_eur)} by {data.goal_date}</p>
+            <dl className="facts">
+              <div><dt>Plan status</dt><dd className={data.on_track ? 'return-positive' : 'return-negative'}>{data.on_track ? 'On track' : 'Below target probability'}</dd></div>
+              <div><dt>Probability at planned payment</dt><dd>{percent(data.success_probability)}</dd></div>
+              <div><dt>Change from saved plan ({percent(data.original_probability)})</dt><dd className={data.probability_change_pp < 0 ? 'return-negative' : data.probability_change_pp > 0 ? 'return-positive' : undefined}>{signed(data.probability_change_pp)}</dd></div>
+              <div><dt>Target probability</dt><dd>{percent(data.target_probability)}</dd></div>
+              <div><dt>Gap to target</dt><dd className={data.target_gap_pp < 0 ? 'return-negative' : data.target_gap_pp > 0 ? 'return-positive' : undefined}>{signed(data.target_gap_pp)}</dd></div>
+            </dl>
+            <dl className="facts">
+              <div><dt>Planned monthly investment</dt><dd>{formatEuros(data.monthly_contribution_eur)}</dd></div>
+              <div><dt>Monthly investment needed to reach target</dt><dd>{formatEuros(data.required_monthly_contribution_eur)}</dd></div>
+              <div><dt>Monthly change from plan</dt><dd>{formatEuros(data.monthly_contribution_change_eur)}</dd></div>
             </dl>
             <p className="muted">From today's portfolio value of {formatEuros(data.equity_eur)} (cash + holdings), using refreshed historical estimates and the saved strategy, simulation path count and seed. Assumes all capital follows that strategy from now on, with payments starting one month from today. Uses latest saved prices, not live quotes. Model estimates are not guarantees.</p>
             <details><summary>Model and valuation warnings</summary><ul>{data.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>
