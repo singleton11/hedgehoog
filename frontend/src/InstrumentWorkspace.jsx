@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import AddEtf from './AddEtf.jsx';
 import Indices from './Indices.jsx';
+import IndexDetail from './IndexDetail.jsx';
 import InstrumentDetail from './InstrumentDetail.jsx';
 import AcquiredEtfs from './AcquiredEtfs.jsx';
 import CustomerPlanner from './CustomerPlanner.jsx';
@@ -41,6 +42,14 @@ function readRoute() {
     catch { return { invalid: true }; }
   }
   if (hash === '#/indices') return { indices: true, isin: null };
+  const indexMatch = hash.match(/^#\/indices\/([^/?#]+)$/);
+  if (indexMatch) {
+    try {
+      const indexId = decodeURIComponent(indexMatch[1]);
+      return /^idx-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(indexId)
+        ? { indices: true, indexId } : { indices: true, invalid: true };
+    } catch { return { indices: true, invalid: true }; }
+  }
   if (hash === '#/add') return { add: true, isin: null };
   const strategyMatch = hash.match(/^#\/strategies\/([^/?#]+)$/);
   if (strategyMatch) {
@@ -84,7 +93,8 @@ export default function InstrumentWorkspace() {
       <p className="sidebar-footer">HEDGEHOOG <span> / </span> INVEST WITH INSIGHT</p>
     </nav>
     <div id="workspace-content" className="workspace-content" tabIndex={-1}>
-    {route.indices ? <Indices /> : route.portfolios ? <PortfolioTracker customerId={route.customerId} portfolioId={route.portfolioId} isin={route.isin} /> : route.calibration ? <StrategyCalibration newRun={route.newRun} runId={route.runId} sourceId={route.sourceId} strategyId={route.strategyId} /> : route.goal ? <CustomerPlanner customerId={route.customerId} goalId={route.goalId} simulationId={route.simulationId} newSimulation={route.newSimulation} isin={route.isin} /> : <>
+    {route.indices ? route.invalid ? <p role="alert">Index not found. <a href="#/indices">Back to indices</a>.</p>
+      : route.indexId ? <IndexDetail key={route.indexId} instrumentId={route.indexId} /> : <Indices /> : route.portfolios ? <PortfolioTracker customerId={route.customerId} portfolioId={route.portfolioId} isin={route.isin} /> : route.calibration ? <StrategyCalibration newRun={route.newRun} runId={route.runId} sourceId={route.sourceId} strategyId={route.strategyId} /> : route.goal ? <CustomerPlanner customerId={route.customerId} goalId={route.goalId} simulationId={route.simulationId} newSimulation={route.newSimulation} isin={route.isin} /> : <>
       {(route.add || route.isin || route.invalid) && <nav aria-label="Instrument navigation"><a href="#/">← ETFs</a></nav>}
       {route.invalid ? <p role="alert">ETF not found. <a href="#/add">Search for an ETF</a>.</p>
         : route.add ? <AddEtf onSelect={select} />

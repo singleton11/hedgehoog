@@ -40,7 +40,7 @@ function quotesInRange(quotes, range) {
   return quotes.filter((quote) => quote.date >= firstDate);
 }
 
-export default function CandlestickChart({ quotes, priceCurrencyOverride = null, priceBasis = null }) {
+export default function CandlestickChart({ quotes, priceCurrencyOverride = null, priceBasis = null, instrumentType = 'etf' }) {
   const [range, setRange] = useState('1y');
   const [hover, setHover] = useState(null);
   const id = useId();
@@ -62,7 +62,8 @@ export default function CandlestickChart({ quotes, priceCurrencyOverride = null,
   const dateTicks = [...new Set([0, Math.floor((candles.length - 1) / 2), candles.length - 1])].filter((index) => index >= 0);
 
   const providerAdjusted = priceBasis === 'provider_split_adjusted';
-  const basisLabel = providerAdjusted ? 'Provider split-adjusted OHLC' : 'Unadjusted OHLC';
+  const isIndex = instrumentType === 'index';
+  const basisLabel = isIndex ? 'Index OHLC' : providerAdjusted ? 'Provider split-adjusted OHLC' : 'Unadjusted OHLC';
 
   return <section aria-label="Price history" className="price-history">
     <div className="section-heading"><h2>Price history</h2>
@@ -72,7 +73,7 @@ export default function CandlestickChart({ quotes, priceCurrencyOverride = null,
             onClick={() => { setRange(value); setHover(null); }}>{value}</button>)}
       </div>
     </div>
-    <p className="muted">{basisLabel} · Listing price currency: {currency}{priceCurrencyOverride && ' (manual)'}{providerAdjusted && ' · Adj Close kept separately; distributions are not reinvested'}</p>
+    <p className="muted">{basisLabel}{isIndex ? ' · Values shown in index points' : <> · Listing price currency: {currency}{priceCurrencyOverride && ' (manual)'}{providerAdjusted && ' · Adj Close kept separately; distributions are not reinvested'}</>}</p>
     <p>{candles.length} {candles.length === 1 ? 'candle' : 'candles'} · {visible.length} of {quotes.length} quotes</p>
     {!candles.length ? <p role="status">No plottable OHLC candles available.</p> : <>
       <div className="chart-scroll" role="region" aria-label="Scrollable price chart" tabIndex={0}>
