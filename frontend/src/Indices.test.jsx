@@ -26,6 +26,11 @@ function server() {
       const item = record('idx-new', JSON.parse(options.body)); state.items.push(item);
       return response(201, item);
     }
+    if (url.startsWith('/api/indices/') && options.method === 'DELETE') {
+      if (state.remove) return state.remove(url, options);
+      state.items = state.items.filter((item) => url !== `/api/indices/${item.instrument_id}`);
+      return response(200, { removed: true });
+    }
     if (url.endsWith('/acquisitions') && options.method === 'POST') {
       if (state.download) return state.download(url, options);
       state.items[0] = { ...state.items[0], acquisition: { id: 'job', status: 'queued', phase: 'queued' } };
@@ -47,6 +52,41 @@ async function confirm() {
 }
 beforeEach(() => { vi.useFakeTimers(); window.history.replaceState(null, '', '#/'); });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+it('confirms catalogue removal, supports cancel and refreshes the list', async () => {
+  const s = server(); await open();
+  fireEvent.click(screen.getByRole('button', { name: 'Remove S&P 500 from catalogue' }));
+  expect(screen.getByText(/Downloaded data is preserved/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(s.fetch.mock.calls.filter(([, o]) => o.method === 'DELETE')).toHaveLength(0);
+  fireEvent.click(screen.getByRole('button', { name: 'Remove S&P 500 from catalogue' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm removal' })); await flush();
+  expect(s.fetch.mock.calls.filter(([, o]) => o.method === 'DELETE')).toHaveLength(1);
+  expect(screen.getByRole('heading', { name: 'Indices (0)' })).toBeInTheDocument();
+  expect(screen.getByText(/Index removed from the catalogue/)).toBeInTheDocument();
+});
+
+it('returns to the preceding page after removing its last index', async () => {
+  const s = server(); s.items = Array.from({ length: 21 }, (_, i) => record(`idx-${i}`, { name: `Index ${i}` }));
+  await open(); fireEvent.click(screen.getByRole('button', { name: 'Next indices' })); await flush();
+  fireEvent.click(screen.getByRole('button', { name: 'Remove Index 20 from catalogue' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm removal' })); await flush();
+  expect(screen.getByText('Index 0')).toBeInTheDocument();
+  expect(screen.queryByText('Index 20')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Previous indices' })).toBeDisabled();
+});
+
+it('keeps removal errors retryable and blocks duplicate submissions', async () => {
+  const s = server(); const pending = deferred(); s.remove = () => pending.promise;
+  await open();
+  fireEvent.click(screen.getByRole('button', { name: 'Remove S&P 500 from catalogue' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm removal' })); await flush();
+  expect(screen.getByRole('button', { name: 'Confirm removal' })).toBeDisabled();
+  pending.resolve(response(503, { detail: 'Removal unavailable' })); await flush();
+  expect(screen.getByText(/Removal unavailable/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Confirm removal' })).toBeEnabled();
+  expect(s.fetch.mock.calls.filter(([, o]) => o.method === 'DELETE')).toHaveLength(1);
+});
 
 it('shows a separate catalogue without downloading on direct load or navigation', async () => {
   const s = server(); await open();

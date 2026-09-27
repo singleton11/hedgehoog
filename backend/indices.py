@@ -40,10 +40,22 @@ def ensure_catalogue(db):
 
 
 def require_index(db, instrument_id):
-    record = db.indices.find_one({"instrument_id": instrument_id})
+    record = db.indices.find_one({"instrument_id": instrument_id, "removed_at": {"$exists": False}})
     if record is None:
         raise DataError(404, "Index not found in the index catalogue")
     return record
+
+
+def remove_index(db, instrument_id, requested_by):
+    # Keep the identity and symbol reserved so seed upserts cannot resurrect it.
+    # No downloaded data or customer records are deleted.
+    result = db.indices.update_one(
+        {"instrument_id": instrument_id, "removed_at": {"$exists": False}},
+        {"$set": {"removed_at": utcnow(), "removed_by": requested_by}},
+    )
+    if not result.matched_count and not db.indices.find_one({"instrument_id": instrument_id}):
+        raise DataError(404, "Index not found in the index catalogue")
+    return {"instrument_id": instrument_id, "removed": True}
 
 
 def add_index(db, values, requested_by):
@@ -61,11 +73,14 @@ def add_index(db, values, requested_by):
             raise DataError(409, "Catalogue changed; retry adding the index") from None
         # Adding an existing symbol never changes identity or metadata.
         identifier = existing["instrument_id"]
+        # Explicit re-add restores the same identity and its saved history.
+        db.indices.update_one({"instrument_id": identifier},
+                              {"$unset": {"removed_at": "", "removed_by": ""}})
     return index_detail(db, identifier)
 
 
-def index_detail(db, instrument_id):
-    record = require_index(db, instrument_id)
+def index_detail(db, instrument_id, *, record=None):
+    record = record if record is not None else require_index(db, instrument_id)
     expire_stalled_jobs(db, instrument_id)
     state = db.instrument_state.find_one({"_id": instrument_id}) or {}
     listing = state.get("listing")
@@ -100,6 +115,8 @@ def index_detail(db, instrument_id):
 
 def list_indices(db, limit=20, offset=0):
     ensure_catalogue(db)
-    records = db.indices.find({}, {"instrument_id": 1}).sort([("name", ASCENDING), ("instrument_id", ASCENDING)]).skip(offset).limit(limit)
-    return {"items": [index_detail(db, row["instrument_id"]) for row in records],
-            "total": db.indices.count_documents({}), "limit": limit, "offset": offset}
+    active = {"removed_at": {"$exists": False}}
+    records = db.indices.find(active).sort([("name", ASCENDING), ("instrument_id", ASCENDING)]).skip(offset).limit(limit)
+    # Use the selected record: concurrent removal must not turn a list into 404.
+    return {"items": [index_detail(db, row["instrument_id"], record=row) for row in records],
+            "total": db.indices.count_documents(active), "limit": limit, "offset": offset}

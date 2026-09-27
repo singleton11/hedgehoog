@@ -18,7 +18,9 @@ Search, browsing, inventory, chart pagination, statistics and polling use MongoD
 
 ISIN remains the application instrument ID, from the local ETF catalogue. An uncached acquisition searches Yahoo for an exact catalogue ticker/ISIN candidate and a known venue, then saves the selected symbol, MIC and resolution evidence. This is a listing-selection heuristic, not independent certification of the fund's identity. Unknown/ambiguous mappings fail safely; the user can specify a Yahoo symbol and exchange MIC before prices exist. Examples: `EUNL.DE` / `XETR`, `IWDA.AS` / `XAMS`. A suffix alone is not universally a MIC. Saved quotes lock the listing.
 
-Yahoo also serves indices (for example `^990100-USD-STRD`), but the current application selection remains the ETF catalogue; this provider replacement does not add an index-management UI.
+Yahoo also serves indices (for example `^990100-USD-STRD`). The separate **Indices** catalogue supports adding symbols and explicitly downloading history; indices remain excluded from ETF selectors.
+
+**Remove from catalogue** requires UI confirmation and removes an index from the shared catalogue for all users. The authenticated `DELETE /indices/{instrument_id}` endpoint is retry-safe (unknown IDs return 404). Removal retains a tombstone so curated seeds do not reappear on reads or restarts. Downloaded history, acquisition jobs and customer records are preserved; existing downloads are not cancelled. Removed indices cannot start new downloads or be read through index detail/quote endpoints. Explicitly adding the same Yahoo symbol restores the original identity, metadata and saved history.
 
 ## Full-history refresh and atomic visibility
 

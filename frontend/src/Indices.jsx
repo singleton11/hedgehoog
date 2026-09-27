@@ -50,6 +50,20 @@ function ConfirmDownload({ item, busy, onConfirm, onCancel }) {
   </form>;
 }
 
+function ConfirmRemoval({ item, busy, onConfirm, onCancel }) {
+  const heading = useRef(null);
+  useEffect(() => { heading.current?.focus(); }, []);
+  return <form className="acquisition-form" aria-label="Confirm index removal" onSubmit={(event) => {
+    event.preventDefault();
+    if (!busy) onConfirm();
+  }}>
+    <h3 tabIndex={-1} ref={heading}>Remove {item.name} ({item.symbol}) from the catalogue?</h3>
+    <p>This removes the index from the shared catalogue for all users. Downloaded data is preserved. Existing downloads are not cancelled. Add the same symbol again to restore the index and its saved history.</p>
+    <div className="button-group"><button disabled={busy}>Confirm removal</button>
+      <button type="button" className="secondary" disabled={busy} onClick={onCancel}>Cancel</button></div>
+  </form>;
+}
+
 export default function Indices() {
   const { request } = useAuth();
   const [offset, setOffset] = useState(0);
@@ -61,6 +75,7 @@ export default function Indices() {
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
   const [selection, setSelection] = useState(null);
+  const [removing, setRemoving] = useState(false);
   const [notice, setNotice] = useState(null);
   const readController = useRef(null);
   const mutationController = useRef(null);
@@ -87,6 +102,11 @@ export default function Indices() {
           || data.items.some((item) => typeof item.instrument_id !== 'string' || typeof item.name !== 'string' || typeof item.symbol !== 'string')) {
           throw new Error('The backend returned an unexpected index list. Please retry.');
         }
+        if (!data.items.length && offset > 0) {
+          setPage(null);
+          setOffset(Math.max(0, Math.ceil(data.total / PAGE_SIZE) - 1) * PAGE_SIZE);
+          return;
+        }
         setPage(data);
         if (data.items.some((item) => pending(item.acquisition))) {
           timer.current = setTimeout(() => { if (!controller.signal.aborted) setAttempt((value) => value + 1); }, 2000);
@@ -104,11 +124,12 @@ export default function Indices() {
   function closeForms() {
     setAdding(false);
     setSelection(null);
+    setRemoving(false);
     setError(null);
     trigger.current?.focus();
   }
 
-  async function mutate(path, body, message) {
+  async function mutate(path, body, message, method = 'POST') {
     if (mutationController.current) return;
     readController.current?.abort();
     clearTimeout(timer.current);
@@ -118,11 +139,12 @@ export default function Indices() {
     setError(null);
     setNotice(null);
     try {
-      await request(path, { method: 'POST', body, signal: controller.signal });
+      await request(path, { method, body, signal: controller.signal });
       if (!alive.current || controller.signal.aborted) return;
       closeForms();
       setNotice(message);
       if (path === '/indices') { setOffset(0); setPage(null); }
+      if (method === 'DELETE') setPage(null);
     } catch (err) {
       if (alive.current && !controller.signal.aborted) {
         setError(`${err.message} Check the refreshed catalogue before retrying; the request may already have been accepted.`);
@@ -153,7 +175,9 @@ export default function Indices() {
     }}><Icon name="plus" />Add index</button></div>
     <p className="muted">Benchmark comparisons and ETF proxy assignments are not enabled. Index identity checks do not verify currency or dividend-reinvestment semantics.</p>
     {adding && <AddIndex busy={busy} onCancel={closeForms} onSave={(body) => mutate('/indices', body, 'Index saved. No market data was downloaded.')} />}
-    {selection && <ConfirmDownload key={selection.instrument_id} item={selection} busy={busy} onCancel={closeForms}
+    {selection && removing && <ConfirmRemoval key={selection.instrument_id} item={selection} busy={busy} onCancel={closeForms}
+      onConfirm={() => mutate(`/indices/${encodeURIComponent(selection.instrument_id)}`, undefined, 'Index removed from the catalogue. Downloaded data was preserved.', 'DELETE')} />}
+    {selection && !removing && <ConfirmDownload key={selection.instrument_id} item={selection} busy={busy} onCancel={closeForms}
       onConfirm={() => mutate(`/indices/${encodeURIComponent(selection.instrument_id)}/acquisitions`, { confirmed: true }, 'Download requested. Status will update automatically.')} />}
     {busy && <p role="status">Submitting request…</p>}
     {notice && <p role="status">{notice}</p>}
@@ -174,6 +198,10 @@ export default function Indices() {
               aria-label={`Download market data for ${item.name}`} onClick={(event) => {
                 trigger.current = event.currentTarget; setSelection(item); setError(null); setNotice(null);
               }}>{item.summary?.quote_count > 0 ? 'Refresh data' : 'Download data'}</button>
+              <button className="secondary" disabled={busy || adding || Boolean(selection)}
+                aria-label={`Remove ${item.name} from catalogue`} onClick={(event) => {
+                  trigger.current = event.currentTarget; setSelection(item); setRemoving(true); setError(null); setNotice(null);
+                }}>Remove from catalogue</button>
               <span className="muted" role="status">{item.acquisition?.status || 'Not requested'}{pending(item.acquisition) && item.acquisition?.phase ? ` · ${item.acquisition.phase}` : ''}</span>
               {item.acquisition?.error && <span className="update-error" role="alert">{item.acquisition.error}</span>}
               {item.acquisition?.warning && <span className="muted">{item.acquisition.warning}</span>}

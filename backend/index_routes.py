@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth import CurrentUser
 from celery_app import enqueue_acquisition
-from indices import add_index, index_detail, list_indices, require_index
+from indices import add_index, index_detail, list_indices, remove_index, require_index
 from instrument_routes import Generation, QuotesResponse, knowledge_time
 from market_data import read_quotes, request_acquisition
 
@@ -58,6 +58,11 @@ def create_index(body: IndexRequest, request: Request, user: CurrentUser):
 @router.get("/{instrument_id}")
 def detail(instrument_id: IndexId, request: Request, user: CurrentUser):
     return index_detail(request.app.state.database, instrument_id)
+
+
+@router.delete("/{instrument_id}")
+def remove(instrument_id: IndexId, request: Request, user: CurrentUser):
+    return remove_index(request.app.state.database, instrument_id, str(user["_id"]))
 
 
 @router.post("/{instrument_id}/acquisitions", status_code=202)
