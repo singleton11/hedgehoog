@@ -378,6 +378,32 @@ def listing(symbol="FUND.L", exchange="LSE", **extra):
     return {"symbol": symbol, "exchange": exchange, "quoteType": "ETF", "longname": "Example Fund", **extra}
 
 
+def test_resolve_symbol_uses_exact_chart_metadata_and_no_search(transport):
+    state, calls = transport
+    meta = state["meta"]["chart"]["result"][0]["meta"]
+    meta.update(symbol="SPYI.DE", exchangeName="GER", longName="SPDR MSCI ACWI IMI UCITS ETF")
+    with YahooFinanceClient() as client:
+        selected, resolution = client.resolve_symbol("spyi.de")
+        info = client.tickerinfo("SPYI.DE")
+    assert selected == {"symbol": "SPYI.DE", "exchange": "XETR"}
+    assert resolution["source"] == "yahoo_chart_metadata"
+    assert resolution["query"] == "SPYI.DE"
+    assert resolution["exchangeName"] == "GER"
+    assert resolution["data"]["symbol"] == "SPYI.DE"
+    assert info["symbol"] == "SPYI.DE"
+    assert not any(call[1].endswith("/search") for call in calls)
+
+
+@pytest.mark.parametrize("symbol,exchange_name,code", [("OTHER.DE", "GER", "identity_mismatch"), ("SPYI.DE", "UNKNOWN", "unknown_exchange")])
+def test_resolve_symbol_fails_closed_on_mismatch_or_unknown_exchange(transport, symbol, exchange_name, code):
+    state, calls = transport
+    state["meta"]["chart"]["result"][0]["meta"].update(symbol=symbol, exchangeName=exchange_name)
+    with YahooFinanceClient() as client, pytest.raises(MarketDataError) as caught:
+        client.resolve_symbol("SPYI.DE")
+    assert caught.value.code == code
+    assert not any(call[1].endswith("/search") for call in calls)
+
+
 def test_resolution_exact_root_not_substring_and_audited_mic(transport):
     state, calls = transport
     state["search"] = {"quotes": [listing("NOTFUND.L"), listing()]}

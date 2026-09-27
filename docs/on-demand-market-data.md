@@ -16,7 +16,7 @@ The default is **Yahoo Finance through pinned `yfinance==1.7.0`**, with no API k
 
 Search, browsing, inventory, chart pagination, statistics and polling use MongoDB only. No GET route, navigation event or simulation fetches provider data. Only an explicitly confirmed acquisition POST queues `marketdata.acquire` on RabbitMQ.
 
-ISIN remains the application instrument ID, from the local ETF catalogue. An uncached acquisition searches Yahoo for an exact catalogue ticker/ISIN candidate and a known venue, then saves the selected symbol, MIC and resolution evidence. This is a listing-selection heuristic, not independent certification of the fund's identity. Unknown/ambiguous mappings fail safely; the user can specify a Yahoo symbol and exchange MIC before prices exist. Examples: `EUNL.DE` / `XETR`, `IWDA.AS` / `XAMS`. A suffix alone is not universally a MIC. Saved quotes lock the listing.
+ISIN remains the application instrument ID, from the local ETF catalogue. An uncached acquisition searches Yahoo for an exact catalogue ticker/ISIN candidate and a known venue, then saves the selected symbol, MIC and resolution evidence. This is a listing-selection heuristic, not independent certification of the fund's identity. Unknown/ambiguous mappings fail safely; the user can specify an exact Yahoo symbol before prices exist. Examples: `SPYI.DE`, `EUNL.DE`, `IWDA.AS`. For a symbol-only override, the worker reads that exact symbol’s chart metadata and maps the provider’s exchange identifier to a known MIC, reusing metadata for the profile. It does not search for or substitute another listing, or guess a MIC from the suffix. Exchange MIC remains an optional advanced override for unsupported venues; the legacy Marketstack provider still requires both symbol and MIC. Saved quotes lock the listing.
 
 Yahoo also serves indices (for example `^990100-USD-STRD`). The separate **Indices** catalogue supports adding symbols and explicitly downloading history; indices remain excluded from ETF selectors.
 
@@ -33,6 +33,8 @@ Each request creates an immutable **generation** identified by its job UUID:
 3. After the required downloads/indexing succeed, retain an immutable `market_data_publications` audit record, then atomically mark the owned/running job published. Only that owner/status-guarded job transition grants visibility; a stale worker's audit insert alone cannot publish anything.
 4. Reads select **one published generation**, not the newest observation independently for each date. A shorter fresh response does not silently borrow dates from older generations or another provider.
 5. A failed/empty refresh leaves the previous published data readable. Failed raw evidence remains retained; an initial failed attempt does not appear as an acquired instrument.
+
+The resolved Yahoo listing and evidence are checkpointed on the job; the active listing cache changes only after publication, so failed replacements retain the previous mapping. Cache writes verify publication order and compare the observed listing/job version atomically. Redelivery of an already cached job is a no-op, preserving the completed watermark.
 
 Publication is idempotent under database acknowledgement loss/redelivery. Quotes are immutable per job/date. The unique active-job gate, renewable worker lease and persisted checkpoints remain. Provider failures are terminal until another explicit request; database failures may retry from saved evidence. At-least-once execution does not guarantee exactly-once HTTP across a crash before response persistence.
 
@@ -71,13 +73,13 @@ The experimental transition resets acquired data and experimental customers, goa
 - `GET /instruments/{isin}[?as_of=...]`: catalogue, listing, resolution, profile, acquisition, summary, manual currency, `generation`, `provider`, `price_basis`, `provider_configured:true`, `budget:null`.
 - `GET /instruments/{isin}/quotes?limit=1000&offset=0[&as_of=...&generation=...]`: one published generation in ascending date order; `{items,total,limit,offset,as_of,generation}`. Reuse both snapshot fields. Numeric fields serialize as strings; nulls survive.
 - `GET /instruments/{isin}/statistics[?generation=...]`: statistics for that same published generation; unknown/unpublished generation IDs fail rather than selecting a newer one.
-- `POST /instruments/{isin}/acquisitions`: `{confirmed:true, mode:"update"|"backfill"}` with optional paired `symbol`/`exchange`. Returns 202 and a durable job; Yahoo jobs declare `mode:"refresh"`. Duplicate active requests return the same job.
+- `POST /instruments/{isin}/acquisitions`: `{confirmed:true, mode:"update"|"backfill"}` with an optional Yahoo `symbol` override and optional `exchange` MIC. Omitting MIC detects the exchange asynchronously from exact-symbol chart metadata; exchange without symbol is invalid, and legacy Marketstack still requires both. Returns 202 and a durable job; Yahoo jobs declare `mode:"refresh"`. Duplicate active requests return the same job.
 - `PATCH /instruments/{isin}/price-currency`: existing explicit EUR/USD/CHF/GBP/RUB label contract; Mongo-only.
 - `/instruments/{isin}/splits`: saved audit evidence; Yahoo manual-add attempts return 409 rather than double-adjusting prices.
 
 ## UI and verification
 
-The header identifies Yahoo Finance as experimental. Request forms require explicit consent to fetch Yahoo data, explain full-history refresh, allow a paired manual Yahoo symbol/MIC and do not estimate paid quota. Bulk updates still capture all acquired pages before submission and skip profiles collected less than 24 hours ago. No POST is retried automatically after uncertainty.
+The header identifies Yahoo Finance as experimental. Request forms require explicit consent to fetch Yahoo data, explain full-history refresh, allow a manual Yahoo symbol with optional advanced MIC entry, explain invalid inputs, and do not estimate paid quota. Bulk updates still capture all acquired pages before submission and skip profiles collected less than 24 hours ago. No POST is retried automatically after uncertainty.
 
 While refresh is running or fails, previous published charts/statistics remain saved. Errors remain actionable. Provider/basis and collection metadata are available in expandable details. Yahoo's split handling is explained instead of offering a manual split form.
 

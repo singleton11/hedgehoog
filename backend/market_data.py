@@ -297,6 +297,14 @@ def expire_stalled_jobs(db, isin):
     )
 
 
+def complete_listing(listing):
+    return bool(isinstance(listing, dict) and listing.get("symbol") and listing.get("exchange"))
+
+
+def same_request(left, right):
+    return (left or None) == (right or None)
+
+
 def listing_filter(isin, listing):
     return {"instrument_id": isin, "symbol": listing["symbol"], "exchange": listing["exchange"]}
 
@@ -444,27 +452,42 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
         raise DataError(503, "Configure the selected market-data provider on the API and worker before requesting data")
     ensure_indexes(db)
     expire_stalled_jobs(db, isin)
-    explicit_listing = listing
+    requested_listing = {"symbol": listing["symbol"], **({"exchange": listing["exchange"]} if listing.get("exchange") else {})} if listing else None
+    if requested_listing is not None and not requested_listing.get("exchange") and name != "yfinance":
+        raise DataError(422, "Supply both symbol and exchange for a manual listing override with this provider")
     state = db.instrument_state.find_one({"_id": isin}) or {}
-    listing = listing or state.get("listing")
+    listing = requested_listing if complete_listing(requested_listing) else None
+    if requested_listing is None:
+        listing = state.get("listing")
     existing = db.acquisition_jobs.find_one({"instrument_id": isin, "active": True})
     if existing:
         if existing.get("status") == "deleting":
             raise DataError(409, "This ETF is being removed. Please retry after removal finishes.")
-        if explicit_listing is not None and existing["listing"] != explicit_listing:
+        existing_request = existing.get("requested_listing") or existing.get("listing")
+        if requested_listing is not None and not same_request(existing_request, requested_listing):
             raise DataError(409, "Another listing is already being collected for this instrument")
         return public_job(existing)
     if name == "marketstack" and budget_status(db, settings)["remaining"] < 1:
         raise DataError(409, "The local monthly Marketstack request budget is exhausted")
     ticker = catalogue.get("ticker")
     ticker = ticker.strip().upper() if isinstance(ticker, str) else ""
-    if not listing and (len(ticker) > 64 or not re.fullmatch(r"[A-Z0-9^][A-Z0-9._^=\-]*", ticker)):
-        raise DataError(422, "This instrument has no valid catalogue ticker. Supply a manual symbol and MIC.")
-    if state.get("listing") and state["listing"] != listing and db.quotes.count_documents({"instrument_id": isin}, limit=1):
-        raise DataError(409, "A listing with stored quotes cannot be changed or mixed with another listing")
-    same_listing = state.get("listing") == listing
+    lookup_ticker = requested_listing["symbol"] if requested_listing and not requested_listing.get("exchange") else ticker
+    if not listing and requested_listing is None and (len(ticker) > 64 or not re.fullmatch(r"[A-Z0-9^][A-Z0-9._^=\-]*", ticker)):
+        hint = "Supply a manual Yahoo symbol." if name == "yfinance" else "Supply a manual symbol and MIC."
+        raise DataError(422, f"This instrument has no valid catalogue ticker. {hint}")
+    state_listing = state.get("listing")
+    if state_listing and db.quotes.count_documents({"instrument_id": isin}, limit=1):
+        if requested_listing is None:
+            requested_matches_saved = listing == state_listing
+        elif requested_listing.get("exchange"):
+            requested_matches_saved = requested_listing == state_listing
+        else:
+            requested_matches_saved = requested_listing["symbol"] == state_listing.get("symbol")
+        if not requested_matches_saved:
+            raise DataError(409, "A listing with stored quotes cannot be changed or mixed with another listing")
+    same_listing = state_listing == listing
     last_complete = state.get("last_complete_quote_date") if same_listing else None
-    dates = quote_dates(db, isin, listing)
+    dates = quote_dates(db, isin, listing) if listing else []
     end = utcnow().date() - timedelta(days=1)
     start = inception
     actual_mode = "initial"
@@ -480,7 +503,8 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
         start = date.fromisoformat(last_complete) + timedelta(days=1)
     job_id = str(uuid4())
     job = {
-        "_id": job_id, "instrument_id": isin, "listing": listing, "lookup_ticker": ticker,
+        "_id": job_id, "instrument_id": isin, "listing": listing, "requested_listing": requested_listing,
+        "lookup_ticker": lookup_ticker,
         "instrument_kind": "index" if is_index else "etf",
         "history_scope": "full_available_history" if is_index else "since_inception",
         "provider": name, "price_basis": "provider_split_adjusted" if name == "yfinance" else "unadjusted",
@@ -500,11 +524,12 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
         existing = db.acquisition_jobs.find_one({"instrument_id": isin, "active": True})
         if existing is None or existing.get("status") == "deleting":
             raise DataError(409, "Acquisition state changed; please retry") from None
-        if explicit_listing is not None and existing["listing"] != explicit_listing:
+        existing_request = existing.get("requested_listing") or existing.get("listing")
+        if requested_listing is not None and not same_request(existing_request, requested_listing):
             raise DataError(409, "Another listing is already being collected for this instrument") from None
         return public_job(existing)
     try:
-        if listing:
+        if listing and name != "yfinance":
             change = {"listing": listing}
             if not same_listing:
                 change.update(last_complete_quote_date=None, listing_resolution=None)
@@ -592,36 +617,53 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
             raise MarketDataError("not_configured", "The worker has no legacy provider credentials configured.")
         listing = job["listing"]
         isin = job["instrument_id"]
+        requested_listing = job.get("requested_listing")
         client = (provider_factory(settings.marketstack_api_key.get_secret_value(), before_request=before_request)
                   if provider_factory else provider_client(settings, name, before_request))
         with client as provider:
             if not listing:
                 checkpoint({"phase": "resolving_listing"})
-                # A DB interruption can leave a cached mapping before the job
-                # checkpoint. Reuse it on redelivery rather than paying again.
-                state = db.instrument_state.find_one({"_id": isin}) or {}
-                listing = state.get("listing")
-                if not listing:
-                    if name == "yfinance":
-                        listing, resolution = provider.resolve_listing(job["lookup_ticker"], isin)
-                        resolution = {**resolution, "collected_at": utcnow()}
-                    else:
-                        listing, resolution = resolve_listing(provider, job["lookup_ticker"], isin)
-                    checkpoint()
-                    # Checkpointing alone cannot fence a paused worker's next
-                    # write. Install only into an empty cache; a replacement
-                    # worker may already have stored another listing and prices.
-                    try:
-                        state = db.instrument_state.find_one_and_update(
-                            {"_id": isin, "listing": None}, {"$set": {
-                                "listing": listing, "listing_resolution": resolution,
-                                "last_complete_quote_date": None,
-                            }}, upsert=True, return_document=ReturnDocument.AFTER,
-                        )
-                    except DuplicateKeyError:
-                        state = db.instrument_state.find_one({"_id": isin})
-                    listing = state["listing"]
-                job = checkpoint({"listing": listing})
+                resolution = job.get("listing_resolution")
+                if requested_listing and not requested_listing.get("exchange"):
+                    if name != "yfinance":
+                        raise MarketDataError("invalid_request", "This provider requires both symbol and exchange for manual listing overrides.")
+                    listing, resolution = provider.resolve_symbol(requested_listing["symbol"])
+                    if listing.get("symbol") != requested_listing["symbol"]:
+                        raise MarketDataError("identity_mismatch", "Yahoo Finance returned a different instrument.")
+                    resolution = {**resolution, "collected_at": utcnow()}
+                else:
+                    # A DB interruption can leave a cached mapping before the job
+                    # checkpoint. Reuse it on redelivery rather than paying again.
+                    state = db.instrument_state.find_one({"_id": isin}) or {}
+                    listing = state.get("listing")
+                    if not listing:
+                        if name == "yfinance":
+                            listing, resolution = provider.resolve_listing(job["lookup_ticker"], isin)
+                            resolution = {**resolution, "collected_at": utcnow()}
+                        else:
+                            listing, resolution = resolve_listing(provider, job["lookup_ticker"], isin)
+                        if name != "yfinance":
+                            checkpoint()
+                            # Checkpointing alone cannot fence a paused worker's next
+                            # write. Install only into an empty cache; a replacement
+                            # worker may already have stored another listing and prices.
+                            try:
+                                state = db.instrument_state.find_one_and_update(
+                                    {"_id": isin, "listing": None}, {"$set": {
+                                        "listing": listing, "listing_resolution": resolution,
+                                        "last_complete_quote_date": None,
+                                    }}, upsert=True, return_document=ReturnDocument.AFTER,
+                                )
+                            except DuplicateKeyError:
+                                state = db.instrument_state.find_one({"_id": isin})
+                            listing = state["listing"]
+                state_listing = (db.instrument_state.find_one({"_id": isin}) or {}).get("listing")
+                if state_listing and state_listing != listing and db.quotes.count_documents({"instrument_id": isin}, limit=1):
+                    raise MarketDataError("listing_conflict", "A listing with stored quotes cannot be changed or mixed with another listing.")
+                update = {"listing": listing}
+                if resolution is not None:
+                    update["listing_resolution"] = resolution
+                job = checkpoint(update)
             checkpoint({"phase": "tickerinfo"})
             if db.instruments.find_one({"job_id": job_id}) is None:
                 data = provider.tickerinfo(listing["symbol"])
@@ -754,6 +796,35 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
             publication = db.market_data_publications.find_one({"_id": job_id})
             job = checkpoint({"published": True, "published_at": publication["published_at"]})
             db.instruments.update_one({"job_id": job_id}, {"$set": {"published": True}})
+            while True:
+                checkpoint({"phase": "caching_listing"})
+                state = db.instrument_state.find_one({"_id": isin}) or {}
+                latest = db.acquisition_jobs.find_one(
+                    {"instrument_id": isin, "published": True},
+                    sort=[("requested_at", DESCENDING), ("published_at", DESCENDING), ("_id", DESCENDING)],
+                )
+                if latest is None or latest["_id"] != job_id:
+                    raise LeaseLost()
+                if state.get("listing_job_id") == job_id and state.get("listing") == listing:
+                    break  # Redelivery must not reset a completed watermark.
+                change = {"listing": listing, "listing_job_id": job_id}
+                if job.get("listing_resolution") is not None:
+                    change["listing_resolution"] = job["listing_resolution"]
+                elif state.get("listing") != listing:
+                    change["listing_resolution"] = None
+                if state.get("listing") != listing:
+                    change["last_complete_quote_date"] = None
+                # The latest-publication check and lease cannot fence a later
+                # write to this other collection. CAS the observed version too;
+                # on contention, reread and recheck ownership/publication order.
+                try:
+                    db.instrument_state.update_one({
+                        "_id": isin, "listing": state.get("listing"),
+                        "listing_job_id": state.get("listing_job_id"),
+                    }, {"$set": change}, upsert=True)
+                    break
+                except DuplicateKeyError:
+                    continue
         # Derived analytics never rewrite provider evidence. Persist them before
         # reporting success; DB retries replay saved pages without provider calls.
         from return_statistics import refresh_statistics

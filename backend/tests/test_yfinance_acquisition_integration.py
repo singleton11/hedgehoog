@@ -2,12 +2,37 @@
 from datetime import timedelta
 from unittest.mock import Mock
 
+import pytest
 from pydantic import SecretStr
 
 import market_data as md
 from test_market_data_integration import environment, ISIN, LISTING, NOW
-from test_yfinance_acquisition import Yahoo, quote
+from test_yfinance_acquisition import (
+    Yahoo, quote,
+    test_stale_listing_cache_write_cannot_replace_a_newer_job as assert_cache_takeover,
+    test_cache_redelivery_does_not_reset_replacement_workers_watermark as assert_cache_redelivery,
+)
 from test_market_data import page
+
+
+@pytest.mark.parametrize("symbol", ["SPYI.DE", LISTING["symbol"]])
+@pytest.mark.parametrize("newer_first", [True, False])
+def test_real_mongo_listing_cache_compare_and_set(environment, monkeypatch, symbol, newer_first):
+    settings, db = environment
+    settings.market_data_provider = "yfinance"
+    now = [NOW]
+    monkeypatch.setattr(md, "utcnow", lambda: now[0])
+    # Run the same forced interleaving against real Mongo's conditional upsert
+    # and duplicate-key behavior, not just mongomock's approximation.
+    assert_cache_takeover(db, settings, now, monkeypatch, symbol, newer_first)
+
+
+def test_real_mongo_listing_cache_redelivery(environment, monkeypatch):
+    settings, db = environment
+    settings.market_data_provider = "yfinance"
+    now = [NOW]
+    monkeypatch.setattr(md, "utcnow", lambda: now[0])
+    assert_cache_redelivery(db, settings, now, monkeypatch)
 
 
 def test_real_mongo_published_refresh_and_failed_attempt_isolation(environment, monkeypatch):

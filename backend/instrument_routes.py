@@ -32,8 +32,8 @@ class AcquisitionRequest(BaseModel):
 
     @model_validator(mode="after")
     def complete_listing_override(self):
-        if (self.symbol is None) != (self.exchange is None):
-            raise ValueError("Supply both symbol and exchange for a manual listing override, or omit both")
+        if self.exchange is not None and self.symbol is None:
+            raise ValueError("Supply a symbol with a manual exchange override")
         return self
 
     @field_validator("confirmed", mode="before")

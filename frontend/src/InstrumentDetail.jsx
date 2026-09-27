@@ -7,7 +7,9 @@ import ManualSplits from './ManualSplits.jsx';
 
 function AcquisitionForm({ detail, mode, busy, onCancel, onConfirm }) {
   const [symbol, setSymbol] = useState(detail.listing?.symbol || '');
-  const [exchange, setExchange] = useState(detail.listing?.exchange || '');
+  // A saved MIC may belong to the failed listing the user is replacing.
+  // Yahoo can resolve the exchange for the exact new symbol instead.
+  const [exchange, setExchange] = useState(detail.provider === 'yfinance' ? '' : detail.listing?.exchange || '');
   const [manualOverride, setManualOverride] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const fixed = detail.summary.quote_count > 0;
@@ -16,8 +18,12 @@ function AcquisitionForm({ detail, mode, busy, onCancel, onConfirm }) {
   const estimate = acquisitionEstimate(detail, mode, manual);
   const metered = detail.budget?.metered !== false && detail.budget?.remaining != null;
   const insufficientBudget = metered && detail.budget.remaining < estimate.minimumCalls;
-  const invalidListing = manual && (!symbol.trim() || !/^[A-Za-z0-9]{4}$/.test(exchange.trim()));
-  const blocked = busy || !detail.provider_configured || insufficientBudget || invalidListing;
+  const symbolError = manual && (!symbol.trim() ? 'Enter a provider symbol.'
+    : symbol.trim().length > 64 || !/^[A-Z0-9^][A-Z0-9._^=\-]*$/i.test(symbol.trim())
+      ? 'Enter a valid provider symbol, for example SPYI.DE.' : null);
+  const exchangeError = manual && (!yahoo || exchange.trim()) && !/^[A-Za-z0-9]{4}$/.test(exchange.trim())
+    ? `Enter a four-character exchange MIC${yahoo ? ', or leave it blank to detect it from Yahoo' : ''}.` : null;
+  const blocked = busy || !detail.provider_configured || insufficientBudget || Boolean(symbolError || exchangeError);
   const title = mode === 'backfill' ? 'Confirm older history' : fixed ? 'Confirm update' : 'Confirm request';
   const formHeading = useRef(null);
   useEffect(() => { formHeading.current?.focus(); }, []);
@@ -26,7 +32,7 @@ function AcquisitionForm({ detail, mode, busy, onCancel, onConfirm }) {
     event.preventDefault();
     if (!confirmed || blocked) return;
     onConfirm(manual
-      ? { symbol: symbol.trim().toUpperCase(), exchange: exchange.trim().toUpperCase(), confirmed: true, mode }
+      ? { symbol: symbol.trim().toUpperCase(), ...(exchange.trim() ? { exchange: exchange.trim().toUpperCase() } : {}), confirmed: true, mode }
       : { confirmed: true, mode });
   }
 
@@ -40,13 +46,19 @@ function AcquisitionForm({ detail, mode, busy, onCancel, onConfirm }) {
       Manual listing override</label>}
     {manual && <>
       {yahoo
-        ? <p>Enter a Yahoo Finance symbol and exchange MIC. Examples: <a href="https://finance.yahoo.com/quote/EUNL.DE" target="_blank" rel="noopener noreferrer">EUNL.DE</a> / XETR, <a href="https://finance.yahoo.com/quote/IWDA.AS" target="_blank" rel="noopener noreferrer">IWDA.AS</a> / XAMS.</p>
+        ? <p>Enter a Yahoo Finance symbol. We’ll detect its exchange automatically. Examples: <a href="https://finance.yahoo.com/quote/SPYI.DE" target="_blank" rel="noopener noreferrer">SPYI.DE</a>, <a href="https://finance.yahoo.com/quote/EUNL.DE" target="_blank" rel="noopener noreferrer">EUNL.DE</a>, <a href="https://finance.yahoo.com/quote/IWDA.AS" target="_blank" rel="noopener noreferrer">IWDA.AS</a>.</p>
         : <p>Find a symbol and MIC in the provider ticker workbook.</p>}
       <div className="listing-fields">
         <div><label htmlFor="provider-symbol">Provider symbol</label><input id="provider-symbol" value={symbol}
-          onChange={(event) => { setSymbol(event.target.value); setConfirmed(false); }} required maxLength={64} disabled={busy} autoComplete="off" /></div>
+          onChange={(event) => { setSymbol(event.target.value); setConfirmed(false); }} required maxLength={64} disabled={busy} autoComplete="off"
+          aria-invalid={Boolean(symbolError)} aria-describedby={symbolError ? 'provider-symbol-error' : undefined} />
+          {symbolError && <p id="provider-symbol-error" className="muted">{symbolError}</p>}</div>
         <div><label htmlFor="exchange-mic">Exchange MIC</label><input id="exchange-mic" value={exchange}
-          onChange={(event) => { setExchange(event.target.value); setConfirmed(false); }} required minLength={4} maxLength={4} pattern="[A-Za-z0-9]{4}" disabled={busy} autoComplete="off" /></div>
+          onChange={(event) => { setExchange(event.target.value.trim()); setConfirmed(false); }} required={!yahoo} minLength={4} maxLength={4} pattern="[A-Za-z0-9]{4}" disabled={busy} autoComplete="off"
+          placeholder={yahoo ? 'Auto-detect' : undefined} aria-invalid={Boolean(exchangeError)}
+          aria-describedby={[yahoo && 'exchange-mic-hint', exchangeError && 'exchange-mic-error'].filter(Boolean).join(' ') || undefined} />
+          {yahoo && <p id="exchange-mic-hint" className="muted">Optional advanced override. Leave blank to detect the exchange from Yahoo.</p>}
+          {exchangeError && <p id="exchange-mic-error" className="muted">{exchangeError}</p>}</div>
       </div>
     </>}
     <p><strong>Range:</strong> {estimate.range}.</p>
@@ -57,7 +69,7 @@ function AcquisitionForm({ detail, mode, busy, onCancel, onConfirm }) {
     <details className="disclosure"><summary>Request details</summary>
       <div className="disclosure-content">
         <p>{yahoo
-          ? (manual ? 'Manual selection skips Yahoo Search.' : detail.listing
+          ? (manual ? 'Manual selection uses your exact symbol without Yahoo Search. When Exchange MIC is blank, we detect the exchange from that symbol’s Yahoo metadata.' : detail.listing
             ? 'The saved listing is reused without a Yahoo Search lookup.'
             : 'We select a Yahoo Finance listing from Yahoo Search and cache its symbol and exchange MIC for future requests.')
           : (manual ? 'Manual selection skips ticker lookup.' : detail.listing
