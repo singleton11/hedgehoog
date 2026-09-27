@@ -96,6 +96,72 @@ describe('workspace presentation', () => {
   });
 });
 
+describe('ETF removal', () => {
+  afterEach(() => window.history.replaceState(null, '', '/'));
+
+  function removalServer({ paginated = false, fail = false } = {}) {
+    const server = mockServer(admin);
+    const fallback = server.fetch.getMockImplementation();
+    let removed = false;
+    server.fetch.mockImplementation(async (url, options) => {
+      if (options.method === 'DELETE') {
+        if (fail) return response(409, { detail: 'This ETF has an active acquisition. Retry later.' });
+        removed = true;
+        return response(204);
+      }
+      if (url.startsWith('/api/instruments/acquired?')) {
+        const offset = Number(new URL(url, 'http://localhost').searchParams.get('offset'));
+        const total = paginated ? (removed ? 20 : 21) : (removed ? 0 : 1);
+        return response(200, { total, limit: 20, offset, items: offset >= total ? [] : [{
+          instrument_id: 'IE00B4L5Y983', isin: 'IE00B4L5Y983', name: 'World ETF', quote_count: 10,
+        }] });
+      }
+      return fallback(url, options);
+    });
+    return server;
+  }
+
+  it('confirms deletion, permits cancellation, and refreshes the empty list', async () => {
+    const server = removalServer();
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Remove World ETF' }));
+    expect(screen.getByRole('form', { name: 'Confirm ETF removal' })).toHaveTextContent('for all users');
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(server.fetch.mock.calls.some(([, options]) => options.method === 'DELETE')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Remove World ETF' })).toHaveFocus();
+    await user.click(screen.getByRole('button', { name: 'Remove World ETF' }));
+    await user.click(screen.getByRole('button', { name: 'Delete saved data' }));
+    expect(await screen.findByText('No acquired ETFs yet')).toBeInTheDocument();
+    expect(screen.getByText('World ETF removed. Saved market data deleted.')).toBeInTheDocument();
+    expect(server.fetch.mock.calls.filter(([, options]) => options.method === 'DELETE')).toHaveLength(1);
+  });
+
+  it('keeps the ETF and shows a retryable deletion failure', async () => {
+    removalServer({ fail: true });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Remove World ETF' }));
+    await user.click(screen.getByRole('button', { name: 'Delete saved data' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('active acquisition');
+    expect(screen.getByRole('link', { name: 'World ETF' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete saved data' })).toBeEnabled();
+  });
+
+  it('returns to the previous page when the last page becomes empty', async () => {
+    const server = removalServer({ paginated: true });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Next ETFs' }));
+    await screen.findByText('21–21 of 21 ETFs');
+    await user.click(screen.getByRole('button', { name: 'Remove World ETF' }));
+    await user.click(screen.getByRole('button', { name: 'Delete saved data' }));
+    await screen.findByText('1–1 of 20 ETFs');
+    expect(screen.getByRole('button', { name: 'Previous ETFs' })).toBeDisabled();
+    expect(server.fetch.mock.calls.at(-1)[0]).toContain('offset=0');
+  });
+});
+
 describe('authentication', () => {
   it('does not render protected content while checking the session', async () => {
     let resolve;
