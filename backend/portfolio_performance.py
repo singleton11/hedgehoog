@@ -17,6 +17,7 @@ from customer_planner import _timestamp
 from indices import require_index
 import market_data as md
 import portfolio_tracker as ledger
+from performance_settings import read_settings
 
 router = APIRouter(tags=["portfolios"])
 BenchmarkId = Annotated[str | None, Query(pattern=r"^idx-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")]
@@ -67,15 +68,67 @@ def benchmark_history(db, identifier, now):
             "currency": currency, "return_variant": record.get("return_variant", "unknown")}, SavedMarks(rows)
 
 
+class RiskRatios:
+    """Expanding daily log excess returns; sample SD and full-sample downside RMS."""
+
+    def __init__(self):
+        self.count = 0
+        self.mean = self.m2 = self.downside = Decimal(0)
+        self.valid = True
+
+    def add(self, factor, target):
+        if factor is None or target is None or factor <= 0 or target <= 0:
+            self.valid = False
+        if not self.valid:
+            return
+        excess = factor.ln() - target.ln()
+        self.count += 1
+        delta = excess - self.mean
+        self.mean += delta / self.count
+        self.m2 += delta * (excess - self.mean)
+        self.downside += min(excess, Decimal(0)) ** 2
+
+    def add_flat_days(self, count):
+        """Batch zero excess returns between saved/event dates; no calendar expansion."""
+        if not self.valid or count <= 0:
+            return
+        total = self.count + count
+        self.m2 += self.mean ** 2 * self.count * count / total
+        self.mean *= Decimal(self.count) / total
+        self.count = total
+
+    def values(self):
+        if not self.valid or self.count < 2:
+            return {"sharpe": None, "sortino": None}
+        numerator = self.mean * Decimal(365).sqrt()
+        variance = self.m2 / (self.count - 1)
+        downside = self.downside / self.count
+        return {"sharpe": format(numerator / variance.sqrt(), ".8f") if variance > 0 else None,
+                "sortino": format(numerator / downside.sqrt(), ".8f") if downside > 0 else None}
+
+
 def performance(db, document, benchmark_id=None, *, now=None):
     now = now or md.utcnow()
     today = now.date().isoformat()
     events = sorted((event for event in ledger.active_events(document["transactions"]) if event["date"] <= today),
                     key=lambda item: (item["date"], item["sequence"]))
     benchmark, benchmark_marks = benchmark_history(db, benchmark_id, now) if benchmark_id else (None, None)
+    proxy = read_settings(db)["proxy"]
+    proxy_marks = None
+    if proxy:
+        state = db.instrument_state.find_one({"_id": proxy["instrument_id"]}) or {}
+        listing = {key: proxy[key] for key in ("symbol", "exchange")}
+        # Pin the saved choice: a relisted or removed source is not silently substituted.
+        rows = ledger.quote_rows(db, proxy, now) if state.get("listing") == listing else []
+        proxy_marks = SavedMarks(rows, required_currency="EUR", currency_override=state.get("price_currency_override"))
+    ratios = RiskRatios()
     result = {"portfolio_id": document["_id"], "currency": "EUR", "method": "daily_twr",
               "cash_flow_timing": "deposits_start_withdrawals_end", "as_of": _timestamp(now),
-              "start_date": None, "end_date": None, "points": [], "benchmark": benchmark, "warnings": []}
+              "start_date": None, "end_date": None, "points": [], "benchmark": benchmark, "warnings": [],
+              "risk_proxy": proxy, "ratio_method": "since_inception_calendar_daily_log_excess_365",
+              "summary": {"twr_percent": None, "sharpe": None, "sortino": None}}
+    if proxy is None:
+        result["warnings"].append("Sharpe and Sortino unavailable: select a saved EUR price-return proxy in Settings.")
     if not events:
         return result
 
@@ -85,6 +138,8 @@ def performance(db, document, benchmark_id=None, *, now=None):
     instruments = {event["instrument"]["instrument_id"]: event["instrument"] for event in events if "instrument" in event}
     marks = {}
     dates = {first, today, *(event["date"] for event in events)}
+    if proxy_marks:
+        dates.update(day for day in proxy_marks.dates if first <= day <= today)
     for isin, instrument in instruments.items():
         rows = ledger.quote_rows(db, instrument, now)
         state = db.instrument_state.find_one({"_id": isin}) or {}
@@ -107,12 +162,18 @@ def performance(db, document, benchmark_id=None, *, now=None):
                 "Download sufficient index history; the benchmark is not silently rebased to a later date.")
         if baseline < first:
             result["points"].append({"date": baseline, "twr_percent": percent(ONE),
-                                     "benchmark_percent": percent(ONE) if benchmark_base is not None else None})
+                                     "benchmark_percent": percent(ONE) if benchmark_base is not None else None,
+                                     "sharpe": None, "sortino": None})
         cash, previous_equity, growth = ledger.ZERO, ledger.ZERO, ONE
         holdings = {}
         event_index = 0
         benchmark_gap = False
+        previous_day = None
         for day in sorted(dates):
+            if previous_day is not None and previous_equity is not None and previous_equity > 0:
+                gap = (date.fromisoformat(day) - date.fromisoformat(previous_day)).days - 1
+                ratios.add_flat_days(gap)
+            previous_day = day
             deposits, withdrawals = ledger.ZERO, ledger.ZERO
             while event_index < len(events) and events[event_index]["date"] == day:
                 event = events[event_index]
@@ -151,11 +212,14 @@ def performance(db, document, benchmark_id=None, *, now=None):
                         f"TWR unavailable from {day}: missing, invalid or unconfirmed EUR saved close for {', '.join(missing)}. "
                         "The cumulative chain cannot resume until this history is repaired; no partial portfolio return is shown.")
                 growth = None
+            factor = None
+            denominator = previous_equity + deposits if previous_equity is not None else None
             if growth is not None:
                 denominator = previous_equity + deposits
                 numerator = equity + withdrawals
                 if denominator > 0:
-                    growth *= numerator / denominator
+                    factor = numerator / denominator
+                    growth *= factor
                     if growth > MAX_GROWTH:
                         growth = None
                         result["warnings"].append(f"TWR unavailable from {day}: compounded return exceeds the supported display range.")
@@ -164,6 +228,12 @@ def performance(db, document, benchmark_id=None, *, now=None):
                     result["warnings"].append(f"TWR unavailable from {day}: no opening capital for a nonzero ending value.")
                 # Zero capital and no exposure: preserve the chain across a full
                 # withdrawal/dormant interval, then link the next funded period.
+            if denominator is None or denominator > 0 or growth is None:
+                prior_day = (date.fromisoformat(day) - timedelta(days=1)).isoformat() if day > "0001-01-01" else day
+                opening = proxy_marks.at(prior_day) if proxy_marks and prior_day < day else None
+                closing = proxy_marks.at(day) if proxy_marks else None
+                target = closing / opening if opening is not None and closing is not None else None
+                ratios.add(factor, target)
             previous_equity = equity
             benchmark_growth = None
             if benchmark_base is not None:
@@ -174,7 +244,10 @@ def performance(db, document, benchmark_id=None, *, now=None):
                     result["warnings"].append(f"Benchmark has an invalid saved close from {day}; unavailable observations are not replaced by older valid prices.")
                     benchmark_gap = True
             result["points"].append({"date": day, "twr_percent": percent(growth),
-                                     "benchmark_percent": percent(benchmark_growth)})
+                                     "benchmark_percent": percent(benchmark_growth), **ratios.values()})
+    result["summary"] = {key: result["points"][-1][key] for key in ("twr_percent", "sharpe", "sortino")}
+    if proxy and not ratios.valid:
+        result["warnings"].append("Sharpe and Sortino unavailable: a funded daily return or matching EUR proxy history is missing, invalid or non-positive. Repair history; no partial sample is used.")
     return result
 
 

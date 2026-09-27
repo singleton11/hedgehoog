@@ -291,10 +291,11 @@ function PortfolioList({ request, customerId, plans }) {
     </section>
   </>;
 }
-function Summary({ data }) {
+function Summary({ data, performance }) {
   const metrics = [['Cash', 'cash_eur'], ['Positions value', 'positions_value_eur'], ['Equity', 'equity_eur'], ['Realized P&L (incl. fees)', 'realized_pnl_eur'], ['Total unrealized P&L', 'unrealized_pnl_eur'], ['Daily unrealized P&L', 'daily_unrealized_pnl_eur']];
   return <section aria-label="Portfolio summary"><h3>Portfolio summary</h3>
     <dl className="facts">{metrics.map(([label, key]) => <div key={key}><dt>{label}</dt><dd className={key.includes('pnl') ? pnlClass(data[key]) : undefined}>{formatEuros(data[key])}</dd></div>)}</dl>
+    <dl className="facts">{[['TWR', 'twr_percent'], ['Sharpe', 'sharpe'], ['Sortino', 'sortino']].map(([label, key]) => <div key={key}><dt>{label}</dt><dd>{typeof performance?.[key] === 'string' && Number.isFinite(Number(performance[key])) ? `${Number(performance[key]).toFixed(2)}${key === 'twr_percent' ? '%' : ''}` : 'Unavailable'}</dd></div>)}</dl>
     {data.warnings.length > 0 && <ul className="portfolio-warnings" aria-label="Valuation warnings">{data.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
   </section>;
 }
@@ -448,6 +449,7 @@ function Transactions({ request, path, revision, onRemoved }) {
 function PortfolioDetail({ request, customerId, portfolioId, plans }) {
   const [revision, setRevision] = useState(0);
   const [tab, setTab] = useState('positions');
+  const [performance, setPerformance] = useState(null);
   const [adding, setAdding] = useState(false);
   const [message, setMessage] = useState(null);
   const addButton = useRef(null), wasAdding = useRef(false);
@@ -456,11 +458,11 @@ function PortfolioDetail({ request, customerId, portfolioId, plans }) {
     wasAdding.current = adding;
   }, [adding]);
   function tabKey(event) {
-    const tabs = ['positions', 'transactions'];
+    const tabs = ['positions', 'transactions', 'performance'];
     let next;
-    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') next = tabs[1 - tabs.indexOf(tab)];
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') next = tabs[(tabs.indexOf(tab) + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
     if (event.key === 'Home') next = tabs[0];
-    if (event.key === 'End') next = tabs[1];
+    if (event.key === 'End') next = tabs.at(-1);
     if (next) { event.preventDefault(); setTab(next); document.getElementById(`portfolio-${next}-tab`)?.focus(); }
   }
   const path = portfolioPath(customerId, portfolioId);
@@ -472,17 +474,19 @@ function PortfolioDetail({ request, customerId, portfolioId, plans }) {
     <ReadStatus resource={resource} label="portfolio" invalid={!valid} />
     {valid && <>
       <PortfolioHeader request={request} customerId={customerId} portfolio={resource.data.portfolio} plans={plans} onSaved={refresh} onRefresh={refresh} disabled={resource.loading || Boolean(resource.error)} />
-      <Summary data={resource.data} />
-      <PortfolioPerformance request={request} portfolioPath={path} portfolioId={portfolioId} revision={revision} />
+      <Summary data={resource.data} performance={performance?.request === request && performance.portfolioPath === path && performance.revision === revision ? performance.summary : null} />
       <div className="portfolio-section-controls">
         <div className="portfolio-tabs" role="tablist" aria-label="Portfolio sections" onKeyDown={tabKey}>
-          {['positions', 'transactions'].map((value) => <button key={value} id={`portfolio-${value}-tab`} type="button" role="tab" aria-selected={tab === value} aria-controls={`portfolio-${value}-panel`} tabIndex={tab === value ? 0 : -1} onClick={() => setTab(value)}>{value === 'positions' ? 'Positions' : 'Transactions'}</button>)}
+          {['positions', 'transactions', 'performance'].map((value) => <button key={value} id={`portfolio-${value}-tab`} type="button" role="tab" aria-selected={tab === value} aria-controls={`portfolio-${value}-panel`} tabIndex={tab === value ? 0 : -1} onClick={() => setTab(value)}>{value === 'positions' ? 'Positions' : value === 'transactions' ? 'Transactions' : 'Performance'}</button>)}
         </div>
         <button ref={addButton} type="button" disabled={adding} aria-expanded={adding} aria-controls="transaction-entry" onClick={() => { setAdding(true); setMessage(null); }}>Add transaction</button>
       </div>
       {message && <p role="status">{message}</p>}
       <TransactionForm request={request} path={`${path}/transactions`} open={adding} onClose={() => setAdding(false)} instruments={instruments} positions={resource.data.positions}
         onSaved={(success) => { setMessage(success); setAdding(false); refresh(); }} disabled={resource.loading || Boolean(resource.error)} />
+      <div id="portfolio-performance-panel" role="tabpanel" aria-labelledby="portfolio-performance-tab" tabIndex={0} hidden={tab !== 'performance'}>
+        <PortfolioPerformance request={request} portfolioPath={path} portfolioId={portfolioId} revision={revision} onSummary={setPerformance} />
+      </div>
       <div id="portfolio-positions-panel" role="tabpanel" aria-labelledby="portfolio-positions-tab" tabIndex={0} hidden={tab !== 'positions'}><Positions positions={resource.data.positions} /></div>
       <div id="portfolio-transactions-panel" role="tabpanel" aria-labelledby="portfolio-transactions-tab" tabIndex={0} hidden={tab !== 'transactions'}>
         <DegiroImport request={request} portfolioPath={path} onImported={refresh} disabled={resource.loading || Boolean(resource.error)} />

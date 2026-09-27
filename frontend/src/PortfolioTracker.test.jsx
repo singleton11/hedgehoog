@@ -51,7 +51,7 @@ function mockServer() {
       return { ...result, items: result.items.map(asPlan) };
     }
     if (url.pathname === '/indices') return page([], url.searchParams);
-    if (url.pathname.endsWith('/performance')) return { portfolio_id: url.pathname.split('/').at(-2), currency: 'EUR', method: 'daily_twr', cash_flow_timing: 'deposits_start_withdrawals_end', as_of: '2026-09-24T00:00:00Z', start_date: null, end_date: null, points: [], benchmark: null, warnings: [] };
+    if (url.pathname.endsWith('/performance')) return { portfolio_id: url.pathname.split('/').at(-2), currency: 'EUR', method: 'daily_twr', cash_flow_timing: 'deposits_start_withdrawals_end', as_of: '2026-09-24T00:00:00Z', start_date: null, end_date: null, points: [], benchmark: null, warnings: [], summary: { twr_percent: '10.00000000', sharpe: '-0.25000000', sortino: '0.00000000' } };
     if (url.pathname === '/portfolio-instruments') return server.instrumentList(url.searchParams, options);
     if (url.pathname === base) return options.method === 'POST' ? server.create(options.body, options) : server.portfolioList(url.searchParams, options);
     if (url.pathname.startsWith(`${transactionsPath}/`) && options.method === 'DELETE') return server.remove(url.pathname.split('/').at(-1), options);
@@ -490,13 +490,19 @@ describe('exact manually dated cash and trade transactions', () => {
 });
 
 describe('portfolio detail interactions', () => {
-  it('refreshes performance below summary after refresh, deposit and removal', async () => {
+  it('keeps performance in its own tab and refreshes after refresh, deposit and removal', async () => {
     mockServer(); await open();
     const reads = () => request.mock.calls.filter(([url]) => url === `${detailPath}/performance`).length;
     expect(reads()).toBe(1);
+    expect(summaryValue('TWR')).toHaveTextContent('10.00%');
+    expect(summaryValue('Sharpe')).toHaveTextContent('-0.25');
+    expect(summaryValue('Sortino')).toHaveTextContent('0.00');
+    expect(screen.queryByRole('region', { name: 'Portfolio performance' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Performance' }));
     const chart = screen.getByRole('region', { name: 'Portfolio performance' });
+    expect(chart.closest('[role="tabpanel"]')).toHaveAttribute('id', 'portfolio-performance-panel');
     expect(screen.getByRole('region', { name: 'Portfolio summary' }).compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(chart.compareDocumentPosition(screen.getByRole('tablist')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole('tablist').compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolio' })); await flush();
     expect(reads()).toBe(2);
     addTransaction(); change('Amount (EUR)', '100'); await submit(cashForm());
@@ -574,8 +580,12 @@ describe('portfolio detail interactions', () => {
     expect(screen.getByRole('table', { name: /Transactions ·/ })).toBeInTheDocument();
     expect(summaryValue('Cash')).toHaveTextContent('€1,000.00');
     fireEvent.keyDown(transactions, { key: 'Home' }); expect(positions).toHaveFocus();
-    fireEvent.keyDown(positions, { key: 'End' }); expect(transactions).toHaveFocus();
+    const performanceTab = screen.getByRole('tab', { name: 'Performance' });
+    fireEvent.keyDown(positions, { key: 'End' }); expect(performanceTab).toHaveFocus();
+    fireEvent.keyDown(performanceTab, { key: 'ArrowLeft' }); expect(transactions).toHaveFocus();
     fireEvent.keyDown(transactions, { key: 'ArrowLeft' }); expect(positions).toHaveFocus();
+    fireEvent.keyDown(positions, { key: 'ArrowLeft' }); expect(performanceTab).toHaveFocus();
+    fireEvent.keyDown(performanceTab, { key: 'ArrowRight' }); expect(positions).toHaveFocus();
   });
 
   it('retains transaction pagination and the shared summary when switching tabs', async () => {

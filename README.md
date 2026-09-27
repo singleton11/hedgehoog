@@ -159,6 +159,12 @@ Use **Remove** in transaction history to correct an entry after confirmation;
 removal recalculates balances and is blocked if any remaining cash or holdings
 would become negative. See [portfolio accounting, limits and API](docs/portfolio-tracker.md).
 
+The **Performance** tab has a cumulative TWR chart and a separate shared Sharpe/Sortino
+chart; the portfolio summary shows all three latest metrics. In **Settings**, admins
+choose an app-wide saved EUR instrument as the return proxy for both ratios. No
+selection or insufficient history leaves ratios unavailable. See
+[performance methodology and settings](docs/portfolio-performance.md).
+
 ## Return statistics and goal planning
 
 After EOD acquisition, Hedgehoog calculates each instrument's average daily log
