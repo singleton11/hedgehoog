@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import CandlestickChart, { Metadata } from './CandlestickChart.jsx';
 import { acquisitionEstimate, displayText, listingPriceCurrency, pendingJob } from './instruments.js';
 import useInstrument from './useInstrument.js';
-import PriceCurrencyForm from './PriceCurrencyForm.jsx';
 import ReturnStatistics from './ReturnStatistics.jsx';
 import ManualSplits from './ManualSplits.jsx';
 
@@ -89,7 +88,7 @@ function JobStatus({ job }) {
 }
 
 export default function InstrumentDetail({ isin }) {
-  const { detail, loading, error, pollError, postError, submitting, quotes, quotesLoading, quotesError, acquire, retry, retryQuotes, savingCurrency, currencyError, saveCurrency } = useInstrument(isin);
+  const { detail, loading, error, pollError, postError, submitting, quotes, quotesLoading, quotesError, acquire, retry, retryQuotes } = useInstrument(isin);
   const [reviewMode, setReviewMode] = useState(null);
   const [splitRevision, setSplitRevision] = useState(0);
   const heading = useRef(null);
@@ -114,7 +113,7 @@ export default function InstrumentDetail({ isin }) {
   const minimumCalls = acquisitionEstimate(detail, 'update').minimumCalls;
   // Keep review accessible with three calls remaining: a manual override can
   // skip lookup. The form enforces the minimum for the chosen acquisition.
-  const blocked = pending || submitting || savingCurrency || !detail.provider_configured || (metered && budget.remaining < 3);
+  const blocked = pending || submitting || !detail.provider_configured || (metered && budget.remaining < 3);
 
   async function confirm(body) {
     if (await acquire(body)) setReviewMode(null);
@@ -129,8 +128,6 @@ export default function InstrumentDetail({ isin }) {
       <p><a href={`#/goal/${encodeURIComponent(isin)}`}>Plan a goal with this ETF</a></p>
     </section>
     <ReturnStatistics isin={isin} generation={detail.generation} refreshKey={JSON.stringify([acquisition?.id, acquisition?.status, detail.price_currency_override, splitRevision])} />
-    {!priceCurrency && !quotesLoading && !quotesError && <PriceCurrencyForm busy={savingCurrency || submitting}
-      saving={savingCurrency} error={currencyError} onSave={saveCurrency} />}
     {!quotes.length && priceCurrency && <p className="muted">Price currency: {priceCurrency}</p>}
     {quotesLoading && <p role="status">Loading all quote pages…{quotes.length ? ' Showing previously loaded quotes meanwhile.' : ''}</p>}
     {quotesError && <div><p role="alert">Could not load the complete chart: {quotesError} Previously loaded quotes are retained.</p><button className="secondary" onClick={retryQuotes}>Retry chart</button></div>}
@@ -147,7 +144,7 @@ export default function InstrumentDetail({ isin }) {
         <button ref={reviewButton} disabled={blocked} onClick={() => setReviewMode('update')}>{hasData ? 'Update Data' : 'Request Data'}</button>
         {summary.history_status === 'partial' && <button className="secondary" disabled={blocked} onClick={() => setReviewMode('backfill')}>Retry Older History</button>}
       </div>}
-      {reviewMode && !pending && <AcquisitionForm key={reviewMode} detail={detail} mode={reviewMode} busy={submitting || savingCurrency}
+      {reviewMode && !pending && <AcquisitionForm key={reviewMode} detail={detail} mode={reviewMode} busy={submitting}
         onCancel={() => setReviewMode(null)} onConfirm={confirm} />}
       {detail.price_basis === 'provider_split_adjusted'
         ? <details className="disclosure manual-splits"><summary>Splits</summary><p>Yahoo Finance prices are already provider split-adjusted. Manual split corrections are not available for this price basis.</p></details>

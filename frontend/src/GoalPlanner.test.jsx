@@ -825,7 +825,7 @@ describe('detail statistics refresh', () => {
     expect(within(screen.getByText('Annual return').closest('div')).getByText('-10.08%')).toHaveClass('return-negative');
   });
 
-  it('updates statistics after acquisition completion and a saved manual currency without an acquisition POST', async () => {
+  it('updates statistics after acquisition completion without an acquisition POST or currency controls', async () => {
     const server = mockServer();
     server.detail.acquisition = { id: 'job-1', status: 'running', requested_at: '2026-09-17T12:00:00Z' };
     await openWorkspace(`#/instruments/${A}`);
@@ -833,10 +833,8 @@ describe('detail statistics refresh', () => {
     server.detail = { ...server.detail, acquisition: { ...server.detail.acquisition, status: 'succeeded' } };
     await advance(POLL_INTERVAL);
     expect(reads()).toHaveLength(2);
-    fireEvent.change(screen.getByRole('combobox', { name: 'Price currency' }), { target: { value: 'EUR' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save currency' }));
-    await flush();
-    expect(reads()).toHaveLength(3);
+    expect(screen.queryByRole('combobox', { name: 'Price currency' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save currency' })).not.toBeInTheDocument();
     expect(posts()).toHaveLength(0);
   });
 
