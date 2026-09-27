@@ -42,7 +42,7 @@ describe('DEGIRO explicit preview/import', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Preview statement' })); await flush();
     expect(view.request).toHaveBeenCalledWith(`${path}/imports/degiro/preview`, expect.objectContaining({ method: 'POST', body: { csv } }));
     expect(screen.getByText('World · WORLD · XETR · IE00B4L5Y983')).toBeInTheDocument();
-    expect(screen.getByText('10.12345678')).toBeInTheDocument();
+    expect(screen.getByText('10.12')).toBeInTheDocument();
     expect(screen.getByText(/1 duplicates \(skipped\)/)).toBeInTheDocument();
     expect(screen.getByText('Line 5: Reserved iDEAL — Not final deposit')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Import transactions' })).toBeDisabled(); save(); expect(view.request).toHaveBeenCalledTimes(1);

@@ -3,7 +3,7 @@ import { formatEuros, parseProjection } from './goalProjection.js';
 
 const WIDTH = 960, HEIGHT = 390, LEFT = 90, RIGHT = 24, TOP = 24, BOTTOM = 50;
 const PLOT_WIDTH = WIDTH - LEFT - RIGHT, PLOT_HEIGHT = HEIGHT - TOP - BOTTOM;
-const axisMoney = new Intl.NumberFormat('en', { style: 'currency', currency: 'EUR', notation: 'compact', maximumSignificantDigits: 3 });
+const axisMoney = new Intl.NumberFormat('en', { style: 'currency', currency: 'EUR', notation: 'compact', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export default function GoalProjectionChart({ trajectory, goal, pathCount }) {
   const id = useId();

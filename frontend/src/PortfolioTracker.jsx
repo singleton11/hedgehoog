@@ -43,21 +43,7 @@ const validTransaction = (item) => identifier(item?.id) && text(item.client_id) 
 const instrumentName = (item) => [item.name || item.instrument_id, item.symbol, item.exchange].filter(Boolean).join(' · ');
 const transactionName = (type) => ({ buy: 'Buy', sell: 'Sell', deposit: 'Deposit', withdrawal: 'Withdrawal' })[type];
 
-function formatEuros(value) {
-  if (!decimal(value)) return 'Unavailable';
-  const [whole, fraction = ''] = value.split('.');
-  // Display only: retain every significant decimal without floating-point rounding.
-  return formatExactEuros(`${whole}.${fraction.replace(/0+$/, '').padEnd(2, '0')}`);
-}
-function formatAverageCost(value) {
-  if (!decimal(value)) return 'Unavailable';
-  const [whole, fraction = ''] = value.replace(/^-/, '').split('.');
-  // Display-only half-up rounding: BigInt preserves exact cents for large values.
-  const cents = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0').slice(0, 2))
-    + (fraction[2] >= '5' ? 1n : 0n);
-  const sign = value.startsWith('-') && cents > 0n ? '-' : '';
-  return formatExactEuros(`${sign}${cents / 100n}.${String(cents % 100n).padStart(2, '0')}`);
-}
+const formatEuros = formatExactEuros;
 function validDate(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const timestamp = Date.parse(`${value}T00:00:00Z`);
@@ -318,7 +304,7 @@ function Positions({ positions }) {
         {['Instrument', 'Quantity', 'Average cost', 'Cost basis', 'Market price', 'Position value', 'Total unrealized P&L', 'Daily unrealized P&L'].map((label) => <th key={label} scope="col">{label}</th>)}
       </tr></thead><tbody>{positions.map((position) => <tr key={position.instrument.instrument_id}>
         <th scope="row">{instrumentName(position.instrument)}<span className="simulation-parameter">{position.instrument.instrument_id}</span>{position.warning && <span className="portfolio-warning">{position.warning}</span>}</th>
-        <td>{position.quantity}</td><td>{formatAverageCost(position.average_price_eur)}</td><td>{formatEuros(position.cost_basis_eur)}</td>
+        <td>{position.quantity}</td><td>{formatEuros(position.average_price_eur)}</td><td>{formatEuros(position.cost_basis_eur)}</td>
         <td title={position.price_date ? `Price date: ${position.price_date}` : 'Price date unavailable'}>{formatEuros(position.market_price_eur)}</td>
         <td>{formatEuros(position.position_value_eur)}</td><td className={pnlClass(position.unrealized_pnl_eur)}>{formatEuros(position.unrealized_pnl_eur)}</td>
         <td className={pnlClass(position.daily_unrealized_pnl_eur)} title={position.price_date ? `Price date: ${position.price_date}` : 'Price date unavailable'}>{formatEuros(position.daily_unrealized_pnl_eur)}</td>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { formatMoney } from './money.js';
 
 const MAX_BYTES = 1_000_000;
 const decimal = (value) => typeof value === 'string' && /^-?\d+(?:\.\d+)?$/.test(value);
@@ -19,7 +20,7 @@ function validPreview(data) {
     && ['deposits_eur', 'withdrawals_eur', 'commission_eur'].every((key) => decimal(data.summary[key]))
     && Array.isArray(data.summary.positions) && data.summary.positions.every((item) => item && typeof item.instrument_id === 'string' && decimal(item.quantity) && decimal(item.cost_basis_eur));
 }
-const euros = (value) => value == null ? 'Unavailable' : `${value} EUR`;
+const euros = (value) => value == null ? 'Unavailable' : `${formatMoney(value)} EUR`;
 
 // The tracker remounts this panel at its route/auth/request identity boundary.
 export default function DegiroImport({ request, portfolioPath, onImported, disabled = false }) {
@@ -125,7 +126,7 @@ export default function DegiroImport({ request, portfolioPath, onImported, disab
         {!preview.can_import && <p role="alert">This statement cannot be imported. Resolve the errors and preview again.</p>}
         <p id="degiro-transactions-scroll" className="portfolio-scroll-hint">Scroll horizontally to view all columns.</p>
         <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="DEGIRO preview transactions" aria-describedby="degiro-transactions-scroll"><table className="planner-table portfolio-table"><caption>Proposed transactions and selected EUR listings</caption><thead><tr>{['Lines', 'Date', 'Type', 'Status', 'Chosen listing / ISIN', 'Quantity', 'Price (EUR)', 'Commission (EUR)', 'Amount (EUR)'].map((label) => <th key={label} scope="col">{label}</th>)}</tr></thead>
-          <tbody>{preview.transactions.map((item, index) => <tr key={index}><td>{item.source_rows.join(', ')}</td><td>{item.date}</td><td>{item.type}</td><td>{item.status}</td><td className="portfolio-instrument">{[item.instrument?.name, item.instrument?.symbol, item.instrument?.exchange, item.instrument_id].filter(Boolean).join(' · ') || '—'}</td><td>{item.quantity ?? '—'}</td><td>{item.price_eur ?? '—'}</td><td>{item.commission_eur ?? '—'}</td><td>{item.amount_eur ?? '—'}</td></tr>)}</tbody></table></div>
+          <tbody>{preview.transactions.map((item, index) => <tr key={index}><td>{item.source_rows.join(', ')}</td><td>{item.date}</td><td>{item.type}</td><td>{item.status}</td><td className="portfolio-instrument">{[item.instrument?.name, item.instrument?.symbol, item.instrument?.exchange, item.instrument_id].filter(Boolean).join(' · ') || '—'}</td><td>{item.quantity ?? '—'}</td><td>{formatMoney(item.price_eur, { unavailable: '—' })}</td><td>{formatMoney(item.commission_eur, { unavailable: '—' })}</td><td>{formatMoney(item.amount_eur, { unavailable: '—' })}</td></tr>)}</tbody></table></div>
         {preview.ignored_rows.length > 0 && <><h4>Ignored rows</h4><ul>{preview.ignored_rows.map((item, index) => <li key={index}>Line {item.row}: {item.description} — {item.reason}</li>)}</ul></>}
         <label className="checkbox-label"><input type="checkbox" checked={confirmed} disabled={saving || !preview.can_import || preview.errors.length > 0} onChange={(event) => setConfirmed(event.target.checked)} /> I checked the chosen EUR listings and all transactions.</label>
         <button type="button" disabled={disabled || phase !== 'idle' || !confirmed || !preview.can_import || preview.errors.length > 0} onClick={() => run(true)}>{uncertain ? 'Retry import' : 'Import transactions'}</button>

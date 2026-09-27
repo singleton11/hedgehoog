@@ -1,8 +1,8 @@
+import { formatMoney } from './money.js';
+
 // Money remains exact text until the chart's plotting boundary.
 export function formatEuros(value) {
-  if (typeof value !== 'string' || !/^-?\d+(?:\.\d+)?$/.test(value)) return 'Unavailable';
-  const [whole, fraction = ''] = value.replace(/^-/, '').split('.');
-  return `${value.startsWith('-') ? '-' : ''}€${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${fraction.padEnd(2, '0')}`;
+  return formatMoney(value, { symbol: '€' });
 }
 
 const fields = ['mean_eur', 'p05_eur', 'p25_eur', 'p50_eur', 'p75_eur', 'p95_eur'];

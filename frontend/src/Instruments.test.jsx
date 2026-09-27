@@ -1353,7 +1353,7 @@ describe('explicit acquisition and complete charts', () => {
     expect(JSON.parse(screen.getByLabelText('Listing, acquisition and coverage metadata').textContent).listing_resolution).toEqual(server.details[A].listing_resolution);
     expect(screen.getByLabelText('Quote observations (current window, all provider fields)')).toHaveTextContent('9007199254740993');
     const candleTitle = document.querySelector('.candle title');
-    expect(candleTitle.textContent).toContain('Open 100.123456789');
+    expect(candleTitle.textContent).toContain('Open 100.12 · High 103.00 · Low 99.00 · Close 102.00');
     expect(candleTitle.textContent).toContain('Price currency: unknown');
     expect(displayText('&#38; &#x3c; &amp;')).toBe('& < &');
   });

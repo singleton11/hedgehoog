@@ -684,7 +684,7 @@ describe('transaction removal', () => {
     server.transactions = [{ ...cashEvent(1), type: 'buy', instrument, quantity: '1.25000001', price_eur: '100.00000001', commission_eur: '0.00' }];
     server.remove = async () => { throw new Error('Cannot remove this transaction: Insufficient holdings. Remove dependent transactions first.'); };
     await open(); await selectFirst();
-    expect(confirmation()).toHaveTextContent('World ETF'); expect(confirmation()).toHaveTextContent('1.25000001 at €100.00000001');
+    expect(confirmation()).toHaveTextContent('World ETF'); expect(confirmation()).toHaveTextContent('1.25000001 at €100.00');
     await submit(confirmation());
     expect(history().getByRole('alert')).toHaveTextContent('Remove dependent transactions first');
     expect(history().getByRole('button', { name: /^Remove buy/ })).toBeInTheDocument();
@@ -813,14 +813,14 @@ describe('valuation, transaction pagination and read failures', () => {
     expect(writes()).toHaveLength(0);
   });
 
-  it('trims only insignificant display decimals for other prices and provides scroll cues for both wide tables', async () => {
+  it('rounds all displayed prices to two decimals and provides scroll cues for both wide tables', async () => {
     const server = mockServer(); server.details.set(pid, snapshot(metadata(), {
       positions: [position({ average_price_eur: '100.20000000', market_price_eur: '9007199254740993.12345678', cost_basis_eur: '123.45670000' })],
     })); server.transactions = [{ ...cashEvent(1), amount_eur: '123.40000000' }];
     await open(); const positions = screen.getByRole('table', { name: 'Current holdings · EUR' });
     expect(within(positions).getByText('€100.20')).toBeInTheDocument();
-    expect(within(positions).getByText('€9,007,199,254,740,993.12345678')).toBeInTheDocument();
-    expect(within(positions).getByText('€123.4567')).toBeInTheDocument();
+    expect(within(positions).getByText('€9,007,199,254,740,993.12')).toBeInTheDocument();
+    expect(within(positions).getByText('€123.46')).toBeInTheDocument();
     transactionsTab(); expect(within(screen.getByRole('table', { name: /Transactions ·/ })).getByText('€123.40')).toBeInTheDocument();
     expect(document.getElementById('portfolio-positions-panel')).toHaveAttribute('hidden');
     expect(document.getElementById('portfolio-positions-scroll')).toHaveTextContent('Scroll horizontally to view all columns.');

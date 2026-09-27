@@ -1,5 +1,6 @@
 import { useId, useMemo, useState } from 'react';
 import { listingPriceCurrency } from './instruments.js';
+import { formatMoney } from './money.js';
 
 export function Metadata({ title, label = title, value }) {
   return <details className="metadata"><summary>{label}</summary>
@@ -22,7 +23,7 @@ function candle(quote) {
 
 const raw = (value) => value == null ? 'Not supplied' : String(value);
 function description(quote, priceCurrencyOverride) {
-  return `${quote.date} · Open ${raw(quote.open)} · High ${raw(quote.high)} · Low ${raw(quote.low)} · Close ${raw(quote.close)} · Volume ${raw(quote.volume)} · Price currency: ${priceCurrencyOverride || quote.price_currency || 'unknown'}`;
+  return `${quote.date} · Open ${formatMoney(quote.open)} · High ${formatMoney(quote.high)} · Low ${formatMoney(quote.low)} · Close ${formatMoney(quote.close)} · Volume ${raw(quote.volume)} · Price currency: ${priceCurrencyOverride || quote.price_currency || 'unknown'}`;
 }
 
 const RANGE_MONTHS = { '1m': 1, '6m': 6, '1y': 12, '5y': 60 };
@@ -59,7 +60,6 @@ export default function CandlestickChart({ quotes, priceCurrencyOverride = null,
   const x = (index) => left + (index + 0.5) * step;
   const bodyWidth = Math.max(0.4, Math.min(14, step * 0.7));
   const dateTicks = [...new Set([0, Math.floor((candles.length - 1) / 2), candles.length - 1])].filter((index) => index >= 0);
-  const number = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 7 });
 
   const providerAdjusted = priceBasis === 'provider_split_adjusted';
   const basisLabel = providerAdjusted ? 'Provider split-adjusted OHLC' : 'Unadjusted OHLC';
@@ -82,7 +82,7 @@ export default function CandlestickChart({ quotes, priceCurrencyOverride = null,
           {Array.from({ length: 5 }, (_, index) => {
             const value = min + (max - min) * index / 4;
             return <g key={index} className="chart-axis"><line x1={left} x2={width - right} y1={y(value)} y2={y(value)} />
-              <text x={left - 10} y={y(value) + 4} textAnchor="end">{number.format(value)}</text></g>;
+              <text x={left - 10} y={y(value) + 4} textAnchor="end">{formatMoney(value)}</text></g>;
           })}
           {candles.map((item, index) => <g key={`${item.quote.date}-${index}`} className={item.close >= item.open ? 'candle candle-up' : 'candle candle-down'}
             onMouseEnter={() => setHover(item.quote)}>
