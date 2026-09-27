@@ -17,7 +17,7 @@ from customer_planner import _timestamp
 from indices import require_index
 import market_data as md
 import portfolio_tracker as ledger
-from performance_settings import read_settings
+from performance_settings import proxy_currency, read_settings
 
 router = APIRouter(tags=["portfolios"])
 BenchmarkId = Annotated[str | None, Query(pattern=r"^idx-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")]
@@ -122,7 +122,7 @@ def performance(db, document, benchmark_id=None, *, now=None):
         active_index = db.indices.find_one({"instrument_id": proxy["instrument_id"],
                                             "symbol": proxy["symbol"], "removed_at": {"$exists": False}})
         rows = ledger.quote_rows(db, proxy, now) if active_index and state.get("listing") == listing else []
-        proxy_marks = SavedMarks(rows, required_currency="EUR", currency_override=state.get("price_currency_override"))
+        proxy_marks = SavedMarks(rows, required_currency="EUR", currency_override=proxy_currency(db, proxy, now))
     ratios = RiskRatios()
     result = {"portfolio_id": document["_id"], "currency": "EUR", "method": "daily_twr",
               "cash_flow_timing": "deposits_start_withdrawals_end", "as_of": _timestamp(now),

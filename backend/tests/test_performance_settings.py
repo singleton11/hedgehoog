@@ -65,7 +65,7 @@ def test_proxy_choices_filter_unacquired_non_eur_removed_and_paginate(tracker, d
     page = client.get(endpoint, params={'limit': 1}).json()
     assert page['total'] == 1 and page['items'][0]['instrument_id'] == SECOND_ISIN
     assert client.get(endpoint, params={'limit': 1, 'offset': 1}).json()['items'] == []
-    for currency in ('USD', None):
+    for currency in ('USD', 'GBP'):
         db.quotes.update_many({'instrument_id': SECOND_ISIN}, {'$set': {'data.price_currency': currency}})
         assert client.get(endpoint).json()['items'] == []
         assert client.put('/settings/performance', json={'instrument_id': SECOND_ISIN}).status_code == 422
@@ -77,6 +77,42 @@ def test_proxy_choices_filter_unacquired_non_eur_removed_and_paginate(tracker, d
     assert client.put('/settings/performance', json={'instrument_id': SECOND_ISIN}).status_code == 404
     client.post('/auth/logout')
     assert client.get(endpoint).status_code == 401
+
+
+@pytest.mark.parametrize('missing', [None, '', '  '])
+def test_missing_index_currency_defaults_to_eur_without_rewriting_evidence(tracker, db, missing):
+    client, _, _, url = tracker
+    invest(client, url)
+    second_instrument(db, days=('2026-09-14', '2026-09-16'))
+    configure(client)
+    expected = get(client, url)['summary']
+    db.indices.update_one({'instrument_id': SECOND_ISIN}, {'$set': {'currency': missing}})
+    db.instruments.update_many({'instrument_id': SECOND_ISIN}, {'$set': {'data.currency': missing}})
+    db.quotes.update_many({'instrument_id': SECOND_ISIN}, {'$set': {'data.price_currency': missing}})
+    assert client.get('/settings/performance/indices').json()['items'][0]['instrument_id'] == SECOND_ISIN
+    assert configure(client)['proxy']['currency'] == 'EUR'
+    assert get(client, url)['summary'] == expected
+    assert db.quotes.find_one({'instrument_id': SECOND_ISIN})['data']['price_currency'] == missing
+    # A later explicit foreign quote must invalidate, not inherit the default.
+    db.quotes.update_many({'instrument_id': SECOND_ISIN}, {'$set': {'data.price_currency': 'USD'}})
+    assert get(client, url)['summary']['sharpe'] is None
+    assert client.get('/settings/performance/indices').json()['items'] == []
+
+
+@pytest.mark.parametrize('source', ['catalogue', 'profile', 'override'])
+def test_explicit_foreign_metadata_blocks_eur_default_and_existing_selection(tracker, db, source):
+    client, _, _, url = tracker
+    invest(client, url)
+    second_instrument(db, days=('2026-09-14', '2026-09-16'))
+    configure(client)
+    db.indices.update_one({'instrument_id': SECOND_ISIN}, {'$set': {'currency': None}})
+    db.quotes.update_many({'instrument_id': SECOND_ISIN}, {'$set': {'data.price_currency': None}})
+    collection, field = {'catalogue': (db.indices, 'currency'), 'profile': (db.instruments, 'data.currency'),
+                         'override': (db.instrument_state, 'price_currency_override')}[source]
+    collection.update_many({'_id' if source == 'override' else 'instrument_id': SECOND_ISIN}, {'$set': {field: 'USD'}})
+    assert client.get('/settings/performance/indices').json()['items'] == []
+    assert client.put('/settings/performance', json={'instrument_id': SECOND_ISIN}).status_code == 422
+    assert get(client, url)['summary']['sharpe'] is None
 
 
 def test_removed_index_and_legacy_etf_setting_make_ratios_unavailable(tracker, db):

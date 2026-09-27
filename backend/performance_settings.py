@@ -16,6 +16,29 @@ class ProxySetting(BaseModel):
     instrument_id: str | None = Field(..., pattern=r"^idx-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 
 
+def _currency(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip().upper() or None
+    return "UNKNOWN"
+
+
+def proxy_currency(db, instrument, now):
+    """Index-only fallback: missing metadata means EUR, never override foreign metadata."""
+    identifier = instrument["instrument_id"]
+    listing = {key: instrument[key] for key in ("symbol", "exchange")}
+    record = db.indices.find_one({"instrument_id": identifier}) or {}
+    state = db.instrument_state.find_one({"_id": identifier}) or {}
+    profile = db.instruments.find_one({
+        **md.observation_filter(db, identifier, listing, now), "collected_at": {"$lte": now},
+    }, sort=[("collected_at", -1), ("_id", -1)]) or {}
+    values = (record.get("currency"), profile.get("data", {}).get("currency"),
+              state.get("price_currency_override") if state.get("listing") == listing else None)
+    currencies = {_currency(value) for value in values} - {None, "EUR"}
+    return sorted(currencies)[0] if currencies else "EUR"
+
+
 def acquired_proxy_index(db, identifier, now):
     record = require_index(db, identifier)
     listing = {"symbol": record["symbol"], "exchange": "YAHOO"}
@@ -26,8 +49,9 @@ def acquired_proxy_index(db, identifier, now):
         raise md.DataError(422, "Acquire the selected index before using it as a proxy.")
     instrument = {"instrument_id": identifier, "name": record["name"], **listing, "currency": "EUR"}
     rows = ledger.quote_rows(db, instrument, now)
-    if not rows or not ledger.currency_supported(db, instrument, rows):
-        raise md.DataError(422, "Only acquired indices with confirmed EUR price history are supported.")
+    if (not rows or proxy_currency(db, instrument, now) != "EUR"
+            or any(_currency(row.get("price_currency")) not in (None, "EUR") for row in rows)):
+        raise md.DataError(422, "Only EUR indices are supported; missing currency metadata defaults to EUR.")
     return instrument
 
 
