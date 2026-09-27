@@ -15,7 +15,12 @@ describe('Portfolio plan tracking', () => {
     render(<PortfolioPlanTracking {...props} request={vi.fn().mockResolvedValue(result)} />);
     expect(await screen.findByText('Below target probability')).toBeInTheDocument();
     expect(screen.getByText('70.0%')).toBeInTheDocument();
-    expect(screen.getByText('-20.0 pp')).toBeInTheDocument();
+    expect(screen.getAllByText('-20.0 pp')).toHaveLength(2);
+    const section = screen.getByRole('region', { name: 'Plan progress' });
+    expect(section.querySelectorAll('dl.facts')).toHaveLength(2);
+    expect(section.querySelectorAll('dl.facts > div')).toHaveLength(8);
+    expect(screen.getByText('Below target probability')).toHaveClass('return-negative');
+    expect(screen.getByText('Planned monthly investment')).toBeInTheDocument();
     expect(screen.getByText('Monthly investment needed to reach target')).toBeInTheDocument();
   });
   it('does not request calculations without a plan', () => {
