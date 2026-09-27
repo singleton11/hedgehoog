@@ -1,4 +1,4 @@
-"""Durable, explicitly requested Marketstack observations and acquisition jobs.
+"""Durable, explicitly requested provider observations and acquisition jobs.
 
 No provider calls occur in read functions. Collection times are knowledge times,
 not historical effective dates. At-least-once execution is not exactly-once HTTP.
@@ -13,7 +13,28 @@ from bson import Decimal128, ObjectId
 from pymongo import ASCENDING, DESCENDING, ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
-from marketstack import MarketstackClient, MarketstackError
+from marketstack import MarketstackClient  # Explicit legacy adapter; never a fallback.
+from market_provider import MarketDataError
+
+# Backward-compatible exception name for legacy callers and stored jobs.
+MarketstackError = MarketDataError
+
+
+def provider_name(settings):
+    return settings.market_data_provider
+
+
+def configured(settings):
+    return provider_name(settings) == "yfinance" or bool(settings.marketstack_api_key.get_secret_value())
+
+
+def provider_client(settings, name, before_request):
+    if name == "yfinance":
+        from yahoo_finance import YahooFinanceClient
+        return YahooFinanceClient(before_request=before_request, timeout=settings.market_data_timeout_seconds)
+    if name == "marketstack":
+        return MarketstackClient(settings.marketstack_api_key.get_secret_value(), before_request=before_request)
+    raise MarketDataError("unknown_provider", "This acquisition uses an unsupported provider.")
 
 LEASE_SECONDS = 300
 QUEUE_TIMEOUT_SECONDS = 1800
@@ -67,6 +88,7 @@ def ensure_indexes(db):
     db.raw_eod_pages.create_index([("job_id", ASCENDING), ("offset", ASCENDING)], unique=True)
     db.raw_split_pages.create_index([("job_id", ASCENDING), ("offset", ASCENDING)], unique=True)
     db.split_snapshots.create_index([("instrument_id", ASCENDING), ("symbol", ASCENDING), ("exchange", ASCENDING), ("requested_at", DESCENDING), ("_id", DESCENDING)])
+    db.market_data_publications.create_index([("instrument_id", ASCENDING), ("published_at", DESCENDING), ("_id", DESCENDING)])
 
 
 def latest_catalogue(db, isin):
@@ -109,12 +131,14 @@ def acquired_instruments(db, limit=20, offset=0):
     from return_statistics import refresh_statistics
 
     result = list(db.instruments.aggregate([
-        {"$project": {"instrument_id": 1, "symbol": 1, "exchange": 1, "collected_at": 1}},
+        {"$match": {"$or": [{"provider": {"$ne": "yfinance"}}, {"published": True}]}},
+        {"$project": {"instrument_id": 1, "symbol": 1, "exchange": 1, "collected_at": 1, "job_id": 1, "provider": 1}},
         {"$sort": {"instrument_id": 1, "collected_at": -1, "_id": -1}},
         {"$group": {
             "_id": "$instrument_id",
             "listing": {"$first": {"symbol": "$symbol", "exchange": "$exchange"}},
             "collected_at": {"$first": "$collected_at"},
+            "job_id": {"$first": "$job_id"}, "provider": {"$first": "$provider"},
         }},
         {"$sort": {"collected_at": -1, "_id": 1}},
         {"$facet": {"count": [{"$count": "total"}], "items": [{"$skip": offset}, {"$limit": limit}]}},
@@ -126,8 +150,9 @@ def acquired_instruments(db, limit=20, offset=0):
             {"isin": isin}, {"_id": 0, "name": 1, "ticker": 1},
             sort=[("import_date", DESCENDING)],
         ) or {}
-        dates = quote_dates(db, isin, observation["listing"])
-        statistics, state = refresh_statistics(db, isin)
+        generation = observation.get("job_id") if observation.get("provider") == "yfinance" else "legacy"
+        dates = quote_dates(db, isin, observation["listing"], generation=generation)
+        statistics, state = refresh_statistics(db, isin, generation=generation)
         # Never attach another listing's returns to the displayed profile.
         if state.get("listing") != observation["listing"]:
             statistics = {}
@@ -154,6 +179,8 @@ def acquired_instruments(db, limit=20, offset=0):
 
 def budget_status(db, settings):
     month = utcnow().strftime("%Y-%m")
+    if provider_name(settings) == "yfinance":
+        return {"provider": "yfinance", "metered": False, "month": month, "limit": None, "used": 0, "remaining": None}
     record = db.marketstack_usage.find_one({"_id": month}) or {}
     used = record.get("used", 0)
     limit = settings.marketstack_monthly_budget
@@ -237,10 +264,45 @@ def listing_filter(isin, listing):
     return {"instrument_id": isin, "symbol": listing["symbol"], "exchange": listing["exchange"]}
 
 
-def quote_dates(db, isin, listing, as_of=None):
+def published_history(db, isin, listing, as_of=None, generation=None):
+    """Only the atomic, owner-fenced job transition makes a generation visible.
+
+    Evidence/publication records alone do not grant visibility. A timestamp is
+    a knowledge-time bound, NOT a stable cursor: callers pin the returned UUID.
+    """
+    if not listing or generation == "legacy":
+        return None
+    saved_listing = {"symbol": listing["symbol"], "exchange": listing["exchange"]}
+    query = {"instrument_id": isin, "listing": saved_listing, "published": True,
+             "published_at": {"$lte": as_of or utcnow()}}
+    if generation is not None:
+        query["_id"] = generation
+    publication = db.acquisition_jobs.find_one(query, sort=[("requested_at", DESCENDING), ("published_at", DESCENDING), ("_id", DESCENDING)])
+    if generation is not None and publication is None:
+        raise DataError(409, "This history generation is not published for this instrument and cutoff. Refresh instrument details.")
+    return publication
+
+
+def history_generation(db, isin, listing, as_of=None):
+    publication = published_history(db, isin, listing, as_of)
+    return publication["_id"] if publication else "legacy"
+
+
+def observation_filter(db, isin, listing, as_of=None, generation=None):
+    query = listing_filter(isin, listing)
+    publication = published_history(db, isin, listing, as_of, generation)
+    if publication:
+        query.update(job_id=publication["_id"], provider=publication["provider"])
+    else:
+        # The explicit legacy cursor also pins the absence of any publication.
+        query["provider"] = {"$ne": "yfinance"}
+    return query
+
+
+def quote_dates(db, isin, listing, as_of=None, generation=None):
     if not listing:
         return []
-    query = listing_filter(isin, listing)
+    query = observation_filter(db, isin, listing, as_of, generation)
     if as_of:
         query["collected_at"] = {"$lte": as_of}
     return sorted(db.quotes.distinct("date", query))
@@ -259,7 +321,7 @@ def coverage(catalogue, dates):
     if missing_start:
         result["warning"] = (
             f"Incomplete since-inception history: requested from {inception}, but the earliest stored quote is {dates[0]}. "
-            "Marketstack may silently limit history to your plan or listing coverage. Normal updates only fetch newer dates; use Retry Older History after checking or upgrading your plan."
+            "Provider or listing coverage may start after fund inception; a completed request does not certify complete historical coverage."
         )
     return result
 
@@ -278,30 +340,33 @@ def instrument_detail(db, settings, isin, as_of=None):
     expire_stalled_jobs(db, isin)
     state = db.instrument_state.find_one({"_id": isin}) or {}
     listing = state.get("listing")
+    cutoff = as_of or utcnow()
+    generation = history_generation(db, isin, listing, cutoff)
     profile = None
     if listing:
-        query = listing_filter(isin, listing)
+        query = observation_filter(db, isin, listing, cutoff, generation)
         if as_of:
             query["collected_at"] = {"$lte": as_of}
         observation = db.instruments.find_one(query, sort=[("collected_at", DESCENDING), ("_id", DESCENDING)])
         if observation:
             profile = {key: observation[key] for key in ("collected_at", "collection_date", "data")}
     job = db.acquisition_jobs.find_one({"instrument_id": isin}, sort=[("requested_at", DESCENDING), ("_id", DESCENDING)])
-    summary = coverage(catalogue, quote_dates(db, isin, listing, as_of))
+    summary = coverage(catalogue, quote_dates(db, isin, listing, cutoff, generation))
     if job is None:
         summary["history_status"] = "not_requested"
-    return public({"instrument_id": isin, "catalogue": {key: value for key, value in catalogue.items() if key != "_id"}, "listing": listing, "listing_resolution": state.get("listing_resolution"), "price_currency_override": state.get("price_currency_override"), "profile": profile, "acquisition": public_job(job), "summary": summary, "provider_configured": bool(settings.marketstack_api_key.get_secret_value()), "budget": budget_status(db, settings)})
+    return public({"instrument_id": isin, "generation": generation, "catalogue": {key: value for key, value in catalogue.items() if key != "_id"}, "listing": listing, "listing_resolution": state.get("listing_resolution"), "price_currency_override": state.get("price_currency_override"), "profile": profile, "acquisition": public_job(job), "summary": summary, "provider": provider_name(settings), "price_basis": "provider_split_adjusted" if provider_name(settings) == "yfinance" else "unadjusted", "provider_configured": configured(settings), "budget": None if provider_name(settings) == "yfinance" else budget_status(db, settings)})
 
 
-def read_quotes(db, isin, limit=1000, offset=0, as_of=None):
+def read_quotes(db, isin, limit=1000, offset=0, as_of=None, generation=None):
     require_catalogue(db, isin)
     as_of = as_of or utcnow()
     snapshot = public(as_of)
     state = db.instrument_state.find_one({"_id": isin}) or {}
     listing = state.get("listing")
     if not listing:
-        return {"items": [], "total": 0, "limit": limit, "offset": offset, "as_of": snapshot}
-    query = listing_filter(isin, listing)
+        return {"items": [], "total": 0, "limit": limit, "offset": offset, "as_of": snapshot, "generation": "legacy"}
+    generation = generation or history_generation(db, isin, listing, as_of)
+    query = observation_filter(db, isin, listing, as_of, generation)
     if as_of:
         query["collected_at"] = {"$lte": as_of}
     latest = [
@@ -320,7 +385,7 @@ def read_quotes(db, isin, limit=1000, offset=0, as_of=None):
             if type(item.get(field)) in (int, float, Decimal, Decimal128):
                 item[field] = str(item[field])
         items.append(public(item))
-    return {"items": items, "total": result["count"][0]["total"] if result["count"] else 0, "limit": limit, "offset": offset, "as_of": snapshot}
+    return {"items": items, "total": result["count"][0]["total"] if result["count"] else 0, "limit": limit, "offset": offset, "as_of": snapshot, "generation": generation}
 
 
 def request_acquisition(db, settings, isin, listing, mode, requested_by, publish):
@@ -331,8 +396,9 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
         raise DataError(422, "This instrument has no valid inception date for a history request") from None
     if inception > utcnow().date():
         raise DataError(422, "The instrument inception date is in the future")
-    if not settings.marketstack_api_key.get_secret_value():
-        raise DataError(503, "Configure MARKETSTACK_API_KEY on the API and worker before requesting data")
+    name = provider_name(settings)
+    if not configured(settings):
+        raise DataError(503, "Configure the selected market-data provider on the API and worker before requesting data")
     ensure_indexes(db)
     expire_stalled_jobs(db, isin)
     explicit_listing = listing
@@ -343,7 +409,7 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
         if explicit_listing is not None and existing["listing"] != explicit_listing:
             raise DataError(409, "Another listing is already being collected for this instrument")
         return public_job(existing)
-    if budget_status(db, settings)["remaining"] < 1:
+    if name == "marketstack" and budget_status(db, settings)["remaining"] < 1:
         raise DataError(409, "The local monthly Marketstack request budget is exhausted")
     ticker = catalogue.get("ticker")
     ticker = ticker.strip().upper() if isinstance(ticker, str) else ""
@@ -357,7 +423,11 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
     end = utcnow().date() - timedelta(days=1)
     start = inception
     actual_mode = "initial"
-    if mode == "backfill" and dates:
+    if name == "yfinance":
+        # Yahoo adjusts older prices after corporate actions. An append-only
+        # incremental merge would mix different adjustment vintages.
+        actual_mode = "refresh"
+    elif mode == "backfill" and dates:
         actual_mode = "backfill"
         end = date.fromisoformat(dates[0]) - timedelta(days=1)
     elif last_complete:
@@ -366,6 +436,7 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
     job_id = str(uuid4())
     job = {
         "_id": job_id, "instrument_id": isin, "listing": listing, "lookup_ticker": ticker,
+        "provider": name, "price_basis": "provider_split_adjusted" if name == "yfinance" else "unadjusted",
         "requested_by": requested_by, "requested_at": utcnow(), "mode": actual_mode,
         "date_from": start.isoformat(), "date_to": end.isoformat(),
         # Always refresh all actions, including on incremental/no-new-price
@@ -432,7 +503,7 @@ def resolve_listing(provider, ticker, isin):
     raise MarketstackError("listing_not_found", "No named EOD listing matched the exact catalogue ticker.exchange pattern with a valid MIC. Supply a manual symbol and MIC to request data.")
 
 
-def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
+def run_acquisition(db, settings, job_id, provider_factory=None):
     """Run/resume a job. Only a fully processed range advances the watermark."""
     ensure_indexes(db)
     now = utcnow()
@@ -448,6 +519,8 @@ def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
             raise JobBusy()
         return public_job(existing)
     owned = {"_id": job_id, "owner": owner, "active": True, "status": "running"}
+    # Jobs created before provider routing were explicitly Marketstack jobs.
+    name = job.get("provider", "marketstack")
 
     def checkpoint(values=None, increments=None):
         update = {"$set": {"lease_until": utcnow() + timedelta(seconds=LEASE_SECONDS), **(values or {})}}
@@ -460,17 +533,21 @@ def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
 
     def before_request():
         current = checkpoint()
-        if current["calls"] >= settings.marketstack_max_calls_per_job:
-            raise MarketstackError("job_request_limit", "This job reached its request safety limit. Its unfinished range was not marked complete.")
-        reserve_credit(db, settings)
+        cap = settings.market_data_max_calls_per_job if name == "yfinance" else settings.marketstack_max_calls_per_job
+        if current["calls"] >= cap:
+            raise MarketDataError("job_request_limit", "This job reached its request safety limit. Its unfinished range was not marked complete.")
+        if name == "marketstack":
+            reserve_credit(db, settings)
         checkpoint(increments={"calls": 1})
 
     try:
-        if not settings.marketstack_api_key.get_secret_value():
-            raise MarketstackError("not_configured", "The worker has no MARKETSTACK_API_KEY configured.")
+        if name == "marketstack" and not settings.marketstack_api_key.get_secret_value():
+            raise MarketDataError("not_configured", "The worker has no legacy provider credentials configured.")
         listing = job["listing"]
         isin = job["instrument_id"]
-        with provider_factory(settings.marketstack_api_key.get_secret_value(), before_request=before_request) as provider:
+        client = (provider_factory(settings.marketstack_api_key.get_secret_value(), before_request=before_request)
+                  if provider_factory else provider_client(settings, name, before_request))
+        with client as provider:
             if not listing:
                 checkpoint({"phase": "resolving_listing"})
                 # A DB interruption can leave a cached mapping before the job
@@ -478,7 +555,11 @@ def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
                 state = db.instrument_state.find_one({"_id": isin}) or {}
                 listing = state.get("listing")
                 if not listing:
-                    listing, resolution = resolve_listing(provider, job["lookup_ticker"], isin)
+                    if name == "yfinance":
+                        listing, resolution = provider.resolve_listing(job["lookup_ticker"], isin)
+                        resolution = {**resolution, "collected_at": utcnow()}
+                    else:
+                        listing, resolution = resolve_listing(provider, job["lookup_ticker"], isin)
                     checkpoint()
                     # Checkpointing alone cannot fence a paused worker's next
                     # write. Install only into an empty cache; a replacement
@@ -500,7 +581,8 @@ def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
                 collected = utcnow()
                 checkpoint()
                 db.instruments.update_one({"job_id": job_id}, {"$setOnInsert": {
-                    "instrument_id": isin, **listing, "provider": "marketstack", "job_id": job_id,
+                    "instrument_id": isin, **listing, "provider": name, "job_id": job_id,
+                    "published": name != "yfinance",
                     "collected_at": collected, "collection_date": collected.date().isoformat(), "data": data,
                 }}, upsert=True)
             job = checkpoint({"phase": "quotes"})
@@ -514,7 +596,7 @@ def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
                     checkpoint()
                     raw = db.raw_eod_pages.find_one_and_update(
                         {"job_id": job_id, "offset": offset}, {"$setOnInsert": {
-                            "instrument_id": isin, **listing, "provider": "marketstack",
+                            "instrument_id": isin, **listing, "provider": name,
                             "job_id": job_id, "offset": offset, "collected_at": collected,
                             "collection_date": collected.date().isoformat(), "data": page,
                         }}, upsert=True, return_document=ReturnDocument.AFTER,
@@ -533,7 +615,7 @@ def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
                         unindexed += 1
                         continue
                     db.quotes.update_one({"job_id": job_id, "date": day}, {"$setOnInsert": {
-                        "instrument_id": isin, **listing, "provider": "marketstack", "job_id": job_id,
+                        "instrument_id": isin, **listing, "provider": name, "job_id": job_id,
                         "date": day, "collected_at": collected, "collection_date": collected.date().isoformat(),
                         "data": row,
                     }}, upsert=True)
@@ -561,12 +643,22 @@ def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
             while not job.get("splits_complete"):
                 raw = db.raw_split_pages.find_one({"job_id": job_id, "offset": split_offset})
                 if raw is None:
-                    page = provider.splits_page(listing["symbol"], job["splits_date_from"], job["splits_date_to"], offset=split_offset)
-                    collected = utcnow()
+                    if name == "yfinance":
+                        from yahoo_finance import splits_from_eod_page
+                        evidence = db.raw_eod_pages.find_one({"job_id": job_id, "offset": 0})
+                        if evidence is None or (job["splits_date_from"], job["splits_date_to"]) != (job["date_from"], job["date_to"]):
+                            raise MarketDataError("missing_action_evidence", "The saved Yahoo chart does not cover the action range. Request full history again.")
+                        # Yahoo's chart includes actions. Derive from the exact
+                        # persisted response, including after a worker restart.
+                        page = splits_from_eod_page(evidence["data"], listing["symbol"], job["splits_date_from"], job["splits_date_to"])
+                        collected = evidence["collected_at"]
+                    else:
+                        page = provider.splits_page(listing["symbol"], job["splits_date_from"], job["splits_date_to"], offset=split_offset)
+                        collected = utcnow()
                     checkpoint()
                     raw = db.raw_split_pages.find_one_and_update(
                         {"job_id": job_id, "offset": split_offset}, {"$setOnInsert": {
-                            "instrument_id": isin, **listing, "provider": "marketstack",
+                            "instrument_id": isin, **listing, "provider": name,
                             "job_id": job_id, "offset": split_offset, "collected_at": collected,
                             "collection_date": collected.date().isoformat(), "data": page,
                         }}, upsert=True, return_document=ReturnDocument.AFTER,
@@ -576,10 +668,10 @@ def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
                 total = pagination_integer(page, "total")
                 expected = job.get("expected_split_total")
                 if total is not None and (total < split_offset or (expected is not None and total != expected)):
-                    raise MarketstackError("inconsistent_split_history", "Marketstack changed split pagination totals. Retry market data; the unfinished range was not marked complete.")
+                    raise MarketstackError("inconsistent_split_history", "The provider changed split pagination totals. Retry market data; the unfinished range was not marked complete.")
                 total = total if total is not None else expected
                 if not page["data"] and total is not None and total > split_offset:
-                    raise MarketstackError("incomplete_split_history", "Marketstack ended split pagination before all actions were returned. Retry market data; the unfinished range was not marked complete.")
+                    raise MarketstackError("incomplete_split_history", "The provider ended split pagination before all actions were returned. Retry market data; the unfinished range was not marked complete.")
                 more = split_offset < total if total is not None else has_more_pages(page, split_offset)
                 job = checkpoint({"next_split_offset": split_offset, "expected_split_total": total, "splits_complete": not more})
             if db.split_snapshots.find_one({"_id": job_id}) is None:
@@ -587,9 +679,26 @@ def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
                                       job["splits_date_from"], job["splits_date_to"])
                 checkpoint()
                 db.split_snapshots.update_one({"_id": job_id}, {"$setOnInsert": {
-                    "instrument_id": isin, **listing, "collected_at": utcnow(), "requested_at": job["requested_at"],
+                    "instrument_id": isin, **listing, "job_id": job_id, "provider": name,
+                    "collected_at": utcnow(), "requested_at": job["requested_at"],
                     "date_from": job["splits_date_from"], "date_to": job["splits_date_to"], "events": events,
                 }}, upsert=True)
+        if name == "yfinance":
+            if not db.quotes.find_one({"job_id": job_id}):
+                raise MarketDataError("empty_history", "Yahoo returned no dated quotes. Previous saved history remains active.")
+            checkpoint({"phase": "publishing"})
+            # One immutable publication selects one generation for prices,
+            # profile and splits. Retry acknowledgement loss is idempotent.
+            db.market_data_publications.update_one({"_id": job_id}, {"$setOnInsert": {
+                "instrument_id": isin, **listing, "provider": name,
+                "price_basis": "provider_split_adjusted", "published_at": utcnow(),
+            }}, upsert=True)
+            # This single conditional job write is the visibility boundary.
+            # If an expired/replaced worker pauses before it, the owner/status
+            # predicate fails on resume; an earlier checkpoint is not enough.
+            publication = db.market_data_publications.find_one({"_id": job_id})
+            job = checkpoint({"published": True, "published_at": publication["published_at"]})
+            db.instruments.update_one({"job_id": job_id}, {"$set": {"published": True}})
         # Derived analytics never rewrite provider evidence. Persist them before
         # reporting success; DB retries replay saved pages without provider calls.
         from return_statistics import refresh_statistics
@@ -606,7 +715,7 @@ def run_acquisition(db, settings, job_id, provider_factory=MarketstackClient):
         summary = coverage(require_catalogue(db, isin), quote_dates(db, isin, listing))
         warning = summary["warning"]
         if job["rows"] == 0:
-            warning = "Marketstack returned no quotes for this range. No dates were marked as received." + (" " + warning if warning else "")
+            warning = "The provider returned no quotes for this range. No dates were marked as received." + (" " + warning if warning else "")
         if job.get("unindexed_rows", 0):
             warning = f"{job['unindexed_rows']} row(s) without a usable date are retained in raw EOD pages, but cannot be shown in dated quote history." + (" " + warning if warning else "")
         db.acquisition_jobs.update_one(owned, {"$set": {"status": "succeeded", "active": False, "phase": "complete", "finished_at": utcnow(), "warning": warning, "error": None}, "$unset": {"error_code": ""}})

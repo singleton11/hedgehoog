@@ -15,6 +15,7 @@ from market_data import acquired_instruments, budget_status, instrument_detail, 
 
 router = APIRouter(prefix="/instruments", tags=["instruments"])
 InstrumentId = Annotated[str, Path(pattern=r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")]
+Generation = Annotated[str | None, Query(pattern=r"^(?:legacy|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$")]
 
 
 class AcquisitionRequest(BaseModel):
@@ -69,6 +70,7 @@ class QuoteResponse(BaseModel):
 
 
 class QuotesResponse(BaseModel):
+    generation: str
     as_of: datetime
     items: list[QuoteResponse]
     total: int
@@ -105,8 +107,8 @@ def detail(isin: InstrumentId, request: Request, user: CurrentUser, as_of: datet
 
 
 @router.get("/{isin}/statistics")
-def statistics(isin: InstrumentId, request: Request, user: CurrentUser):
-    return instrument_statistics(request.app.state.database, isin)
+def statistics(isin: InstrumentId, request: Request, user: CurrentUser, generation: Generation = None):
+    return instrument_statistics(request.app.state.database, isin, generation)
 
 
 @router.patch("/{isin}/price-currency")
@@ -130,8 +132,8 @@ def delete_manual_split(isin: InstrumentId, split_id: UUID, request: Request, us
 
 
 @router.get("/{isin}/quotes", response_model=QuotesResponse, response_model_exclude_unset=True)
-def quotes(isin: InstrumentId, request: Request, user: CurrentUser, limit: Annotated[int, Query(ge=1, le=1000)] = 1000, offset: Annotated[int, Query(ge=0)] = 0, as_of: datetime | None = None):
-    return read_quotes(request.app.state.database, isin, limit, offset, knowledge_time(as_of))
+def quotes(isin: InstrumentId, request: Request, user: CurrentUser, limit: Annotated[int, Query(ge=1, le=1000)] = 1000, offset: Annotated[int, Query(ge=0)] = 0, as_of: datetime | None = None, generation: Generation = None):
+    return read_quotes(request.app.state.database, isin, limit, offset, knowledge_time(as_of), generation)
 
 
 @router.post("/{isin}/acquisitions", status_code=202)

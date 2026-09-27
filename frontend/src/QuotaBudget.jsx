@@ -31,9 +31,13 @@ export default function QuotaBudget() {
     };
   }, [request]);
 
-  return <div className="budget" role="group" aria-label="Quota budget">
-    {budget ? <><p title={`${budget.month} · ${budget.used} used. Excludes requests outside Hedgehoog.`}>
-      <strong>Local budget:</strong> {budget.remaining.toLocaleString()} / {budget.limit.toLocaleString()} calls left
-    </p><span className="budget-track" aria-hidden="true"><span style={{ width: `${budget.limit > 0 ? Math.max(0, Math.min(100, budget.remaining / budget.limit * 100)) : 0}%` }} /></span></> : <p className="muted">{loading ? 'Loading local budget…' : 'Local budget unavailable.'}</p>}
+  const unlimited = budget && budget.metered === false;
+  const label = budget?.provider === 'yfinance' ? 'Yahoo Finance · experimental' : 'Local budget';
+  return <div className="budget" role="group" aria-label="Provider status">
+    {budget ? <>{unlimited ? <p title={`${budget.month} · unmetered experimental provider.`}>
+      <strong>{label}</strong>
+    </p> : <><p title={`${budget.month} · ${budget.used} used. Excludes requests outside Hedgehoog.`}>
+      <strong>{label}:</strong> {budget.remaining.toLocaleString()} / {budget.limit.toLocaleString()} calls left
+    </p><span className="budget-track" aria-hidden="true"><span style={{ width: `${budget.limit > 0 ? Math.max(0, Math.min(100, budget.remaining / budget.limit * 100)) : 0}%` }} /></span></>}</> : <p className="muted">{loading ? 'Loading provider status…' : 'Provider status unavailable.'}</p>}
   </div>;
 }

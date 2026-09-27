@@ -18,7 +18,7 @@ function mockServer(initialUser = null) {
     }
     if (url === '/api/auth/logout') { user = null; return response(204); }
     if (!user) return response(401, { detail: 'Authentication required' });
-    if (url === '/api/instruments/budget') return response(200, { month: '2026-09', limit: 10000, used: 125, remaining: 9875 });
+    if (url === '/api/instruments/budget') return response(200, { provider: 'yfinance', metered: false, month: '2026-09', used: 0, limit: null, remaining: null });
     if (url.startsWith('/api/instruments/acquired?')) return response(200, { items: [], total: 0, limit: 20, offset: 0 });
     throw new Error(`Unexpected URL ${url}`);
   });
@@ -38,15 +38,15 @@ describe('logo navigation', () => {
     const logo = screen.getByRole('link', { name: 'Hedgehoog' });
     expect(logo).toHaveAttribute('href', '#/');
     const header = logo.closest('header');
-    const budget = within(header).getByRole('group', { name: 'Quota budget' });
-    await waitFor(() => expect(budget).toHaveTextContent('9,875 / 10,000 calls left'));
+    const budget = within(header).getByRole('group', { name: 'Provider status' });
+    await waitFor(() => expect(budget).toHaveTextContent('Yahoo Finance · experimental'));
     expect(within(header).getByText('admin')).toBeInTheDocument();
 
     await user.click(logo);
 
     expect(await screen.findByText('No acquired ETFs yet')).toBeInTheDocument();
     expect(window.location.hash).toBe('#/');
-    expect(screen.getByRole('group', { name: 'Quota budget' })).toBe(budget);
+    expect(screen.getByRole('group', { name: 'Provider status' })).toBe(budget);
     expect(screen.queryByRole('heading', { name: 'Customers', level: 2 })).not.toBeInTheDocument();
   });
 });

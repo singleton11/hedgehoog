@@ -17,7 +17,7 @@ const detail = (isin = A, extra = {}) => ({
   instrument_id: isin, catalogue: { ...item(isin, isin === A ? 'iShares S&amp;P ETF' : 'Second ETF'), inception_date: '2010-05-19', unknown: { holdings: [{ label: 'Nested &amp; raw', amount: null }] } },
   listing: null, profile: null, acquisition: null, price_currency_override: null,
   summary: { quote_count: 0, first_date: null, last_date: null, requested_from: null, history_status: 'not_requested', warning: null },
-  provider_configured: true, budget: { limit: 10000, used: 0, remaining: 10000, month: '2026-09' }, ...extra,
+  provider: 'yfinance', price_basis: 'provider_split_adjusted', provider_configured: true, budget: null, ...extra,
 });
 function withData(isin = A, extra = {}) {
   return detail(isin, { listing: { symbol: 'SXR8.DE', exchange: 'XETR' }, profile: { collected_at: '2026-09-17T10:00:01Z', collection_date: '2026-09-17', data: { name: 'Full profile', nested: { future_unknown: [null, 'opaque', { special: '<script>bad()</script>' }] } } },
@@ -57,7 +57,7 @@ function mockServer() {
     if (url === '/api/auth/me') return response(200, user);
     if (url === '/api/') return response(200, { message: 'Hello, World!' });
     if (url === '/api/auth/logout') return response(204);
-    if (url === '/api/instruments/budget') return response(200, server.details[A].budget);
+    if (url === '/api/instruments/budget') return response(200, { provider: 'yfinance', metered: false, month: '2026-09', used: 0, limit: null, remaining: null });
     const parsed = new URL(url, 'http://localhost');
     if (parsed.pathname === '/api/instruments/acquired') return response(200, await server.acquired(parsed.searchParams, options));
     if (parsed.pathname === '/api/instruments/search') return response(200, { items: await server.search(parsed.searchParams.get('q'), options) });
@@ -96,9 +96,9 @@ async function review(name = 'Request Data') {
   fireEvent.click(screen.getByRole('button', { name }));
   await flush();
 }
-const authorization = () => screen.getByRole('checkbox', { name: 'Allow this request to use provider quota.' });
+const authorization = () => screen.getByRole('checkbox', { name: 'Allow this request to fetch Yahoo Finance data.' });
 const manualOverride = () => screen.getByRole('checkbox', { name: /Manual listing override/ });
-const estimateText = () => screen.getByText('Estimated provider calls:').closest('p');
+const estimateText = () => screen.getByText('Provider requests:').closest('p');
 async function confirmInitial() {
   await review();
   fireEvent.click(authorization());
@@ -154,7 +154,7 @@ describe('manual price currency', () => {
     await open(A);
     expect(screen.queryByRole('combobox', { name: 'Price currency' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Save currency' })).not.toBeInTheDocument();
-    expect(screen.getByText(`Unadjusted OHLC · Listing price currency: ${currency}`)).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(`Provider split-adjusted OHLC · Listing price currency: ${currency}`))).toBeInTheDocument();
     expect(server.currencySaves()).toHaveLength(0);
   });
 
@@ -211,14 +211,14 @@ describe('manual price currency', () => {
       method: 'PATCH', body: JSON.stringify({ price_currency: currency }), credentials: 'same-origin', signal: expect.any(AbortSignal),
     })]);
     expect(screen.queryByRole('form', { name: 'Set price currency' })).not.toBeInTheDocument();
-    expect(screen.getByText(`Unadjusted OHLC · Listing price currency: ${currency} (manual)`)).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(`Provider split-adjusted OHLC · Listing price currency: ${currency} \\(manual\\)`))).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Save currency' })).not.toBeInTheDocument();
     expect(JSON.parse(screen.getByLabelText('Quote observations (current window, all provider fields)').textContent)).toEqual([quote()]);
     await navigate(B);
     expect(screen.getByRole('combobox', { name: 'Price currency' })).toHaveValue('');
     await navigate(A);
     expect(screen.queryByRole('combobox', { name: 'Price currency' })).not.toBeInTheDocument();
-    expect(screen.getByText(`Unadjusted OHLC · Listing price currency: ${currency} (manual)`)).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(`Provider split-adjusted OHLC · Listing price currency: ${currency} \\(manual\\)`))).toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
   });
 
@@ -577,7 +577,7 @@ describe('acquired ETF market-data updates', () => {
   const staleAcquiredItem = (isin = A, extra = {}) => acquiredItem(isin, { collected_at: '2026-09-16T12:00:00Z', ...extra });
   const row = (name = 'iShares S&P ETF') => within(screen.getByRole('link', { name }).closest('tr'));
   async function confirmUpdate(all = false) {
-    fireEvent.click(screen.getByRole('checkbox', { name: /Allow .*updates? to use provider quota/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /Allow .*updates? to fetch Yahoo Finance data/ }));
     fireEvent.click(screen.getByRole('button', { name: all ? 'Confirm update all' : 'Confirm update' }));
     await flush();
   }
@@ -1032,9 +1032,10 @@ describe('acquisition estimates', () => {
     ['manual', null, true, 0, 3, 8],
   ])('includes lookup only for %s automatic listings', (_, listing, manual, lookupCalls, minimumCalls, calls) => {
     const instrument = detail(A, { listing });
-    expect(acquisitionEstimate(instrument, 'update', manual)).toMatchObject({ lookupCalls, minimumCalls, pages: 6, calls });
+    expect(acquisitionEstimate(instrument, 'update', manual)).toMatchObject({ lookupCalls, minimumCalls: 0, pages: null, calls: null });
+    expect(acquisitionEstimate(instrument, 'update', manual).range).toBe('Full history from 2010-05-19 to latest available');
     instrument.catalogue.inception_date = null;
-    expect(acquisitionEstimate(instrument, 'update', manual)).toMatchObject({ lookupCalls, minimumCalls, pages: null, calls: null });
+    expect(acquisitionEstimate(instrument, 'update', manual)).toMatchObject({ lookupCalls, minimumCalls: 0, pages: null, calls: null });
   });
 });
 
@@ -1050,15 +1051,15 @@ describe('explicit acquisition and complete charts', () => {
     expect(manualOverride()).not.toBeChecked();
     const requestDetails = screen.getByText('Request details').closest('details');
     expect(requestDetails).not.toHaveAttribute('open');
-    expect(screen.getByText(/first named, EOD-enabled exact ticker.exchange match/)).not.toBeVisible();
+    expect(screen.getByText(/Yahoo Finance listing from Yahoo Search/)).not.toBeVisible();
     expect(screen.queryByText(/Listing selection is not ISIN verification/)).not.toBeInTheDocument();
-    expect(estimateText()).toHaveTextContent('About 9. Actual usage may vary.');
-    expect(screen.getAllByText('Local budget:')).toHaveLength(1);
-    expect(screen.getByRole('heading', { name: 'Hedgehoog' }).closest('header')).toContainElement(screen.getByText('Local budget:'));
-    expect(within(screen.getByRole('region', { name: 'Market data acquisition' })).queryByText('Local budget:')).not.toBeInTheDocument();
+    expect(estimateText()).toHaveTextContent('Yahoo Finance is experimental and unmetered here; exact underlying HTTP calls are not estimated.');
+    expect(screen.getAllByText('Yahoo Finance · experimental')).toHaveLength(1);
+    expect(screen.getByRole('heading', { name: 'Hedgehoog' }).closest('header')).toContainElement(screen.getByText('Yahoo Finance · experimental'));
+    expect(within(screen.getByRole('region', { name: 'Market data acquisition' })).queryByText('Yahoo Finance · experimental')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('Request details'));
     expect(requestDetails).toHaveAttribute('open');
-    expect(screen.getByText(/Ticker lookup may need extra pages/)).toBeVisible();
+    expect(screen.getByText(/full Yahoo Finance price history/)).toBeVisible();
     expect(authorization()).not.toBeChecked();
     expect(server.posts()).toHaveLength(0);
     expect(screen.getByRole('button', { name: 'Confirm request' })).toBeDisabled();
@@ -1078,7 +1079,7 @@ describe('explicit acquisition and complete charts', () => {
     server.details[A] = withData(A, { acquisition: job('succeeded'), summary: { quote_count: 1001, first_date: '2020-01-01', last_date: server.quotes[A].at(-1).date, requested_from: '2010-05-19', history_status: 'partial', warning: 'Plan or listing history truncated.' } });
     await advance(POLL_INTERVAL);
     expect(screen.getByText('Acquisition: succeeded')).toBeInTheDocument();
-    expect(screen.getByRole('img', { name: /Unadjusted OHLC candlestick chart/ })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Provider split-adjusted OHLC candlestick chart/ })).toBeInTheDocument();
     expect(screen.getByText('366 candles · 366 of 1001 quotes')).toBeInTheDocument();
     expect(screen.queryByText('Plan or listing history truncated.')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Update Data' })).toBeEnabled();
@@ -1099,14 +1100,14 @@ describe('explicit acquisition and complete charts', () => {
     server.details[A] = withData();
     server.quotes[A] = [quote()];
     await open(A);
-    const chart = () => screen.getByRole('img', { name: /Unadjusted OHLC/ });
+    const chart = () => screen.getByRole('img', { name: /Provider split-adjusted OHLC/ });
     expect(chart()).toBeInTheDocument();
     await review('Update Data');
     expect(screen.queryByLabelText('Provider symbol')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Exchange MIC')).not.toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: /Manual listing override/ })).not.toBeInTheDocument();
     expect(screen.getByText('Listing:').closest('p')).toHaveTextContent('SXR8.DE / XETR · Locked');
-    expect(estimateText()).toHaveTextContent('About 5. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('Yahoo Finance is experimental and unmetered here; exact underlying HTTP calls are not estimated.');
     fireEvent.click(authorization());
     fireEvent.click(screen.getByRole('button', { name: 'Confirm update' }));
     await flush();
@@ -1129,9 +1130,9 @@ describe('explicit acquisition and complete charts', () => {
     server.quotes[A] = [quote()];
     await open(A);
     await review('Retry Older History');
-    expect(screen.getByText(/From 2010-05-19 to before 2020-01-01/)).toBeInTheDocument();
+    expect(screen.getByText(/Full history from 2010-05-19 to latest available/)).toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
-    expect(estimateText()).toHaveTextContent('About 6. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('Yahoo Finance is experimental and unmetered here; exact underlying HTTP calls are not estimated.');
     expect(screen.queryByRole('checkbox', { name: /Manual listing override/ })).not.toBeInTheDocument();
     fireEvent.click(authorization());
     fireEvent.click(screen.getByRole('button', { name: 'Confirm older history' }));
@@ -1152,7 +1153,8 @@ describe('explicit acquisition and complete charts', () => {
     expect(screen.getByLabelText('Provider symbol')).toHaveValue('WRONG');
     expect(screen.getByLabelText('Provider symbol')).toBeEnabled();
     expect(screen.getByLabelText('Exchange MIC')).toBeEnabled();
-    expect(screen.getByRole('link', { name: /Marketstack ticker workbook/ })).toHaveAttribute('href', 'https://marketstack.com/download/v2_eod_tickers_finnworlds_tiingo.xlsx');
+    expect(screen.getByRole('link', { name: 'EUNL.DE' })).toHaveAttribute('href', 'https://finance.yahoo.com/quote/EUNL.DE');
+    expect(screen.getByRole('link', { name: 'IWDA.AS' })).toHaveAttribute('href', 'https://finance.yahoo.com/quote/IWDA.AS');
     fireEvent.change(screen.getByLabelText('Provider symbol'), { target: { value: 'SXR8.DE' } });
     fireEvent.change(screen.getByLabelText('Exchange MIC'), { target: { value: 'xetr' } });
     fireEvent.click(authorization());
@@ -1174,8 +1176,8 @@ describe('explicit acquisition and complete charts', () => {
     expect(screen.queryByLabelText('Provider symbol')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Exchange MIC')).not.toBeInTheDocument();
     expect(manualOverride()).not.toBeChecked();
-    expect(estimateText()).toHaveTextContent('About 8. Actual usage may vary.');
-    expect(screen.getByText(/1 profile call/)).not.toHaveTextContent('ticker-list lookup');
+    expect(estimateText()).toHaveTextContent('Yahoo Finance is experimental and unmetered here; exact underlying HTTP calls are not estimated.');
+    expect(screen.getByText(/Yahoo Search lookup/)).toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
     fireEvent.click(authorization());
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
@@ -1190,14 +1192,14 @@ describe('explicit acquisition and complete charts', () => {
     fireEvent.click(authorization());
     fireEvent.click(manualOverride());
     expect(authorization()).not.toBeChecked();
-    expect(estimateText()).toHaveTextContent('About 8. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('Yahoo Finance is experimental and unmetered here; exact underlying HTTP calls are not estimated.');
     fireEvent.change(screen.getByLabelText('Provider symbol'), { target: { value: 'OVERRIDE.US' } });
     fireEvent.change(screen.getByLabelText('Exchange MIC'), { target: { value: 'XNYS' } });
     fireEvent.click(authorization());
     fireEvent.click(manualOverride());
     expect(authorization()).not.toBeChecked();
     expect(screen.queryByLabelText('Provider symbol')).not.toBeInTheDocument();
-    expect(estimateText()).toHaveTextContent('About 9. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('Yahoo Finance is experimental and unmetered here; exact underlying HTTP calls are not estimated.');
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
     expect(server.posts()).toHaveLength(0);
     fireEvent.click(authorization());
@@ -1206,26 +1208,21 @@ describe('explicit acquisition and complete charts', () => {
     expect(JSON.parse(server.posts()[0][1].body)).toEqual({ confirmed: true, mode: 'update' });
   });
 
-  it('requires 4 calls for unresolved acquisition but only 3 to reuse a cached listing including splits', async () => {
+  it('allows Yahoo requests when budget is null or explicitly unmetered with zero limits', async () => {
     const server = mockServer();
-    const budget = { month: '2026-09', used: 9997, limit: 10000, remaining: 3 };
-    server.details[A].budget = budget;
     server.details[A].catalogue.inception_date = null;
-    server.details[B] = detail(B, { listing: { symbol: 'ETF.DE', exchange: 'XETR' }, budget });
+    server.details[B] = detail(B, { listing: { symbol: 'ETF.DE', exchange: 'XETR' }, budget: { provider: 'yfinance', metered: false, month: '2026-09', used: 0, limit: 0, remaining: 0 } });
     server.details[B].catalogue.inception_date = null;
     await open(A);
-    expect(screen.getByText(/Insufficient local budget/)).toHaveTextContent('Requires 4 calls with automatic lookup.');
+    expect(screen.queryByText(/Insufficient local budget/)).not.toBeInTheDocument();
     await review();
-    expect(estimateText()).toHaveTextContent('At least 4. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('Yahoo Finance is experimental and unmetered here; exact underlying HTTP calls are not estimated.');
     fireEvent.click(authorization());
-    expect(screen.getByRole('button', { name: 'Confirm request' })).toBeDisabled();
-    fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
-    expect(server.posts()).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Confirm request' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await navigate(B);
     expect(screen.queryByText(/Insufficient local budget/)).not.toBeInTheDocument();
     await review();
-    expect(estimateText()).toHaveTextContent('At least 3. Actual usage may vary.');
     fireEvent.click(authorization());
     expect(screen.getByRole('button', { name: 'Confirm request' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Confirm request' }));
@@ -1242,7 +1239,7 @@ describe('explicit acquisition and complete charts', () => {
     await open(A);
     await review();
     fireEvent.click(manualOverride());
-    expect(estimateText()).toHaveTextContent('At least 3. Actual usage may vary.');
+    expect(estimateText()).toHaveTextContent('Yahoo Finance is experimental and unmetered here; exact underlying HTTP calls are not estimated.');
     expect(screen.queryByText(/This request needs at least/)).not.toBeInTheDocument();
     fireEvent.click(authorization());
     fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
@@ -1310,7 +1307,7 @@ describe('explicit acquisition and complete charts', () => {
     server.quotes[A] = [quote(0, { open: '1', high: '1', low: '1', close: '0.99999999999999999999999999999', quality_flags: ['ohlc_bounds'] })];
     await open(A);
     expect(screen.getByText('1 candle · 1 of 1 quotes')).toBeInTheDocument();
-    expect(screen.getByRole('img', { name: /Unadjusted OHLC/ })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Provider split-adjusted OHLC/ })).toBeInTheDocument();
   });
 
   it('retains WEBN null-close quotes while plotting available, zero and negative prices', async () => {
@@ -1366,11 +1363,11 @@ describe('explicit acquisition and complete charts', () => {
     server.details[A] = detail(A, { provider_configured: false });
     await open(A);
     expect(screen.getByRole('button', { name: 'Request Data' })).toBeDisabled();
-    expect(screen.getByText(/Marketstack is not configured/)).toBeInTheDocument();
-    server.details[B] = detail(B, { budget: { month: '2026-09', used: 99, limit: 100, remaining: 1 } });
+    expect(screen.getByText(/Market data provider is not configured/)).toBeInTheDocument();
+    server.details[B] = detail(B, { provider_configured: true, budget: { provider: 'yfinance', metered: false, month: '2026-09', used: 0, limit: 0, remaining: 0 } });
     await navigate(B);
-    expect(screen.getByRole('button', { name: 'Request Data' })).toBeDisabled();
-    expect(screen.getByText(/Insufficient local budget/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Request Data' })).toBeEnabled();
+    expect(screen.queryByText(/Insufficient local budget/)).not.toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
   });
 });
@@ -1384,7 +1381,7 @@ describe('polling, navigation races and cleanup', () => {
     server.read = async () => { throw new Error('offline'); };
     await advance(POLL_INTERVAL);
     expect(screen.getByText(/Could not refresh acquisition status/)).toHaveTextContent('Polling will retry automatically');
-    expect(screen.getByRole('img', { name: /Unadjusted OHLC/ })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Provider split-adjusted OHLC/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Update Data' })).toBeDisabled();
     server.read = async () => ({ ...server.details[A], acquisition: job('running') });
     fireEvent.click(screen.getByRole('button', { name: 'Retry polling' }));
@@ -1540,7 +1537,7 @@ describe('polling, navigation races and cleanup', () => {
     server.page = async () => ({ items: [quote()], total: 1, offset: 0, limit: 1000 });
     fireEvent.click(screen.getByRole('button', { name: 'Retry chart' }));
     await flush();
-    expect(screen.getByRole('img', { name: /Unadjusted OHLC/ })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Provider split-adjusted OHLC/ })).toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
   });
 });

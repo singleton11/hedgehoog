@@ -39,7 +39,7 @@ function quotesInRange(quotes, range) {
   return quotes.filter((quote) => quote.date >= firstDate);
 }
 
-export default function CandlestickChart({ quotes, priceCurrencyOverride = null }) {
+export default function CandlestickChart({ quotes, priceCurrencyOverride = null, priceBasis = null }) {
   const [range, setRange] = useState('1y');
   const [hover, setHover] = useState(null);
   const id = useId();
@@ -61,6 +61,9 @@ export default function CandlestickChart({ quotes, priceCurrencyOverride = null 
   const dateTicks = [...new Set([0, Math.floor((candles.length - 1) / 2), candles.length - 1])].filter((index) => index >= 0);
   const number = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 7 });
 
+  const providerAdjusted = priceBasis === 'provider_split_adjusted';
+  const basisLabel = providerAdjusted ? 'Provider split-adjusted OHLC' : 'Unadjusted OHLC';
+
   return <section aria-label="Price history" className="price-history">
     <div className="section-heading"><h2>Price history</h2>
       <div className="button-group" role="group" aria-label="Chart window">
@@ -69,12 +72,12 @@ export default function CandlestickChart({ quotes, priceCurrencyOverride = null 
             onClick={() => { setRange(value); setHover(null); }}>{value}</button>)}
       </div>
     </div>
-    <p className="muted">Unadjusted OHLC · Listing price currency: {currency}{priceCurrencyOverride && ' (manual)'}</p>
+    <p className="muted">{basisLabel} · Listing price currency: {currency}{priceCurrencyOverride && ' (manual)'}{providerAdjusted && ' · Adj Close kept separately; distributions are not reinvested'}</p>
     <p>{candles.length} {candles.length === 1 ? 'candle' : 'candles'} · {visible.length} of {quotes.length} quotes</p>
     {!candles.length ? <p role="status">No plottable OHLC candles available.</p> : <>
       <div className="chart-scroll" role="region" aria-label="Scrollable price chart" tabIndex={0}>
         <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby={`${id}-title ${id}-description`} onMouseLeave={() => setHover(null)}>
-          <title id={`${id}-title`}>Unadjusted OHLC candlestick chart</title>
+          <title id={`${id}-title`}>{basisLabel} candlestick chart</title>
           <desc id={`${id}-description`}>{candles.length} candles from {candles[0].quote.date} to {candles.at(-1).quote.date}. Green hollow candles close at or above open; red filled candles close below open. Exact values are available in the expandable quote observations below.</desc>
           {Array.from({ length: 5 }, (_, index) => {
             const value = min + (max - min) * index / 4;

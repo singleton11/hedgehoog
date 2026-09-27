@@ -371,7 +371,7 @@ This is an educational planning estimate, not a guaranteed investment plan.
 ## API and operation
 
 All endpoints require the existing authenticated session. POST and PATCH use the same
-Origin protections as other commands. None calls Marketstack or spends quota.
+Origin protections as other commands. None calls the market-data provider.
 
 ### Customers, goals and saved simulations
 

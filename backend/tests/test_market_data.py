@@ -78,7 +78,7 @@ def clock(monkeypatch):
 
 @pytest.fixture
 def config():
-    return Settings(_env_file=None, jwt_secret="test-secret-" * 5, marketstack_api_key="test-marketstack-key", marketstack_monthly_budget=30)
+    return Settings(_env_file=None, market_data_provider="marketstack", jwt_secret="test-secret-" * 5, marketstack_api_key="test-marketstack-key", marketstack_monthly_budget=30)
 
 
 @pytest.fixture
@@ -205,7 +205,7 @@ def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(
     refresh = Mock(wraps=return_statistics.refresh_statistics)
     monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
     item = md.acquired_instruments(db, limit=1)["items"][0]
-    refresh.assert_called_once_with(db, ISIN)
+    refresh.assert_called_once_with(db, ISIN, generation="legacy")
     assert db.instrument_statistics.count_documents({}) == 1  # Not the off-page ETF.
     logs = [math.log(1.1), math.log(0.9)]
     assert item["annualized_mean_log_return"] == pytest.approx(mean(logs) * 252)

@@ -9,7 +9,7 @@ from bson import Decimal128
 import market_data as md
 from split_adjustments import BASIS, adjusted_rows, load_split_snapshot
 
-MODEL_VERSION = 7
+MODEL_VERSION = 8
 TRADING_DAYS = 252
 MIN_RETURNS = 60
 YEAR_START_MAX_GAP_DAYS = 7
@@ -199,7 +199,7 @@ def calculate_statistics(rows):
     }
 
 
-def refresh_statistics(db, isin, *, force=False):
+def refresh_statistics(db, isin, *, force=False, generation=None):
     """Persist estimates after acquisition; lazily cover pre-feature/partial data.
 
     Observations are append-only. Their count, listing, split snapshot, model
@@ -209,11 +209,14 @@ def refresh_statistics(db, isin, *, force=False):
     state = db.instrument_state.find_one({"_id": isin}) or {}
     listing = state.get("listing")
     cutoff = md.utcnow()
-    query = md.listing_filter(isin, listing) if listing else {"instrument_id": isin, "symbol": {"$exists": False}}
+    generation = generation or md.history_generation(db, isin, listing, cutoff)
+    query = md.observation_filter(db, isin, listing, cutoff, generation) if listing else {"instrument_id": isin, "symbol": {"$exists": False}}
     query.update(collected_at={"$lte": cutoff}, date={"$lte": cutoff.date().isoformat()})
     count = db.quotes.count_documents(query) if listing else 0
-    splits = load_split_snapshot(db, isin, listing, cutoff)
+    splits = load_split_snapshot(db, isin, listing, cutoff, generation)
+    publication = md.published_history(db, isin, listing, cutoff, generation)
     signature = {"version": MODEL_VERSION, "listing": listing, "observations": count,
+                 "generation": publication["_id"] if publication else None,
                  "splits": {"id": splits["_id"], "error": splits.get("error")} if splits else None,
                  "day": cutoff.date().isoformat()}
     cached = db.instrument_statistics.find_one({"_id": isin})
@@ -248,10 +251,10 @@ def refresh_statistics(db, isin, *, force=False):
     return statistics, state
 
 
-def instrument_statistics(db, isin):
+def instrument_statistics(db, isin, generation=None):
     catalogue = md.require_catalogue(db, isin)
     md.expire_stalled_jobs(db, isin)
-    estimates, state = refresh_statistics(db, isin)
+    estimates, state = refresh_statistics(db, isin, generation=generation)
     estimates = estimates.copy()
     currencies = set(estimates.pop("provider_currencies"))
     unknown = estimates.pop("unknown_currency")

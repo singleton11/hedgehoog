@@ -73,6 +73,7 @@ def read_splits(db, isin, as_of=None):
     merged = load_split_snapshot(db, isin, listing, cutoff)
     return md.public({
         "instrument_id": isin, "listing": listing,
+        "supported": not (provider and provider.get("provider") == "yfinance"),
         "manual": [public_event(event) for event in manual_events(db, isin, listing, cutoff)],
         "provider": (provider or {}).get("events", []),
         "error": (merged or {}).get("error"),
@@ -87,6 +88,9 @@ def add_split(db, isin, body, user_id):
     state = db.instrument_state.find_one({"_id": isin}) or {}
     if state.get("listing") != listing or not db.quotes.find_one(md.listing_filter(isin, listing), {"_id": 1}):
         raise md.DataError(409, "Save quotes for this listing before adding a manual split. Refresh instrument details.")
+    publication = md.published_history(db, isin, listing)
+    if publication and publication["provider"] == "yfinance":
+        raise md.DataError(409, "Yahoo prices are already split-adjusted. Manual split multiplication is not supported for this price basis.")
     inception = md.quote_date(catalogue.get("inception_date"))
     if inception and body.date < inception:
         raise md.DataError(422, "The split date cannot be before the ETF inception date")

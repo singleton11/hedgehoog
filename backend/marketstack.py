@@ -18,6 +18,8 @@ from typing import Any, Self
 
 import httpx
 
+from market_provider import MarketDataError
+
 
 _MESSAGES = {
     "authentication_error": "Marketstack authentication failed.",
@@ -45,16 +47,8 @@ _PROVIDER_ERRORS = {
 }
 
 
-class MarketstackError(Exception):
-    """An application-safe code and message, never a raw HTTP/provider exception."""
-
-    def __init__(self, code: str, message: str):
-        self.code = code
-        self.message = message
-        super().__init__(message)
-
-    def __str__(self) -> str:
-        return self.message
+# Compatibility for legacy fixtures/callers; application code uses the neutral error.
+MarketstackError = MarketDataError
 
 
 def _error(code: str) -> MarketstackError:

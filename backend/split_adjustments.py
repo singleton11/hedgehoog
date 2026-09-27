@@ -11,7 +11,7 @@ from bson import Decimal128
 from pymongo import DESCENDING
 
 import market_data as md
-from marketstack import MarketstackError
+from market_provider import MarketDataError
 
 BASIS = "split_adjusted_close"
 
@@ -46,16 +46,22 @@ def split_events(pages, listing, start, end):
                     raise ValueError
                 events[day] = factor
             except (ValueError, TypeError, DecimalException):
-                raise MarketstackError("invalid_split_history", "Split history contains invalid or conflicting actions. Raw evidence was saved; retry market data before using derived statistics.") from None
+                raise MarketDataError("invalid_split_history", "Split history contains invalid or conflicting actions. Raw evidence was saved; retry market data before using derived statistics.") from None
     return [{"date": day, "factor": str(factor)} for day, factor in sorted(events.items())]
 
 
-def load_provider_split_snapshot(db, isin, listing, cutoff):
+def load_provider_split_snapshot(db, isin, listing, cutoff, generation=None):
     if not listing:
         return None
+    generation = generation or md.history_generation(db, isin, listing, cutoff)
+    publication = md.published_history(db, isin, listing, cutoff, generation)
     snapshot = db.split_snapshots.find_one({
-        **md.listing_filter(isin, listing), "collected_at": {"$lte": cutoff},
+        **md.observation_filter(db, isin, listing, cutoff, generation), "collected_at": {"$lte": cutoff},
     }, sort=[("requested_at", DESCENDING), ("_id", DESCENDING)])
+    if publication and publication["provider"] == "yfinance":
+        # Yahoo actions are audit evidence, already reflected in Yahoo Close.
+        # A failed later refresh cannot invalidate the published generation.
+        return snapshot
     # New acquisitions must not silently fall back to uncorrected prices after
     # a failed/unfinished split download. Legacy data remains readable with a
     # warning until the first explicit refresh (no provider calls from reads).
@@ -68,11 +74,13 @@ def load_provider_split_snapshot(db, isin, listing, cutoff):
     return snapshot
 
 
-def load_split_snapshot(db, isin, listing, cutoff):
+def load_split_snapshot(db, isin, listing, cutoff, generation=None):
     """Overlay manual evidence without mutating or replacing provider snapshots."""
     from manual_splits import manual_events
 
-    snapshot = load_provider_split_snapshot(db, isin, listing, cutoff)
+    snapshot = load_provider_split_snapshot(db, isin, listing, cutoff, generation)
+    if snapshot and snapshot.get("provider") == "yfinance":
+        return snapshot  # Legacy manual adjustments must not affect Yahoo prices.
     manual = manual_events(db, isin, listing, cutoff)
     if not manual:
         return snapshot
@@ -103,6 +111,22 @@ def adjusted_rows(rows, snapshot):
     but future actions cannot change an earlier training prefix, even by
     floating-point rounding. Effective dates need not have a saved candle.
     """
+    if any(row.get("price_basis") == "provider_split_adjusted" for row in rows):
+        if not all(row.get("price_basis") == "provider_split_adjusted" for row in rows):
+            return [{**row, BASIS: None} for row in rows], ["Mixed provider price bases cannot be used for derived returns."]
+        result = []
+        for row in rows:
+            value = row.get("close")
+            corrected = None
+            try:
+                if not isinstance(value, bool) and value is not None:
+                    price = Decimal(str(value))
+                    if price.is_finite() and price > 0 and math.isfinite(float(price)):
+                        corrected = str(price)
+            except (DecimalException, ValueError, TypeError, OverflowError):
+                pass
+            result.append({**row, BASIS: corrected})
+        return result, ["Derived returns use Yahoo's already split-adjusted Close, without applying split factors again. Cash distributions are not reinvested; Adj Close is retained separately. Historical prices may be revised by Yahoo."]
     if snapshot is None:
         return rows, ["Split history has not been downloaded. Update market data to correct derived returns for splits."]
     error = snapshot.get("error")

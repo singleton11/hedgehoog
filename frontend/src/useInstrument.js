@@ -76,6 +76,7 @@ export default function useInstrument(isin) {
   // alone doesn't repeatedly reload quotes, and errors never erase prior data.
   const quoteVersion = detail ? JSON.stringify([
     detail.summary.quote_count, detail.summary.first_date, detail.summary.last_date,
+    detail.generation,
     pendingJob(detail.acquisition) ? null : detail.acquisition?.id,
     pendingJob(detail.acquisition) ? null : detail.acquisition?.status,
   ]) : null;
@@ -84,7 +85,8 @@ export default function useInstrument(isin) {
     const controller = new AbortController();
     setQuotesLoading(true);
     setQuotesError(null);
-    loadAllQuotes(request, isin, controller.signal).then((items) => {
+    const snapshot = { generation: latest.current?.generation, asOf: latest.current?.history_as_of };
+    loadAllQuotes(request, isin, controller.signal, snapshot).then((items) => {
       if (!controller.signal.aborted && items !== null) setQuotes(items);
     }).catch((error) => {
       if (!controller.signal.aborted) setQuotesError(error.message);

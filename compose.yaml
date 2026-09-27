@@ -51,9 +51,9 @@ services:
       # Host processes use localhost; containers resolve Compose service names.
       MONGODB_URI: ${WORKER_MONGODB_URI:-mongodb://${MONGO_ROOT_USERNAME:-hedgehoog}:${MONGO_ROOT_PASSWORD:-hedgehoog-local}@mongodb:27017/?authSource=admin}
       CELERY_BROKER_URL: ${WORKER_CELERY_BROKER_URL:-amqp://${RABBITMQ_USER:-hedgehoog}:${RABBITMQ_PASSWORD:-hedgehoog-local}@rabbitmq:5672//}
-      MARKETSTACK_API_KEY: ${MARKETSTACK_API_KEY:-}
-      MARKETSTACK_MONTHLY_BUDGET: ${MARKETSTACK_MONTHLY_BUDGET:-0}
-      MARKETSTACK_MAX_CALLS_PER_JOB: ${MARKETSTACK_MAX_CALLS_PER_JOB:-12}
+      MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-yfinance}
+      MARKET_DATA_MAX_CALLS_PER_JOB: ${MARKET_DATA_MAX_CALLS_PER_JOB:-40}
+      MARKET_DATA_TIMEOUT_SECONDS: ${MARKET_DATA_TIMEOUT_SECONDS:-15}
     # Module launch retains /app/backend on sys.path for task-time imports.
     command: ["python", "-m", "celery", "-A", "celery_app:app", "worker", "--loglevel=info", "--queues=etfs,marketdata", "--concurrency=1", "--hostname=etf-worker@%h"]
     depends_on:

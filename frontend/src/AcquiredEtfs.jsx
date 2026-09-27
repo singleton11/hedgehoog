@@ -36,9 +36,9 @@ function UpdateConfirmation({ selection, onConfirm, onCancel }) {
     if (confirmed) onConfirm();
   }}>
     <h3 ref={heading} tabIndex={-1}>Update {selection.isin ? selection.name : `all ${selection.total} acquired ETFs`}?</h3>
-    <p>{selection.isin ? 'Refresh the saved profile, split history and new quotes.' : 'Update acquired ETFs across all pages, skipping those collected 0 days ago (less than 24 hours). Keep this page open until all requests are submitted.'} Saved listings are reused; older-price backfills are not requested. Split history is refreshed for statistics and simulations, using at least one extra provider call per ETF; candles remain unadjusted.</p>
+    <p>{selection.isin ? 'Refresh the saved Yahoo Finance profile and full price history.' : 'Update acquired ETFs across all pages, skipping those collected 0 days ago (less than 24 hours). Keep this page open until all requests are submitted.'} Saved listings are reused; each submitted refresh fetches full history through the latest available trading day.</p>
     <label className="checkbox-label"><input type="checkbox" required checked={confirmed}
-      onChange={(event) => setConfirmed(event.target.checked)} />Allow {selection.isin ? 'this update' : 'these updates'} to use provider quota.</label>
+      onChange={(event) => setConfirmed(event.target.checked)} />Allow {selection.isin ? 'this update' : 'these updates'} to fetch Yahoo Finance data.</label>
     <div className="button-group"><button type="submit" disabled={!confirmed}>Confirm {selection.isin ? 'update' : 'update all'}</button>
       <button type="button" className="secondary" onClick={onCancel}>Cancel</button></div>
   </form>;

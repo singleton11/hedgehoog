@@ -31,7 +31,7 @@ def environment(monkeypatch):
     if not os.environ.get("TEST_MONGODB_URI"):
         pytest.skip("Set TEST_MONGODB_URI for isolated real Mongo tests")
     name = "hedgehoog_market_test_" + uuid4().hex
-    settings = Settings(_env_file=None, mongodb_uri=os.environ["TEST_MONGODB_URI"], mongodb_database=name,
+    settings = Settings(_env_file=None, market_data_provider="marketstack", mongodb_uri=os.environ["TEST_MONGODB_URI"], mongodb_database=name,
                         celery_broker_url=os.environ.get("TEST_CELERY_BROKER_URL", "amqp://unused//"),
                         jwt_secret="isolated-integration-secret-" * 3, marketstack_api_key="synthetic-only",
                         marketstack_monthly_budget=30)

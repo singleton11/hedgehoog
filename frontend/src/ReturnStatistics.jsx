@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
 
-export function useReturnStatistics(isin, refreshKey = '') {
+export function useReturnStatistics(isin, refreshKey = '', generation = null) {
   const { request } = useAuth();
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState({ key: null, data: null, error: null });
   const sequence = useRef(0);
   const controller = useRef(null);
-  const key = JSON.stringify([isin, refreshKey, attempt]);
+  const key = JSON.stringify([isin, refreshKey, generation, attempt]);
 
   useEffect(() => {
     const current = ++sequence.current;
@@ -16,7 +16,8 @@ export function useReturnStatistics(isin, refreshKey = '') {
     if (!isin) return () => abort.abort();
     async function load() {
       try {
-        const data = await request(`/instruments/${encodeURIComponent(isin)}/statistics`, { signal: abort.signal });
+        const suffix = generation ? `?generation=${encodeURIComponent(generation)}` : '';
+        const data = await request(`/instruments/${encodeURIComponent(isin)}/statistics${suffix}`, { signal: abort.signal });
         if (abort.signal.aborted || sequence.current !== current) return;
         if (data?.instrument_id !== isin || typeof data.eligible !== 'boolean' || !Array.isArray(data.warnings)
           || !Number.isInteger(data.return_count) || !Number.isInteger(data.price_count) || !Number.isInteger(data.quote_count)) {
@@ -57,11 +58,11 @@ export function formatReturn(value) {
   };
 }
 
-export const priceBasisLabel = (basis) => ({ split_adjusted_close: 'Split-adjusted close',
+export const priceBasisLabel = (basis) => ({ provider_split_adjusted: 'Provider split-adjusted close', split_adjusted_close: 'Split-adjusted close',
   adj_close: 'Adjusted close', close: 'Unadjusted close' }[basis] || 'Unavailable');
 
 export function historicalReturnTitle(statistics) {
-  const basis = statistics.historical_year_price_basis === 'split_adjusted_close'
+  const basis = ['split_adjusted_close', 'provider_split_adjusted'].includes(statistics.historical_year_price_basis)
     ? 'Split-adjusted closes; cash distributions are not reinvested'
     : statistics.historical_year_price_basis === 'adj_close'
       ? 'Adjusted closes' : 'Unadjusted closes; splits and distributions may affect the return';
@@ -71,7 +72,7 @@ export function historicalReturnTitle(statistics) {
 }
 
 export function historicalVolatilityTitle(statistics) {
-  const basis = statistics.historical_year_volatility_price_basis === 'split_adjusted_close'
+  const basis = ['split_adjusted_close', 'provider_split_adjusted'].includes(statistics.historical_year_volatility_price_basis)
     ? 'Split-adjusted closes; cash distributions are not reinvested'
     : statistics.historical_year_volatility_price_basis === 'adj_close'
       ? 'Adjusted closes' : 'Unadjusted closes; splits and distributions may affect volatility';
@@ -110,8 +111,8 @@ export function StatisticsSummary({ statistics, variant = 'planner' }) {
   </div>;
 }
 
-export default function ReturnStatistics({ isin, refreshKey }) {
-  const { data, error, loading, retry } = useReturnStatistics(isin, refreshKey);
+export default function ReturnStatistics({ isin, refreshKey, generation }) {
+  const { data, error, loading, retry } = useReturnStatistics(isin, refreshKey, generation);
   return <section aria-label="Return statistics">
     <h2>Return statistics</h2>
     {loading && <p role="status">Loading return statistics…</p>}

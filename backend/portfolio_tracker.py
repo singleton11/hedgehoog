@@ -115,7 +115,7 @@ def require_portfolio(db, owner, customer_id, portfolio_id):
 
 def quote_rows(db, instrument, now):
     """Latest observation per distinct effective date, on the pinned listing only."""
-    query = {**md.listing_filter(instrument["instrument_id"], instrument),
+    query = {**md.observation_filter(db, instrument["instrument_id"], instrument, now),
              "date": {"$lte": now.date().isoformat()}, "collected_at": {"$lte": now}}
     rows = db.quotes.aggregate([
         {"$match": query}, {"$sort": {"date": 1, "collected_at": -1, "_id": -1}},
@@ -147,7 +147,7 @@ def acquired_instrument(db, isin, now):
     if not all(isinstance(listing.get(key), str) and listing[key].strip() and len(listing[key].encode("utf-8")) <= 200
                for key in ("symbol", "exchange")):
         raise md.DataError(422, "Acquire a EUR instrument listing before trading.")
-    if not db.instruments.find_one(md.listing_filter(isin, listing)):
+    if not db.instruments.find_one(md.observation_filter(db, isin, listing, now)):
         raise md.DataError(422, "Acquire the selected instrument listing before trading.")
     catalogue = md.latest_catalogue(db, isin) or {}
     instrument = {"instrument_id": isin, "name": str(catalogue.get("name") or isin)[:200],

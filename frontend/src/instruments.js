@@ -38,20 +38,23 @@ export function olderJob(incoming, current) {
 export function acquisitionEstimate(detail, mode, manualOverride = false) {
   const summary = detail.summary;
   const inception = summary.requested_from || detail.catalogue?.inception_date;
-  const incremental = mode === 'update' && summary.quote_count > 0 && summary.last_date;
+  const yahoo = detail.provider === 'yfinance';
+  const incremental = !yahoo && mode === 'update' && summary.quote_count > 0 && summary.last_date;
   const start = incremental ? summary.last_date : inception;
   const timestamp = typeof start === 'string' ? Date.parse(start) : NaN;
   // Calendar days deliberately overestimate trading days. This is an estimate,
   // not a reservation or a claim that the provider will return older history.
-  const olderEnd = mode === 'backfill' && summary.first_date ? summary.first_date : null;
+  const olderEnd = !yahoo && mode === 'backfill' && summary.first_date ? summary.first_date : null;
   const end = olderEnd ? Date.parse(olderEnd) : Date.now();
   const days = Number.isFinite(timestamp) && Number.isFinite(end)
     ? Math.max(1, Math.ceil((end - timestamp) / 86400000) + 1) : null;
-  const pages = days === null ? null : Math.max(1, Math.ceil(days / 1000));
-  const from = incremental ? `New quotes after ${start}` : `From ${start || 'catalogue inception'}`;
-  // An unresolved automatic listing needs at least one tickerslist request;
-  // pagination can add more. Cached listings and manual overrides skip lookup.
+  const pages = yahoo ? null : days === null ? null : Math.max(1, Math.ceil(days / 1000));
+  const from = incremental ? `New quotes after ${start}` : `Full history from ${start || 'catalogue inception'}`;
+  // An unresolved automatic listing needs a provider lookup. Cached listings and
+  // manual overrides skip lookup. Yahoo Search is unmetered for Hedgehoog.
   const lookupCalls = detail.listing || manualOverride ? 0 : 1;
+  if (yahoo) return { pages, lookupCalls, minimumCalls: 0, calls: null,
+    range: `${from} ${olderEnd ? `to before ${olderEnd}` : 'to latest available'}` };
   return { pages, lookupCalls, minimumCalls: 3 + lookupCalls, calls: pages === null ? null : lookupCalls + 2 + pages,
     range: `${from} ${olderEnd ? `to before ${olderEnd}` : 'to latest available'}` };
 }
@@ -85,16 +88,18 @@ export async function loadAcquiredInstruments(request, signal) {
   return items;
 }
 
-export async function loadAllQuotes(request, isin, signal) {
+export async function loadAllQuotes(request, isin, signal, snapshot = {}) {
   const items = [];
   let total = null;
   // Use the server's knowledge-time cutoff, not an untrusted browser clock.
   // Reuse it for later pages if another acquisition finishes during loading.
-  let asOf = null;
+  let asOf = snapshot.asOf || null;
+  let generation = snapshot.generation || null;
   do {
     if (signal.aborted) return null;
     const query = new URLSearchParams({ limit: '1000', offset: String(items.length) });
     if (asOf) query.set('as_of', asOf);
+    if (generation) query.set('generation', generation);
     const page = await request(`/instruments/${encodeURIComponent(isin)}/quotes?${query}`, { signal });
     if (signal.aborted) return null;
     if (!Array.isArray(page?.items) || !Number.isInteger(page.total) || page.total < 0
@@ -105,6 +110,12 @@ export async function loadAllQuotes(request, isin, signal) {
         || (asOf && Date.parse(asOf) !== Date.parse(page.as_of))) {
       throw new Error('Quote pagination returned an invalid observation cutoff. Please retry the chart.');
     }
+    if ((generation && page.generation !== generation)
+        || (page.generation != null && (typeof page.generation !== 'string'
+          || !/^(legacy|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/.test(page.generation)))) {
+      throw new Error('Quote pagination changed history generation. Please retry the chart.');
+    }
+    generation = page.generation || generation;
     asOf = page.as_of;
     total = page.total;
     if ((!page.items.length && items.length < total) || items.length + page.items.length > total) {

@@ -315,7 +315,8 @@ def calibrate_instrument(db, isin, body, *, evaluate):
     if not listing:
         raise md.DataError(422, "Download EOD history for this instrument first.")
     cutoff = md.utcnow()
-    query = {**md.listing_filter(isin, listing), "collected_at": {"$lte": cutoff},
+    generation = md.history_generation(db, isin, listing, cutoff)
+    query = {**md.observation_filter(db, isin, listing, cutoff, generation), "collected_at": {"$lte": cutoff},
              "date": {"$lte": cutoff.date().isoformat()}}
     records = db.quotes.aggregate([
         {"$match": query},
@@ -323,15 +324,17 @@ def calibrate_instrument(db, isin, body, *, evaluate):
         {"$group": {"_id": "$date", "data": {"$first": "$data"}}},
         {"$sort": {"_id": 1}},
         {"$limit": MAX_HISTORY_ROWS + 1},
-        {"$project": {"data.close": 1, "data.adj_close": 1, "data.price_currency": 1}},
+        {"$project": {"data.close": 1, "data.adj_close": 1, "data.price_currency": 1, "data.price_basis": 1}},
     ])
     rows = [{**record.get("data", {}), "date": record["_id"]} for record in records]
     if len(rows) > MAX_HISTORY_ROWS:
         raise md.DataError(422, "Saved history exceeds the 20,000-date calculation limit; no history was silently truncated.")
-    rows, split_warnings = adjusted_rows(rows, load_split_snapshot(db, isin, listing, cutoff))
+    rows, split_warnings = adjusted_rows(rows, load_split_snapshot(db, isin, listing, cutoff, generation))
     seed = body.seed if body.seed is not None else secrets.randbits(32)
     result = evaluate(rows, body, seed=seed, override=state.get("price_currency_override"))
     result["warnings"].extend(split_warnings)
+    publication = md.published_history(db, isin, listing, cutoff, generation)
     fingerprint = hashlib.sha256(json.dumps(md.public({"rows": rows, "listing": listing,
+        "generation": publication["_id"] if publication else None,
         "currency_override": state.get("price_currency_override")}), sort_keys=True).encode()).hexdigest()
     return {**result, "data_as_of": md.public(cutoff), "history_fingerprint": fingerprint}
