@@ -81,6 +81,61 @@ def transport(monkeypatch):
     return state, calls
 
 
+def test_long_history_chunks_preserve_evidence_and_replay(transport):
+    from yahoo_finance import validate_index_page
+    state, calls = transport
+    state["meta"]["chart"]["result"][0]["meta"]["instrumentType"] = "INDEX"
+    state["history"]["chart"]["result"][0]["meta"]["instrumentType"] = "INDEX"
+    with YahooFinanceClient() as client:
+        page = client.eod_page(SYMBOL, "YAHOO", "1900-01-01", END)
+        requests = [call[2]["params"] for call in calls if "period1" in call[2].get("params", {})]
+        assert len(requests) == 2
+        assert requests[0]["period2"] == requests[1]["period1"]
+        assert all(0 < req["period2"] - req["period1"] < 100 * 365 * 86400 for req in requests)
+        assert [row["date"] for row in page["data"]] == [START, END]
+        assert len(page["raw"]["history_chunks"]) == 2
+        validate_index_page(page, SYMBOL)
+        count = len(calls)
+        splits = client.splits_page(SYMBOL, "1900-01-01", END)
+        assert len(calls) == count
+    replay = splits_from_eod_page(page, SYMBOL, "1900-01-01", END)
+    assert replay == splits
+    assert len(replay["data"]) == 1
+    assert replay["data"][0]["date"] == END
+    damaged = deepcopy(page)
+    damaged["raw"]["history_chunks"][1]["raw"]["chart"]["result"][0]["meta"]["instrumentType"] = "ETF"
+    with pytest.raises(MarketDataError, match="INDEX"):
+        validate_index_page(damaged, SYMBOL)
+
+
+def test_chunk_boundary_rows_and_actions_are_not_duplicated(transport, monkeypatch):
+    monkeypatch.setattr("yahoo_finance._HISTORY_CHUNK_DAYS", 3)
+    with YahooFinanceClient() as client:
+        page = client.eod_page(SYMBOL, "XLON", START, END)
+        assert [row["date"] for row in page["data"]] == [START, END]
+        chunks = page["raw"]["history_chunks"]
+        assert [(c["date_from"], c["date_to"]) for c in chunks] == [
+            (START, "2024-03-30"), ("2024-03-31", END)]
+        splits = splits_from_eod_page(page, SYMBOL, START, END)
+        assert len(splits["data"]) == 1
+
+
+def test_later_history_chunk_failure_is_not_retried(transport):
+    state, calls = transport
+    attempts = []
+    def handler(session, method, url, kwargs):
+        if "period1" in kwargs.get("params", {}):
+            attempts.append(url)
+            if len(attempts) == 2:
+                return response(url, {}, 500)
+    state["handler"] = handler
+    with YahooFinanceClient() as client:
+        with pytest.raises(MarketDataError) as error:
+            client.eod_page(SYMBOL, "XLON", "1900-01-01", END)
+        assert error.value.code == "http_error"
+        assert len(attempts) == 2
+
+
 def test_constructor_is_offline_and_client_is_isolated():
     with YahooFinanceClient() as first, YahooFinanceClient(api_key="ignored") as second:
         assert first.name == "yfinance"

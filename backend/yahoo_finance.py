@@ -7,8 +7,9 @@ rounds through floats, and can drop malformed rows). Normalization uses raw JSON
 Yahoo OHLC/Close already reflect splits; Adj Close additionally reflects dividends.
 No adjustment or repair is performed here. Consumers must honor price_basis.
 
-Each history range is one complete page. Nonzero offsets are rejected, not
-refetched. Instances are synchronous, not intended for concurrent use. Profile
+Each history range is one complete logical page. Ranges longer than 99*365
+days are fetched in non-overlapping chunks, retaining each raw response.
+Nonzero offsets are rejected, not refetched. Instances are synchronous, not intended for concurrent use. Profile
 acquisition uses validated chart metadata only; optional quote modules are not
 queried and profile completeness is not claimed.
 """
@@ -264,8 +265,37 @@ def validate_index_identity(meta: Any, symbol: str) -> None:
 
 
 def validate_index_page(page: dict, symbol: str) -> None:
-    result = _chart(page.get("raw"), symbol)
+    raw = page.get("raw")
+    if isinstance(raw, dict) and "history_chunks" in raw:
+        for chunk in _history_chunks(raw):
+            validate_index_page({"raw": chunk["raw"]}, symbol)
+        return
+    result = _chart(raw, symbol)
     validate_index_identity(result["meta"], symbol)
+
+
+# Stay below Yahoo's 100-year daily limit, including leap days and the
+# exclusive end boundary. This is chunking, never retrying a rejected call.
+_HISTORY_CHUNK_DAYS = 99 * 365
+
+
+def _history_chunks(payload: dict) -> list[dict]:
+    chunks = payload.get("history_chunks")
+    if not isinstance(chunks, list) or not chunks:
+        raise _error("malformed_response")
+    for chunk in chunks:
+        if not isinstance(chunk, dict) or not isinstance(chunk.get("raw"), dict):
+            raise _error("malformed_response")
+        _dates(chunk.get("date_from"), chunk.get("date_to"), 0)
+    return chunks
+
+
+def _history_ranges(start: date, end: date):
+    while (end - start).days >= _HISTORY_CHUNK_DAYS:
+        boundary = start + timedelta(days=_HISTORY_CHUNK_DAYS)
+        yield start, boundary - timedelta(days=1)
+        start = boundary
+    yield start, end
 
 
 def _tz(meta: dict) -> ZoneInfo:
@@ -322,6 +352,14 @@ def _split_factor(event: dict) -> Decimal | None:
 
 
 def _splits_from_payload(payload: Any, symbol: str, start: date, end: date, secrets: set[str] | None = None) -> dict:
+    if isinstance(payload, dict) and "history_chunks" in payload:
+        rows = []
+        for chunk in _history_chunks(payload):
+            chunk_start, chunk_end = _dates(chunk["date_from"], chunk["date_to"], 0)
+            lower, upper = max(start, chunk_start), min(end, chunk_end)
+            if lower <= upper:
+                rows.extend(_splits_from_payload(chunk["raw"], symbol, lower, upper, secrets)["data"])
+        return _page(rows, payload, secrets)
     result = _chart(payload, symbol)
     zone = _tz(result["meta"])
     events = result.get("events")
@@ -460,6 +498,13 @@ class YahooFinanceClient:
         if not isinstance(exchange, str) or not exchange.strip():
             raise _error("invalid_request")
         start, end = _dates(date_from, date_to, offset)
+        if (end - start).days >= _HISTORY_CHUNK_DAYS:
+            rows, chunks = [], []
+            for lower, upper in _history_ranges(start, end):
+                page = self.eod_page(symbol, exchange, lower, upper)
+                rows.extend(page["data"])
+                chunks.append({"date_from": lower.isoformat(), "date_to": upper.isoformat(), "raw": page["raw"]})
+            return self._page(rows, {"history_chunks": chunks})
         payload = self._history(symbol, start, end)
         result = _chart(payload, symbol)
         meta = result["meta"]
@@ -483,7 +528,14 @@ class YahooFinanceClient:
     def splits_page(self, symbol: str, date_from: str | date, date_to: str | date, offset: int = 0) -> dict:
         symbol = _symbol(symbol)
         start, end = _dates(date_from, date_to, offset)
-        payload = self._history(symbol, start, end)
+        if (end - start).days >= _HISTORY_CHUNK_DAYS:
+            payload = {"history_chunks": [
+                {"date_from": lower.isoformat(), "date_to": upper.isoformat(),
+                 "raw": self._history(symbol, lower, upper)}
+                for lower, upper in _history_ranges(start, end)
+            ]}
+        else:
+            payload = self._history(symbol, start, end)
         return _splits_from_payload(payload, symbol, start, end, self._session.secrets)
 
     def tickerslist_page(self, search: str, offset: int = 0) -> dict:

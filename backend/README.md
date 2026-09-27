@@ -172,7 +172,12 @@ Downloads reuse `marketdata.acquire`, per-job call limits, raw evidence/checkpoi
 replay, lease fencing, and atomic Yahoo history generations. Index listing
 `exchange=YAHOO` is an internal provider namespace, **not** an asserted exchange
 or MIC. Full-history requests use an explicit **1900-01-01 through yesterday**
-boundary, not a claimed inception or a guarantee of complete coverage. Failed
+boundary, not a claimed inception or a guarantee of complete coverage. Requests
+are split into non-overlapping ranges of at most 99 × 365 days to stay below
+Yahoo's 100-year daily-data limit. Each response is retained separately under
+`raw.history_chunks` in one logical page; split replay uses those same responses
+without additional provider calls. Short ranges retain the original raw format.
+A searchable symbol can still have no downloadable daily history. Failed
 refreshes preserve the previous published quotes and metadata. Close-only Yahoo
 indices retain null OHLC/volume/adjusted-close fields; nothing is synthesized.
 Yahoo availability is not guaranteed; no network verification occurs during

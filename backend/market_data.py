@@ -782,7 +782,7 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
                 }}, upsert=True)
         if name == "yfinance":
             if not db.quotes.find_one({"job_id": job_id}):
-                raise MarketDataError("empty_history", "Yahoo returned no dated quotes. Previous saved history remains active.")
+                raise MarketDataError("empty_history", "Yahoo returned no daily historical quotes for this symbol and requested dates. A searchable symbol does not guarantee downloadable history. Previous saved history remains active.")
             checkpoint({"phase": "publishing"})
             # One immutable publication selects one generation for prices,
             # profile and splits. Retry acknowledgement loss is idempotent.
