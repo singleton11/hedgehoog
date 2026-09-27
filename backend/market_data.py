@@ -177,6 +177,35 @@ def acquired_instruments(db, limit=20, offset=0):
     return public({"items": items, "total": result["count"][0]["total"] if result["count"] else 0, "limit": limit, "offset": offset})
 
 
+def remove_acquired_instrument(db, isin):
+    """Delete shared market data, retaining catalogue and customer-owned records.
+
+    Use the acquisition unique index as a mutex: workers cannot start a new
+    acquisition during deletion, and active jobs must finish before removal.
+    """
+    require_catalogue(db, isin)
+    ensure_indexes(db)
+    lock_id = str(uuid4())
+    try:
+        db.acquisition_jobs.insert_one({
+            "_id": lock_id, "instrument_id": isin, "active": True,
+            "status": "deleting", "requested_at": utcnow(),
+        })
+    except DuplicateKeyError:
+        raise DataError(409, "This ETF has an active acquisition or removal. Wait for it to finish and retry.") from None
+    try:
+        for collection in ("quotes", "raw_eod_pages", "raw_split_pages", "split_snapshots",
+                           "market_data_publications", "manual_splits"):
+            db[collection].delete_many({"instrument_id": isin})
+        db.instrument_statistics.delete_one({"_id": isin})
+        db.instrument_state.delete_one({"_id": isin})
+        db.acquisition_jobs.delete_many({"instrument_id": isin, "_id": {"$ne": lock_id}})
+        # Remove inventory last so a partial failure remains visible/retryable.
+        db.instruments.delete_many({"instrument_id": isin})
+    finally:
+        db.acquisition_jobs.delete_one({"_id": lock_id})
+
+
 def budget_status(db, settings):
     month = utcnow().strftime("%Y-%m")
     if provider_name(settings) == "yfinance":
@@ -406,6 +435,8 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
     listing = listing or state.get("listing")
     existing = db.acquisition_jobs.find_one({"instrument_id": isin, "active": True})
     if existing:
+        if existing.get("status") == "deleting":
+            raise DataError(409, "This ETF is being removed. Please retry after removal finishes.")
         if explicit_listing is not None and existing["listing"] != explicit_listing:
             raise DataError(409, "Another listing is already being collected for this instrument")
         return public_job(existing)
@@ -451,7 +482,7 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
         db.acquisition_jobs.insert_one(job)
     except DuplicateKeyError:
         existing = db.acquisition_jobs.find_one({"instrument_id": isin, "active": True})
-        if existing is None:
+        if existing is None or existing.get("status") == "deleting":
             raise DataError(409, "Acquisition state changed; please retry") from None
         if explicit_listing is not None and existing["listing"] != explicit_listing:
             raise DataError(409, "Another listing is already being collected for this instrument") from None

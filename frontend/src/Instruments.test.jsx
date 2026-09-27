@@ -602,9 +602,9 @@ describe('acquired ETF market-data updates', () => {
     expect(server.posts()[0][0]).toBe(`/api/instruments/${A}/acquisitions`);
     expect(JSON.parse(server.posts()[0][1].body)).toEqual({ confirmed: true, mode: 'update' });
     expect(row().getByRole('status')).toHaveTextContent('Queued');
-    expect(row().getByRole('button')).toBeDisabled();
+    expect(row().getByRole('button', { name: /Update market data/ })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Update all' })).toBeDisabled();
-    expect(row('Second ETF').getByRole('button')).toBeEnabled();
+    expect(row('Second ETF').getByRole('button', { name: /Update market data/ })).toBeEnabled();
     server.details[A].acquisition = job('running');
     await advance(POLL_INTERVAL);
     expect(row().getByRole('status')).toHaveTextContent('Updating…');
@@ -612,7 +612,7 @@ describe('acquired ETF market-data updates', () => {
     server.acquiredItems[0] = acquiredItem(A, { quote_count: 43, annualized_mean_log_return: 0.13 });
     await advance(POLL_INTERVAL);
     expect(row().getByRole('status')).toHaveTextContent('Updated');
-    expect(row().getByRole('button')).toBeEnabled();
+    expect(row().getByRole('button', { name: /Update market data/ })).toBeEnabled();
     expect(row().getByText('43 quotes')).toBeInTheDocument();
     expect(row().getByRole('cell', { name: '+13%' })).toBeInTheDocument();
     expect(server.pages()).toHaveLength(0);
@@ -674,7 +674,7 @@ describe('acquired ETF market-data updates', () => {
     if (skip) {
       expect(screen.getByText('Skipped 1 ETF collected 0 days ago.')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Update all' })).toBeEnabled();
-      expect(row().getByRole('button')).toBeEnabled();
+      expect(row().getByRole('button', { name: /Update market data/ })).toBeEnabled();
       await advance(POLL_INTERVAL * 3);
       expect(server.posts()).toHaveLength(0);
       expect(server.reads()).toHaveLength(0);
@@ -723,7 +723,7 @@ describe('acquired ETF market-data updates', () => {
     await advance(POLL_INTERVAL);
     expect(row().getByRole('status')).toHaveTextContent('Updated');
     expect(row('Second ETF').getByRole('status')).toHaveTextContent('Updating…');
-    expect(row('Second ETF').getByRole('button')).toBeDisabled();
+    expect(row('Second ETF').getByRole('button', { name: /Update market data/ })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Update all' })).toBeDisabled();
     server.details[B].acquisition = job('succeeded', { instrument_id: B });
     await advance(POLL_INTERVAL);
@@ -760,8 +760,8 @@ describe('acquired ETF market-data updates', () => {
     expect(row().getByRole('alert')).toHaveTextContent('no valid inception date');
     expect(row('Second ETF').getByRole('status')).toHaveTextContent('Queued');
     await advance(POLL_INTERVAL);
-    expect(row().getByRole('button')).toBeEnabled();
-    expect(row('Second ETF').getByRole('button')).toBeDisabled();
+    expect(row().getByRole('button', { name: /Update market data/ })).toBeEnabled();
+    expect(row('Second ETF').getByRole('button', { name: /Update market data/ })).toBeDisabled();
   });
 
   it.each(['empty', 'duplicate', 'changed total'])('does not POST if the complete inventory cannot be captured (%s)', async (failure) => {
@@ -791,16 +791,16 @@ describe('acquired ETF market-data updates', () => {
     server.read = async () => { throw new Error('offline'); };
     await advance(POLL_INTERVAL);
     expect(row().getByRole('alert')).toHaveTextContent('Status will retry automatically');
-    expect(row().getByRole('button')).toBeDisabled();
+    expect(row().getByRole('button', { name: /Update market data/ })).toBeDisabled();
     server.read = async () => withData(); // older successful job cannot replace the acknowledged one
     await advance(POLL_INTERVAL);
-    expect(row().getByRole('button')).toBeDisabled();
+    expect(row().getByRole('button', { name: /Update market data/ })).toBeDisabled();
     expect(row().getByRole('status')).toHaveTextContent('Queued');
     server.read = async () => withData(A, { acquisition: job('failed', { error: 'Provider unavailable' }) });
     await advance(POLL_INTERVAL);
     expect(row().getByRole('alert')).toHaveTextContent('Provider unavailable');
     expect(row().getByRole('status')).toHaveTextContent('Update failed');
-    expect(row().getByRole('button')).toBeEnabled();
+    expect(row().getByRole('button', { name: /Update market data/ })).toBeEnabled();
     expect(row().getByText('42 quotes')).toBeInTheDocument();
     expect(screen.getByText(/1 update needs attention/)).toBeInTheDocument();
     expect(server.posts()).toHaveLength(1);
@@ -816,10 +816,10 @@ describe('acquired ETF market-data updates', () => {
     await confirmUpdate(true);
     expect(server.posts()).toHaveLength(1);
     expect(screen.getByText(/1 ETFs were not submitted/)).toBeInTheDocument();
-    expect(row().getByRole('button')).toBeDisabled();
+    expect(row().getByRole('button', { name: /Update market data/ })).toBeDisabled();
     await advance(POLL_INTERVAL);
     expect(row().getByRole('status')).toHaveTextContent('Queued');
-    expect(row().getByRole('button')).toBeDisabled();
+    expect(row().getByRole('button', { name: /Update market data/ })).toBeDisabled();
     expect(server.posts()).toHaveLength(1);
     expect(row().getByRole('alert')).toHaveTextContent('Request could not be confirmed');
   });
@@ -834,8 +834,8 @@ describe('acquired ETF market-data updates', () => {
     await review('Update all');
     await confirmUpdate(true);
     expect(screen.getByRole('button', { name: 'Update all' })).toBeDisabled();
-    expect(row().getByRole('button')).toBeDisabled();
-    fireEvent.click(row().getByRole('button'));
+    expect(row().getByRole('button', { name: /Update market data/ })).toBeDisabled();
+    fireEvent.click(row().getByRole('button', { name: /Update market data/ }));
     expect(server.posts()).toHaveLength(1);
     view.unmount();
     expect(signal.aborted).toBe(true);
@@ -865,7 +865,7 @@ describe('acquired ETF market-data updates', () => {
     await advance(POLL_INTERVAL * 3);
     expect(workspaceCalls()).toHaveLength(calls);
     expect(row().queryByText('Updated')).not.toBeInTheDocument();
-    expect(row().getByRole('button')).toBeEnabled();
+    expect(row().getByRole('button', { name: /Update market data/ })).toBeEnabled();
   });
 });
 

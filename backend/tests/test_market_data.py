@@ -117,6 +117,66 @@ def collect(db, config, provider=None):
     return result, source
 
 
+def test_removal_deletes_market_data_only_and_allows_reacquisition(db, config):
+    job, _ = collect(db, config)
+    collections = ("instruments", "quotes", "raw_eod_pages", "raw_split_pages",
+                   "split_snapshots", "market_data_publications", "manual_splits")
+    for name in collections:
+        db[name].insert_one({"instrument_id": "OTHER", "job_id": "other", "date": "other", "offset": 999})
+    db.manual_splits.insert_one({"instrument_id": ISIN})
+    db.customers.insert_one({"_id": "customer", "instrument_id": ISIN})
+    db.marketstack_usage.insert_one({"_id": "sentinel", "used": 10})
+    md.remove_acquired_instrument(db, ISIN)
+    md.remove_acquired_instrument(db, ISIN)  # Retry is harmless.
+    for name in collections:
+        assert db[name].count_documents({"instrument_id": ISIN}) == 0
+        assert db[name].count_documents({"instrument_id": "OTHER"}) == 1
+    assert db.instrument_state.find_one({"_id": ISIN}) is None
+    assert db.instrument_statistics.find_one({"_id": ISIN}) is None
+    assert db.acquisition_jobs.count_documents({"instrument_id": ISIN}) == 0
+    assert db.etfs.count_documents({"isin": ISIN}) == 2
+    assert db.customers.find_one({"_id": "customer"})
+    assert db.marketstack_usage.find_one({"_id": "sentinel"})["used"] == 10
+    assert md.run_acquisition(db, config, job["id"]) is None
+    assert enqueue(db, config)["status"] == "queued"
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "deleting"])
+def test_removal_rejects_active_jobs_without_deleting(db, config, status):
+    job = enqueue(db, config)
+    db.acquisition_jobs.update_one({"_id": job["id"]}, {"$set": {"status": status}})
+    db.instruments.insert_one({"instrument_id": ISIN, "job_id": "saved"})
+    with pytest.raises(md.DataError) as error:
+        md.remove_acquired_instrument(db, ISIN)
+    assert error.value.status == 409
+    assert db.instruments.count_documents({"instrument_id": ISIN}) == 1
+
+
+def test_removal_mutex_blocks_acquisition_and_releases_on_failure(db, config, monkeypatch):
+    def fail_delete(query):
+        with pytest.raises(md.DataError) as error:
+            enqueue(db, config)
+        assert error.value.status == 409
+        raise RuntimeError("storage unavailable")
+    monkeypatch.setattr(db.quotes, "delete_many", fail_delete)
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        md.remove_acquired_instrument(db, ISIN)
+    assert not db.acquisition_jobs.find_one({"instrument_id": ISIN, "active": True})
+
+
+def test_removal_route_requires_authentication_and_valid_identifier(api, db, config):
+    client, _ = api
+    assert client.delete(f"/instruments/{ISIN}").status_code == 401
+    client.post("/auth/login", json={"login": "admin", "password": "admin"})
+    assert client.delete("/instruments/invalid").status_code == 422
+    assert client.delete("/instruments/IE0000000000").status_code == 404
+    job = enqueue(db, config)
+    assert client.delete(f"/instruments/{ISIN}").status_code == 409
+    db.acquisition_jobs.update_one({"_id": job["id"]}, {"$set": {"active": False}})
+    assert client.delete(f"/instruments/{ISIN}").status_code == 204
+    assert client.delete(f"/instruments/{ISIN}").status_code == 204
+
+
 def test_search_latest_snapshot_and_escaped_literals(db):
     result = md.search_catalogue(db, "sxR8", 15)
     assert len(result) == 1

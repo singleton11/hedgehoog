@@ -11,7 +11,7 @@ from auth import CurrentUser
 from return_statistics import instrument_statistics
 from celery_app import enqueue_acquisition
 from manual_splits import ManualSplitRequest, add_split, read_splits, remove_split
-from market_data import acquired_instruments, budget_status, instrument_detail, read_quotes, request_acquisition, search_catalogue, set_price_currency
+from market_data import acquired_instruments, budget_status, instrument_detail, read_quotes, request_acquisition, search_catalogue, set_price_currency, remove_acquired_instrument
 
 router = APIRouter(prefix="/instruments", tags=["instruments"])
 InstrumentId = Annotated[str, Path(pattern=r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")]
@@ -104,6 +104,11 @@ def budget(request: Request, user: CurrentUser):
 @router.get("/{isin}")
 def detail(isin: InstrumentId, request: Request, user: CurrentUser, as_of: datetime | None = None):
     return instrument_detail(request.app.state.database, request.app.state.settings, isin, knowledge_time(as_of))
+
+
+@router.delete("/{isin}", status_code=204)
+def remove(isin: InstrumentId, request: Request, user: CurrentUser):
+    remove_acquired_instrument(request.app.state.database, isin)
 
 
 @router.get("/{isin}/statistics")

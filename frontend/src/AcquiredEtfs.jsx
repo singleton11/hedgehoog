@@ -44,6 +44,21 @@ function UpdateConfirmation({ selection, onConfirm, onCancel }) {
   </form>;
 }
 
+function RemoveConfirmation({ selection, removing, error, onConfirm, onCancel }) {
+  const heading = useRef(null);
+  useEffect(() => { heading.current?.focus(); }, []);
+  return <form className="acquisition-form" aria-label="Confirm ETF removal" onSubmit={(event) => {
+    event.preventDefault();
+    if (!removing) onConfirm();
+  }}>
+    <h3 ref={heading} tabIndex={-1}>Remove {selection.name}?</h3>
+    <p>This permanently deletes saved prices, profiles, splits and market-data settings for all users. Portfolios and saved calculations are kept, but live valuations may be unavailable until data is acquired again. The ETF remains searchable and can be added again.</p>
+    {error && <p role="alert">{error}</p>}
+    <div className="button-group"><button type="submit" disabled={removing}>{removing ? 'Removing…' : 'Delete saved data'}</button>
+      <button type="button" className="secondary" disabled={removing} onClick={onCancel}>Cancel</button></div>
+  </form>;
+}
+
 function UpdateStatus({ update }) {
   if (!update) return null;
   const status = update.submitting ? 'Submitting…' : update.checking ? 'Checking status…'
@@ -65,6 +80,12 @@ export default function AcquiredEtfs() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selection, setSelection] = useState(null);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const removalRequest = useRef(null);
+  const listHeading = useRef(null);
+  useEffect(() => () => removalRequest.current?.abort(), [request]);
   const reviewButton = useRef(null);
   const previousSelection = useRef(null);
   useEffect(() => {
@@ -79,11 +100,37 @@ export default function AcquiredEtfs() {
 
   function review(event, nextSelection) {
     reviewButton.current = event.currentTarget;
+    setRemoveError(null);
+    setNotice(null);
     setSelection(nextSelection);
   }
 
   function closeReview() {
     setSelection(null);
+  }
+
+  async function removeSelected() {
+    if (removalRequest.current) return;
+    const controller = new AbortController();
+    removalRequest.current = controller;
+    setRemoving(true);
+    setRemoveError(null);
+    try {
+      await request(`/instruments/${encodeURIComponent(selection.isin)}`, { method: 'DELETE', signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setNotice(`${selection.name} removed. Saved market data deleted.`);
+      setSelection(null);
+      setPage(null);
+      listHeading.current?.focus();
+      refresh();
+    } catch (error) {
+      if (!controller.signal.aborted) setRemoveError(error.message);
+    } finally {
+      if (!controller.signal.aborted) {
+        removalRequest.current = null;
+        setRemoving(false);
+      }
+    }
   }
 
   useEffect(() => {
@@ -99,6 +146,10 @@ export default function AcquiredEtfs() {
             || data.offset !== offset || data.limit !== ACQUIRED_PAGE_SIZE) {
           throw new Error('The backend returned an unexpected acquired ETF list. Please retry.');
         }
+        if (offset > 0 && offset >= data.total) {
+          setOffset(Math.max(0, Math.floor((data.total - 1) / ACQUIRED_PAGE_SIZE) * ACQUIRED_PAGE_SIZE));
+          return;
+        }
         setPage(data);
       } catch (error) {
         if (!controller.signal.aborted) setError(error.message);
@@ -113,12 +164,15 @@ export default function AcquiredEtfs() {
   return <section aria-labelledby="acquired-etfs-heading" className="acquired-page">
     <div className="section-heading page-heading">
       <div><p className="eyebrow">Your collection</p>
-        <h2 id="acquired-etfs-heading">Acquired ETFs{page ? ` (${page.total})` : ''}</h2>
+        <h2 id="acquired-etfs-heading" ref={listHeading} tabIndex={-1}>Acquired ETFs{page ? ` (${page.total})` : ''}</h2>
         <p className="muted">A clearer view of the funds you follow.</p>
       </div>
       <a className="button-link" href="#/add"><Icon name="plus" />Add ETF</a>
     </div>
-    {selection && <UpdateConfirmation key={selection.isin || 'all'} selection={selection} onCancel={closeReview}
+    {notice && <p role="status">{notice}</p>}
+    {selection?.remove && <RemoveConfirmation selection={selection} removing={removing} error={removeError}
+      onConfirm={removeSelected} onCancel={closeReview} />}
+    {selection && !selection.remove && <UpdateConfirmation key={selection.isin || 'all'} selection={selection} onCancel={closeReview}
       onConfirm={() => { closeReview(); update(selection.isin); }} />}
     {submitting && <p role="status">Submitting market-data updates…</p>}
     {!submitting && pendingCount > 0 && <p role="status">{pendingCount} market-data {pendingCount === 1 ? 'update' : 'updates'} in progress.</p>}
@@ -174,6 +228,9 @@ export default function AcquiredEtfs() {
                 <button className="secondary" disabled={submitting || updatePending(updates[item.instrument_id]) || Boolean(selection)}
                   aria-label={`Update market data for ${displayText(item.name) || item.isin}`}
                   onClick={(event) => review(event, { isin: item.instrument_id, name: displayText(item.name) || item.isin })}>Update market data</button>
+                <button className="secondary" disabled={busy || loading || Boolean(selection)}
+                  aria-label={`Remove ${displayText(item.name) || item.isin}`}
+                  onClick={(event) => review(event, { remove: true, isin: item.instrument_id, name: displayText(item.name) || item.isin })}>Remove</button>
                 <UpdateStatus update={updates[item.instrument_id]} />
               </td>
             </tr>)}</tbody>
@@ -183,8 +240,8 @@ export default function AcquiredEtfs() {
         <div className="section-heading acquired-pagination">
           <p role="status">{page.items.length ? `${offset + 1}–${offset + page.items.length} of ${page.total} ETFs` : `${page.total} ETFs total`}</p>
           <div className="button-group">
-            <button className="secondary" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - ACQUIRED_PAGE_SIZE))} aria-label="Previous ETFs">Previous</button>
-            <button className="secondary" disabled={offset + page.items.length >= page.total || !page.items.length} onClick={() => setOffset(offset + ACQUIRED_PAGE_SIZE)} aria-label="Next ETFs">Next</button>
+            <button className="secondary" disabled={Boolean(selection) || offset === 0} onClick={() => setOffset(Math.max(0, offset - ACQUIRED_PAGE_SIZE))} aria-label="Previous ETFs">Previous</button>
+            <button className="secondary" disabled={Boolean(selection) || offset + page.items.length >= page.total || !page.items.length} onClick={() => setOffset(offset + ACQUIRED_PAGE_SIZE)} aria-label="Next ETFs">Next</button>
           </div>
         </div>
         </div>

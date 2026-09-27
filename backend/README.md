@@ -103,6 +103,17 @@ curl http://127.0.0.1:8000/
 
 ## Instrument acquisition
 
+The acquired ETF list offers a confirmed **Remove → Delete saved data** action.
+Authenticated `DELETE /instruments/{isin}` deletes that ETF's shared profiles,
+prices, provider evidence, splits, cached statistics, listing settings and acquisition
+history. It retains the searchable catalogue, provider usage counters, portfolios,
+and saved calculations. Live valuations may become unavailable until reacquisition.
+Deletion is retry-safe and returns 204; active acquisitions/removals return 409.
+An acquisition-slot mutex prevents new acquisition jobs during deletion. If the API
+process is killed during deletion, its `status: deleting` job deliberately keeps
+that slot blocked; an operator must verify the process has stopped before deleting
+that lock record and retrying removal. Normal exceptions release the lock.
+
 Authenticated `/instruments/search`, `/instruments/{isin}` and `/instruments/{isin}/quotes` routes read the catalogue and collected observations from MongoDB. Explicit `POST /instruments/{isin}/acquisitions` requests queue `marketdata.acquire`; the worker consumes both `etfs` and `marketdata`.
 
 The default provider is Yahoo Finance via pinned `yfinance==1.7.0`; no API key or paid quota is required. `MARKET_DATA_PROVIDER=yfinance`, `MARKET_DATA_MAX_CALLS_PER_JOB=40` and `MARKET_DATA_TIMEOUT_SECONDS=15` configure the experimental adapter and safety bounds. Rebuild the worker after code/dependency changes. Browsing never calls the provider. Errors are sanitized; provider failures require an explicit retry, while database recovery replays saved checkpoints.
