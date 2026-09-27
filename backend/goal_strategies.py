@@ -37,6 +37,7 @@ class StrategyDefinition(Generic[Parameters]):
     parameters_model: type[Parameters]
     simulate: Callable[[Parameters, GoalInputs, Database, date], dict[str, Any]]
     calibrate: Callable[[Parameters, RandomCalibrationInputs, Database], dict[str, Any]] | None = None
+    track: Callable[..., dict[str, Any]] | None = None
 
     def resolve_parameters(self, values: dict[str, Any], db: Database) -> Parameters:
         parameters = self.parameters_model.model_validate(values)
@@ -64,12 +65,12 @@ class StrategyDefinition(Generic[Parameters]):
         }
 
 
-def buy_and_hold_single_instrument(parameters: BuyAndHoldParameters, goals: GoalInputs, db: Database, today: date):
+def buy_and_hold_single_instrument(parameters: BuyAndHoldParameters, goals: GoalInputs, db: Database, today: date, **simulation_options):
     estimates = instrument_statistics(db, parameters.instrument)
     if not estimates["eligible"]:
         raise md.DataError(422, estimates["ineligible_reason"])
     return {
-        **simulate_buy_and_hold(estimates, goals, today),
+        **simulate_buy_and_hold(estimates, goals, today, **simulation_options),
         "parameter_statistics": {"instrument": estimates},
     }
 
@@ -86,6 +87,7 @@ STRATEGIES = {
         parameters_model=BuyAndHoldParameters,
         simulate=buy_and_hold_single_instrument,
         calibrate=calibrate_buy_and_hold,
+        track=buy_and_hold_single_instrument,
     ),
 }
 
