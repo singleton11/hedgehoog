@@ -1,6 +1,6 @@
 # Hedgehoog
 
-React/Vite frontend and FastAPI backend, with MongoDB users, JWT authentication, ETF search, and on-demand Yahoo Finance acquisition via `yfinance` through Celery/RabbitMQ.
+React/Vite frontend and FastAPI backend, with MongoDB users, JWT authentication, ETF search, a separate index catalogue, and on-demand Yahoo Finance acquisition via `yfinance` through Celery/RabbitMQ.
 
 ## Run locally
 
@@ -97,10 +97,10 @@ Choose **Add ETF** to open the dedicated search page (`#/add`), then search the 
 
 Storage:
 
-- **`instruments`**: append-only tickerinfo observations, including complete nested provider `data`, `instrument_id` (ISIN), provider symbol/MIC, job ID, exact UTC `collected_at` and UTC `collection_date`. Multiple observations in a day are retained. Point-in-time means *known when collected*, not historical fundamentals reconstructed before collection.
+- **`instruments`**: append-only tickerinfo observations, including complete nested provider `data`, `instrument_id` (ETF ISIN or separate index ID), provider symbol/exchange, job ID, exact UTC `collected_at` and UTC `collection_date`. Multiple observations in a day are retained. Point-in-time means *known when collected*, not historical fundamentals reconstructed before collection.
 - **`raw_eod_pages`**: complete parsed provider envelopes, keyed by job and offset, saved before indexing. Retains all rows, including duplicates, malformed dates, unexpected shapes and missing values for later cleanup. Re-indexing a saved page after a worker/DB interruption does not consume another provider call.
 - **`quotes`**: dated-object projection (first occurrence per job/date; all duplicates remain in raw pages); quote date separate from `collected_at` / `collection_date`, original raw and adjusted provider fields in `data`, listing and job ID. Observations are immutable; retries of the same job/date are idempotent. Yahoo reads select one completed published generation, optionally bounded by `as_of`, without filling its missing dates from older generations.
-- **`acquisition_jobs`**: durable status, progress, sanitized errors, requested range and pagination checkpoint. A partial unique index allows only one active job per ISIN. A five-minute renewable worker lease fences abandoned work; polling exposes expired jobs as retryable failures. Queued requests not started within 30 minutes are also exposed as retryable failures, covering offline workers or an interrupted Mongo-to-broker handoff; any later delivery of an expired job is skipped. Delivery is at least once: a crash between a provider response and its checkpoint can require another request, so HTTP is not exactly once.
+- **`acquisition_jobs`**: durable status, progress, sanitized errors, requested range and pagination checkpoint. A partial unique index allows only one active job per instrument. A five-minute renewable worker lease fences abandoned work; polling exposes expired jobs as retryable failures. Queued requests not started within 30 minutes are also exposed as retryable failures, covering offline workers or an interrupted Mongo-to-broker handoff; any later delivery of an expired job is skipped. Delivery is at least once: a crash between a provider response and its checkpoint can require another request, so HTTP is not exactly once.
 - **`instrument_state`**: cached listing/resolution and optional manual currency label. Earlier records remain available if an update fails.
 - **`market_data_publications`**: immutable generation/job/provider/listing publication audit records. Visibility requires an atomic owner/status-guarded publication marker on the job, so expired workers cannot publish late. Profile, quote and split reads share the same generation; statistics cache keys include its identity.
 
@@ -122,6 +122,25 @@ Authenticated endpoints (browser prefix `/api`):
 | `POST /instruments/{isin}/acquisitions` | `{confirmed: true, mode: "update" \| "backfill"}`; optional paired `symbol`/`exchange` manual override; returns 202 and durable job |
 
 Quote pagination reuses both the returned `generation` UUID (or explicit `legacy`) and `as_of` cutoff. The generation prevents delayed publications from changing the selected history between pages. `as_of` requires an explicit timezone and filters **collected market-data observations**; the catalogue, manual price-currency setting and operational job/provider status are still current. See [the design contract](docs/on-demand-market-data.md).
+
+## Index catalogue
+
+Open **Indices** (`#/indices`) for a separate, small starter catalogue stored in
+MongoDB's `indices` collection. Add further indices by exact Yahoo symbol and name;
+currency and price/net/gross total-return variant may remain unknown. Saving a
+catalogue record does not download data or certify the supplied metadata.
+
+Use **Download data** or **Refresh data**, then confirm, to queue an explicit Yahoo
+acquisition. The table displays status and saved quote count/date range. Downloads
+reuse the durable acquisition pipeline, and a failed refresh keeps the previous
+published history. Reads and polling never call Yahoo. Rebuild the worker with
+`make services-up` after updating backend code.
+
+This is not a complete global index directory. Indices have separate internal IDs,
+not fabricated ETF ISINs, and remain excluded from ETF inventory and portfolio
+selectors. Benchmark comparisons and ETF-history proxy assignments are deferred.
+Identity verification does not establish currency or total-return semantics, and
+Yahoo data availability does not establish redistribution rights.
 
 ## Portfolio tracking
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import AddEtf from './AddEtf.jsx';
+import Indices from './Indices.jsx';
 import InstrumentDetail from './InstrumentDetail.jsx';
 import AcquiredEtfs from './AcquiredEtfs.jsx';
 import CustomerPlanner from './CustomerPlanner.jsx';
@@ -39,6 +40,7 @@ function readRoute() {
     try { return { calibration: true, runId: decodeURIComponent(runMatch[1]), isin: null }; }
     catch { return { invalid: true }; }
   }
+  if (hash === '#/indices') return { indices: true, isin: null };
   if (hash === '#/add') return { add: true, isin: null };
   const strategyMatch = hash.match(/^#\/strategies\/([^/?#]+)$/);
   if (strategyMatch) {
@@ -71,7 +73,8 @@ export default function InstrumentWorkspace() {
   return <div className="instrument-workspace">
     <nav aria-label="Workspace navigation" className="workspace-navigation">
       <p className="nav-label">Workspace</p>
-      <a href="#/" aria-current={!route.goal && !route.calibration && !route.invalid ? 'page' : undefined}><Icon name="grid" />ETFs</a>
+      <a href="#/" aria-current={!route.indices && !route.goal && !route.calibration && !route.invalid ? 'page' : undefined}><Icon name="grid" />ETFs</a>
+      <a href="#/indices" aria-current={route.indices ? 'page' : undefined}><Icon name="chart" />Indices</a>
       <a href="#/goal" aria-current={route.goal ? 'page' : undefined}><Icon name="users" />Customers</a>
       <a href="#/calibration" aria-current={route.calibration ? 'page' : undefined}><Icon name="chart" />Calibration</a>
       <div className="sidebar-note"><span className="sidebar-note-icon"><Icon name="chart" /></span>
@@ -81,7 +84,7 @@ export default function InstrumentWorkspace() {
       <p className="sidebar-footer">HEDGEHOOG <span> / </span> INVEST WITH INSIGHT</p>
     </nav>
     <div id="workspace-content" className="workspace-content" tabIndex={-1}>
-    {route.portfolios ? <PortfolioTracker customerId={route.customerId} portfolioId={route.portfolioId} isin={route.isin} /> : route.calibration ? <StrategyCalibration newRun={route.newRun} runId={route.runId} sourceId={route.sourceId} strategyId={route.strategyId} /> : route.goal ? <CustomerPlanner customerId={route.customerId} goalId={route.goalId} simulationId={route.simulationId} newSimulation={route.newSimulation} isin={route.isin} /> : <>
+    {route.indices ? <Indices /> : route.portfolios ? <PortfolioTracker customerId={route.customerId} portfolioId={route.portfolioId} isin={route.isin} /> : route.calibration ? <StrategyCalibration newRun={route.newRun} runId={route.runId} sourceId={route.sourceId} strategyId={route.strategyId} /> : route.goal ? <CustomerPlanner customerId={route.customerId} goalId={route.goalId} simulationId={route.simulationId} newSimulation={route.newSimulation} isin={route.isin} /> : <>
       {(route.add || route.isin || route.invalid) && <nav aria-label="Instrument navigation"><a href="#/">← ETFs</a></nav>}
       {route.invalid ? <p role="alert">ETF not found. <a href="#/add">Search for an ETF</a>.</p>
         : route.add ? <AddEtf onSelect={select} />

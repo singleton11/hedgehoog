@@ -127,6 +127,54 @@ uv run pytest  # Includes provider MockTransport, acquisition and API tests; no 
 # Optional: set TEST_MONGODB_URI and TEST_CELERY_BROKER_URL for isolated real-service tests.
 ```
 
+## Index catalogue and explicit Yahoo history
+
+Indices use their own MongoDB `indices` catalogue and stable `idx-<UUID>` IDs,
+never fabricated ISINs or fund inception dates. Startup and lazy list/add seeding
+are offline and idempotent. The small curated symbol set (`^GSPC`, `^DJI`,
+`^IXIC`, `^FTSE`, `^GDAXI`) starts unverified with unknown currency and return
+variant. No benchmark selection, ETF proxies, or portfolio index holdings are
+included; index profiles are excluded from ETF acquired inventory and selectors.
+
+All routes require authentication:
+
+- `GET /indices?limit=20&offset=0` → `{items,total,limit,offset}` (limit 1–100).
+- `POST /indices` → record (201), body `{symbol,name,currency:null,return_variant:"unknown"}`.
+  Currency is optional/null or three letters. Return variant defaults to `unknown`;
+  other accepted values are `price`, `net_total_return`, `gross_total_return`.
+  Symbols are trimmed/uppercased. Re-adding a symbol returns its existing record
+  without overwriting metadata, including concurrent adds.
+- `GET /indices/{id}` → record.
+- `POST /indices/{id}/acquisitions` with **only** `{confirmed:true}` → `{job}` (202).
+  Active requests deduplicate. This explicitly selects Yahoo even when ETF
+  acquisitions are configured to use legacy Marketstack.
+- `GET /indices/{id}/quotes` → existing `{items,total,limit,offset,as_of,generation}`
+  quote contract, with exact numeric strings/nulls; supports `limit` (1–1000),
+  `offset`, timezone-aware `as_of`, and stable `generation` pagination.
+
+Records include `instrument_id,name,symbol,currency,return_variant,
+verification_status,acquisition,summary,provider`; summary contains
+`quote_count,first_date,last_date`. Additional fields are `provenance`, `profile`,
+`generation`, and `history_request`. Verification is `unverified` until a fenced
+published download establishes the exact symbol and Yahoo `instrumentType=INDEX`
+in both chart profile and raw historical response. `verified` means **identity
+only**, not verification of a user-supplied name/return variant/currency. Unknown
+currency remains null unless the published Yahoo chart supplies a three-letter
+currency; no return variant is inferred. Provenance states this verification scope.
+
+Downloads reuse `marketdata.acquire`, per-job call limits, raw evidence/checkpoint
+replay, lease fencing, and atomic Yahoo history generations. Index listing
+`exchange=YAHOO` is an internal provider namespace, **not** an asserted exchange
+or MIC. Full-history requests use an explicit **1900-01-01 through yesterday**
+boundary, not a claimed inception or a guarantee of complete coverage. Failed
+refreshes preserve the previous published quotes and metadata. Close-only Yahoo
+indices retain null OHLC/volume/adjusted-close fields; nothing is synthesized.
+Yahoo availability is not guaranteed; no network verification occurs during
+seeding, browsing, or adding records.
+
+Offline coverage: `uv run pytest tests/test_indices.py tests/test_yahoo_finance.py
+ tests/test_yfinance_acquisition.py`.
+
 ## Manage dependencies
 
 Run these commands from `backend/`:

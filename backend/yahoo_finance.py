@@ -256,6 +256,18 @@ def _chart(payload: Any, symbol: str) -> dict:
     return result
 
 
+def validate_index_identity(meta: Any, symbol: str) -> None:
+    """No ETF/equity proxies and no fuzzy or root-symbol identity matches."""
+    if (not isinstance(meta, dict) or meta.get("symbol") != symbol
+            or meta.get("instrumentType") != "INDEX"):
+        raise MarketDataError("index_identity_mismatch", "Yahoo must identify the exact requested symbol as an INDEX. Previous saved history remains active.")
+
+
+def validate_index_page(page: dict, symbol: str) -> None:
+    result = _chart(page.get("raw"), symbol)
+    validate_index_identity(result["meta"], symbol)
+
+
 def _tz(meta: dict) -> ZoneInfo:
     zone = None
     try:

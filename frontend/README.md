@@ -39,6 +39,18 @@ The browser uses the same origin, so no backend CORS configuration is needed.
 If the backend is unavailable, the page displays an error. Start the backend
 and refresh to try again.
 
+## Index catalogue
+
+Open **Indices** in the workspace navigation (`#/indices`) to browse the separate
+index catalogue. **Add index** saves a Yahoo symbol and metadata without downloading
+prices. Leave currency and return variant unknown unless independently verified.
+**Download data** / **Refresh data** requires confirmation and submits a background
+job; the table polls saved status and shows the published quote count/date range.
+A failed refresh leaves previous published data available. API, RabbitMQ and the
+worker must be running for downloads. Browsing and adding catalogue entries make
+no market-data provider calls. This first scope does not enable benchmarks or ETF
+proxy assignments, and the starter list is not a complete global directory.
+
 ## Build
 
 From `frontend/`:

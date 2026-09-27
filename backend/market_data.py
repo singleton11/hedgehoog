@@ -102,6 +102,14 @@ def require_catalogue(db, isin):
     return record
 
 
+def require_market_catalogue(db, instrument_id):
+    """Shared acquisition/quote boundary, not an ETF selector or ledger gate."""
+    if instrument_id.startswith("idx-"):
+        from indices import require_index
+        return require_index(db, instrument_id)
+    return require_catalogue(db, instrument_id)
+
+
 def search_catalogue(db, query, limit):
     # Match AFTER grouping so an old name/ticker does not resurrect an obsolete snapshot.
     expression = re.escape(query.strip())
@@ -131,7 +139,7 @@ def acquired_instruments(db, limit=20, offset=0):
     from return_statistics import refresh_statistics
 
     result = list(db.instruments.aggregate([
-        {"$match": {"$or": [{"provider": {"$ne": "yfinance"}}, {"published": True}]}},
+        {"$match": {"instrument_id": {"$not": {"$regex": "^idx-"}}, "$or": [{"provider": {"$ne": "yfinance"}}, {"published": True}]}},
         {"$project": {"instrument_id": 1, "symbol": 1, "exchange": 1, "collected_at": 1, "job_id": 1, "provider": 1}},
         {"$sort": {"instrument_id": 1, "collected_at": -1, "_id": -1}},
         {"$group": {
@@ -387,7 +395,7 @@ def instrument_detail(db, settings, isin, as_of=None):
 
 
 def read_quotes(db, isin, limit=1000, offset=0, as_of=None, generation=None):
-    require_catalogue(db, isin)
+    require_market_catalogue(db, isin)
     as_of = as_of or utcnow()
     snapshot = public(as_of)
     state = db.instrument_state.find_one({"_id": isin}) or {}
@@ -418,15 +426,21 @@ def read_quotes(db, isin, limit=1000, offset=0, as_of=None, generation=None):
 
 
 def request_acquisition(db, settings, isin, listing, mode, requested_by, publish):
-    catalogue = require_catalogue(db, isin)
-    try:
-        inception = date.fromisoformat(catalogue["inception_date"])
-    except (KeyError, TypeError, ValueError):
-        raise DataError(422, "This instrument has no valid inception date for a history request") from None
-    if inception > utcnow().date():
-        raise DataError(422, "The instrument inception date is in the future")
-    name = provider_name(settings)
-    if not configured(settings):
+    catalogue = require_market_catalogue(db, isin)
+    is_index = isin.startswith("idx-")
+    if is_index:
+        from indices import HISTORY_START
+        inception = date.fromisoformat(HISTORY_START)  # Request boundary, not index inception.
+        listing = {"symbol": catalogue["symbol"], "exchange": "YAHOO"}
+    else:
+        try:
+            inception = date.fromisoformat(catalogue["inception_date"])
+        except (KeyError, TypeError, ValueError):
+            raise DataError(422, "This instrument has no valid inception date for a history request") from None
+        if inception > utcnow().date():
+            raise DataError(422, "The instrument inception date is in the future")
+    name = "yfinance" if is_index else provider_name(settings)
+    if not is_index and not configured(settings):
         raise DataError(503, "Configure the selected market-data provider on the API and worker before requesting data")
     ensure_indexes(db)
     expire_stalled_jobs(db, isin)
@@ -467,6 +481,8 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
     job_id = str(uuid4())
     job = {
         "_id": job_id, "instrument_id": isin, "listing": listing, "lookup_ticker": ticker,
+        "instrument_kind": "index" if is_index else "etf",
+        "history_scope": "full_available_history" if is_index else "since_inception",
         "provider": name, "price_basis": "provider_split_adjusted" if name == "yfinance" else "unadjusted",
         "requested_by": requested_by, "requested_at": utcnow(), "mode": actual_mode,
         "date_from": start.isoformat(), "date_to": end.isoformat(),
@@ -616,6 +632,11 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
                     "published": name != "yfinance",
                     "collected_at": collected, "collection_date": collected.date().isoformat(), "data": data,
                 }}, upsert=True)
+            if job.get("instrument_kind") == "index":
+                from yahoo_finance import validate_index_identity
+                # Validate persisted raw chart metadata on retries as well.
+                profile = db.instruments.find_one({"job_id": job_id})
+                validate_index_identity(profile["data"], listing["symbol"])
             job = checkpoint({"phase": "quotes"})
             offset = job["next_offset"]
             latest_date = job.get("last_page_date")
@@ -635,6 +656,9 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
                 # Retry indexing the original saved response, not a new paid
                 # request. All rows/fields are retained before any projection.
                 page, collected = raw["data"], raw["collected_at"]
+                if job.get("instrument_kind") == "index":
+                    from yahoo_finance import validate_index_page
+                    validate_index_page(page, listing["symbol"])
                 rows = page["data"]
                 unindexed = 0
                 checkpoint()
@@ -734,7 +758,8 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
         # reporting success; DB retries replay saved pages without provider calls.
         from return_statistics import refresh_statistics
         checkpoint({"phase": "statistics"})
-        refresh_statistics(db, isin, force=True)
+        if job.get("instrument_kind") != "index":
+            refresh_statistics(db, isin, force=True)
         # Check ownership after all writes and before committing the range watermark.
         checkpoint({"phase": "finishing"})
         state = db.instrument_state.find_one({"_id": isin}) or {}
@@ -743,8 +768,10 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
             # This write is last, never on failed/incomplete pagination. It does not
             # advance to date_to when the provider is empty or publishes late.
             db.instrument_state.update_one({"_id": isin, "listing": listing}, {"$set": {"last_complete_quote_date": latest_date}})
-        summary = coverage(require_catalogue(db, isin), quote_dates(db, isin, listing))
-        warning = summary["warning"]
+        if job.get("instrument_kind") == "index":
+            warning = "Yahoo history was requested from 1900-01-01; this boundary is not index inception or a guarantee of complete coverage."
+        else:
+            warning = coverage(require_catalogue(db, isin), quote_dates(db, isin, listing))["warning"]
         if job["rows"] == 0:
             warning = "The provider returned no quotes for this range. No dates were marked as received." + (" " + warning if warning else "")
         if job.get("unindexed_rows", 0):
