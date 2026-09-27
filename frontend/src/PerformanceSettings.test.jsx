@@ -17,6 +17,7 @@ afterEach(cleanup);
 
 it('loads saved choices and explicitly saves an app-wide selection or clears it', async () => {
   render(<PerformanceSettings />); await flush();
+  expect(screen.getByText(/missing currency metadata is assumed to be EUR/)).toBeInTheDocument();
   expect(request).toHaveBeenCalledWith('/settings/performance/indices?limit=100&offset=0', expect.anything());
   expect(screen.getByRole('link', { name: 'Acquire an index' })).toHaveAttribute('href', '#/indices');
   expect(request.mock.calls.every(([, options]) => !options.method)).toBe(true);

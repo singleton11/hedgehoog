@@ -61,6 +61,7 @@ function Settings({ request, admin }) {
     <h2>Settings</h2><h3>Portfolio risk-return proxy</h3>
     <p>This app-wide setting applies to all users and portfolios. Only administrators can change it.</p>
     <p>Choose an acquired EUR-denominated index whose saved level returns will serve as both Sharpe’s risk-free proxy and Sortino’s minimum-return target. Use an appropriate overnight-rate or money-market return index; an equity index is not risk-free. Inflation indices and annual yield quotes are not return proxies.</p>
+    <p>For index proxies, missing currency metadata is assumed to be EUR, not converted to EUR. Explicit non-EUR currencies remain excluded. Check the index’s denomination before selecting it.</p>
     <p>Missing history makes ratios unavailable; there is no zero-rate fallback. Returns follow the saved index levels and their return variant. Changing this setting recalculates historical ratios when portfolios are reopened or refreshed.</p>
     {!current && <p role="status">Loading settings…</p>}
     {current?.error && <><p role="alert">{current.error}</p><button onClick={() => setAttempt(attempt + 1)}>Retry settings</button></>}
