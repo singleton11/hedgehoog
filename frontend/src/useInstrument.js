@@ -13,8 +13,6 @@ export default function useInstrument(isin) {
   const [pollError, setPollError] = useState(null);
   const [postError, setPostError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
-  const [savingCurrency, setSavingCurrency] = useState(false);
-  const [currencyError, setCurrencyError] = useState(null);
   const [refresh, setRefresh] = useState(0);
   const [quotes, setQuotes] = useState([]);
   const [quotesLoading, setQuotesLoading] = useState(false);
@@ -22,13 +20,12 @@ export default function useInstrument(isin) {
   const [quoteAttempt, setQuoteAttempt] = useState(0);
   const detailController = useRef(null);
   const postController = useRef(null);
-  const currencyController = useRef(null);
   const mounted = useRef(false);
   const path = `/instruments/${encodeURIComponent(isin)}`;
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; postController.current?.abort(); currencyController.current?.abort(); };
+    return () => { mounted.current = false; postController.current?.abort(); };
   }, []);
 
   useEffect(() => {
@@ -97,7 +94,7 @@ export default function useInstrument(isin) {
   }, [isin, request, quoteVersion, quoteAttempt]);
 
   const acquire = useCallback(async (body) => {
-    if (postController.current || currencyController.current || pendingJob(latest.current?.acquisition)) return false;
+    if (postController.current || pendingJob(latest.current?.acquisition)) return false;
     // Cancel any read that started before this explicit write.
     detailController.current?.abort();
     const controller = new AbortController();
@@ -126,38 +123,7 @@ export default function useInstrument(isin) {
     return accepted;
   }, [isin, path, request]);
 
-  const saveCurrency = useCallback(async (currency) => {
-    if (currencyController.current || postController.current) return false;
-    // Prevent an in-flight poll from replacing the newly saved setting.
-    detailController.current?.abort();
-    const controller = new AbortController();
-    currencyController.current = controller;
-    setSavingCurrency(true);
-    setCurrencyError(null);
-    let saved = false;
-    try {
-      const result = await request(`${path}/price-currency`, {
-        method: 'PATCH', body: { price_currency: currency }, signal: controller.signal,
-      });
-      if (controller.signal.aborted || !mounted.current) return false;
-      if (result?.price_currency_override !== currency) throw new Error('Price currency returned an unexpected response. Please retry.');
-      latest.current = { ...latest.current, price_currency_override: result.price_currency_override };
-      setDetail(latest.current);
-      saved = true;
-    } catch (error) {
-      if (!controller.signal.aborted && mounted.current) setCurrencyError(error.message);
-    } finally {
-      if (!controller.signal.aborted && mounted.current) {
-        currencyController.current = null;
-        setSavingCurrency(false);
-        setRefresh((value) => value + 1);
-      }
-    }
-    return saved;
-  }, [path, request]);
-
   return { detail, loading, error, pollError, postError, submitting, quotes, quotesLoading, quotesError, acquire,
-    savingCurrency, currencyError, saveCurrency,
-    retry: () => { if (!postController.current && !currencyController.current) setRefresh((value) => value + 1); },
+    retry: () => { if (!postController.current) setRefresh((value) => value + 1); },
     retryQuotes: () => setQuoteAttempt((value) => value + 1) };
 }
