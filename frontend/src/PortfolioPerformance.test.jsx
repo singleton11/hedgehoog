@@ -57,7 +57,7 @@ describe('Portfolio performance', () => {
     expect(screen.getByText(warning)).toBeVisible();
     expect(screen.getByText(warning)).toHaveAttribute('role', 'status');
     expect(document.querySelector('.portfolio-performance details')).not.toBeInTheDocument();
-    expect(document.querySelectorAll('.portfolio-performance p')).toHaveLength(1);
+    expect(screen.getByText(/Since inception/)).toBeVisible();
     expect(screen.queryByRole('link', { name: 'Manage indices' })).not.toBeInTheDocument();
   });
 
@@ -67,7 +67,7 @@ describe('Portfolio performance', () => {
       benchmark: { name: 'UNSELECTED' }, points: points.map((point) => ({ ...point, benchmark_percent: 'Infinity' })),
     })));
     render(<PortfolioPerformance {...props} request={request} />); await flush();
-    expect(screen.getByRole('img')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Cumulative performance (%)' })).toBeInTheDocument();
     expect(screen.queryByText('UNSELECTED')).not.toBeInTheDocument();
     expect(screen.queryByTestId('benchmark_percent-line')).not.toBeInTheDocument();
   });
@@ -90,7 +90,7 @@ describe('Portfolio performance', () => {
     });
     render(<PortfolioPerformance {...props} request={request} />); await flush();
     expect(screen.getByRole('alert')).toBeInTheDocument();
-    expect(screen.getByRole('img')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Cumulative performance (%)' })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: 'idx-one (^TEST)' })).not.toBeInTheDocument();
     broken = false; fireEvent.click(screen.getByRole('button', { name: 'Retry indices' })); await flush();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
@@ -142,7 +142,7 @@ describe('Portfolio performance', () => {
     });
     expect(screen.queryByText('STALE')).not.toBeInTheDocument();
     if (change !== 'revision') expect(screen.queryByRole('option', { name: /old-identity/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('img')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Cumulative performance (%)' })).toBeInTheDocument();
   });
 
   it.each(['auth', 'route'])('resets an existing benchmark on %s changes', async (change) => {
@@ -155,6 +155,20 @@ describe('Portfolio performance', () => {
 });
 
 describe('Performance chart', () => {
+  it('plots Sharpe and Sortino together on a unitless axis with gaps', () => {
+    render(<PerformanceChart ratios points={[
+      { date: '2026-09-20', sharpe: '1.25', sortino: '2.00' },
+      { date: '2026-09-21', sharpe: null, sortino: null },
+      { date: '2026-09-22', sharpe: '-0.50', sortino: '-0.75' },
+    ]} />);
+    const graph = screen.getByRole('img', { name: 'Sharpe and Sortino' });
+    expect(screen.getByTestId('sharpe-line').getAttribute('d').match(/M/g)).toHaveLength(2);
+    expect(screen.getByTestId('sortino-line')).toBeInTheDocument();
+    expect(graph.textContent).not.toContain('%');
+    fireEvent.focus(graph);
+    expect(screen.getByRole('status', { name: 'Risk ratio values' })).toHaveTextContent('Sharpe: -0.50');
+    expect(screen.getByRole('status', { name: 'Risk ratio values' })).toHaveTextContent('Sortino: -0.75');
+  });
   it('breaks null gaps and exposes values on hover, tap and keyboard focus without a slider', () => {
     const gapped = [...points, { date: '2026-09-23', twr_percent: null, benchmark_percent: null }, { date: '2026-09-24', twr_percent: '5', benchmark_percent: '6' }];
     render(<PerformanceChart points={gapped} benchmark={index()} />);

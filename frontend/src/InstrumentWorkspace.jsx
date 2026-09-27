@@ -8,9 +8,11 @@ import CustomerPlanner from './CustomerPlanner.jsx';
 import PortfolioTracker from './PortfolioTracker.jsx';
 import StrategyCalibration from './StrategyCalibration.jsx';
 import Icon from './Icon.jsx';
+import PerformanceSettings from './PerformanceSettings.jsx';
 
 function readRoute() {
   const hash = window.location.hash;
+  if (hash === '#/settings') return { settings: true };
   if (!hash || hash === '#' || hash === '#/') return { isin: null };
   // Opening a customer defaults to Portfolios; Goals has an explicit /goals route.
   const portfolios = hash.match(/^#\/goal\/customers\/([^/?#]+)(?:\/portfolios(?:\/([^/?#]+))?)?(?:\?(.*))?$/);
@@ -82,10 +84,11 @@ export default function InstrumentWorkspace() {
   return <div className="instrument-workspace">
     <nav aria-label="Workspace navigation" className="workspace-navigation">
       <p className="nav-label">Workspace</p>
-      <a href="#/" aria-current={!route.indices && !route.goal && !route.calibration && !route.invalid ? 'page' : undefined}><Icon name="grid" />ETFs</a>
+      <a href="#/" aria-current={!route.settings && !route.indices && !route.goal && !route.calibration && !route.invalid ? 'page' : undefined}><Icon name="grid" />ETFs</a>
       <a href="#/indices" aria-current={route.indices ? 'page' : undefined}><Icon name="chart" />Indices</a>
       <a href="#/goal" aria-current={route.goal ? 'page' : undefined}><Icon name="users" />Customers</a>
       <a href="#/calibration" aria-current={route.calibration ? 'page' : undefined}><Icon name="chart" />Calibration</a>
+      <a href="#/settings" aria-current={route.settings ? 'page' : undefined}><Icon name="layers" />Settings</a>
       <div className="sidebar-note"><span className="sidebar-note-icon"><Icon name="chart" /></span>
         <strong>A little perspective.<br />A longer view.</strong>
         <p>Your data. Your next move.</p>
@@ -93,7 +96,7 @@ export default function InstrumentWorkspace() {
       <p className="sidebar-footer">HEDGEHOOG <span> / </span> INVEST WITH INSIGHT</p>
     </nav>
     <div id="workspace-content" className="workspace-content" tabIndex={-1}>
-    {route.indices ? route.invalid ? <p role="alert">Index not found. <a href="#/indices">Back to indices</a>.</p>
+    {route.settings ? <PerformanceSettings /> : route.indices ? route.invalid ? <p role="alert">Index not found. <a href="#/indices">Back to indices</a>.</p>
       : route.indexId ? <IndexDetail key={route.indexId} instrumentId={route.indexId} /> : <Indices /> : route.portfolios ? <PortfolioTracker customerId={route.customerId} portfolioId={route.portfolioId} isin={route.isin} /> : route.calibration ? <StrategyCalibration newRun={route.newRun} runId={route.runId} sourceId={route.sourceId} strategyId={route.strategyId} /> : route.goal ? <CustomerPlanner customerId={route.customerId} goalId={route.goalId} simulationId={route.simulationId} newSimulation={route.newSimulation} isin={route.isin} /> : <>
       {(route.add || route.isin || route.invalid) && <nav aria-label="Instrument navigation"><a href="#/">← ETFs</a></nav>}
       {route.invalid ? <p role="alert">ETF not found. <a href="#/add">Search for an ETF</a>.</p>

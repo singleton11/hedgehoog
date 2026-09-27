@@ -49,7 +49,10 @@ def test_empty_and_cash_only_are_not_profit_and_refunding_preserves_chain(tracke
     result = get(client, url)
     assert result == {"portfolio_id": meta["id"], "currency": "EUR", "method": "daily_twr",
                       "cash_flow_timing": "deposits_start_withdrawals_end", "as_of": "2026-09-17T12:00:00.000000Z",
-                      "start_date": None, "end_date": None, "points": [], "benchmark": None, "warnings": []}
+                      "start_date": None, "end_date": None, "points": [], "benchmark": None,
+                      "warnings": ["Sharpe and Sortino unavailable: select a saved EUR price-return proxy in Settings."],
+                      "risk_proxy": None, "ratio_method": "since_inception_calendar_daily_log_excess_365",
+                      "summary": {"twr_percent": None, "sharpe": None, "sortino": None}}
     record(client, url, cash(amount="100.01", day="2026-09-01"))
     record(client, url, cash("withdrawal", amount="100.01", day="2026-09-02"))
     record(client, url, cash(amount="250.37", day="2026-09-05"))
@@ -238,7 +241,7 @@ def test_benchmark_has_common_baseline_without_fx_and_no_benchmark_means_only_tw
     assert result["benchmark"] == {"instrument_id": benchmark, "name": "Test index", "symbol": "^TEST",
                                     "currency": "USD", "return_variant": "price"}
     assert plain["benchmark"] is None and set(points(plain, "benchmark_percent").values()) == {None}
-    assert result["warnings"] == []
+    assert result["warnings"] == plain["warnings"]
     assert {name: list(db[name].find()) for name in db.list_collection_names()} == before
 
 
