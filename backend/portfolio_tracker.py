@@ -142,6 +142,8 @@ def currency_supported(db, instrument, rows):
 
 
 def acquired_instrument(db, isin, now):
+    if isin.startswith("idx-"):
+        raise md.DataError(422, "Indices are reference data, not tradable portfolio instruments.")
     state = db.instrument_state.find_one({"_id": isin}) or {}
     listing = state.get("listing") or {}
     if not all(isinstance(listing.get(key), str) and listing[key].strip() and len(listing[key].encode("utf-8")) <= 200

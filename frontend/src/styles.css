@@ -199,6 +199,8 @@ button.sign-out { min-height: 34px; padding: 0.4rem 0.65rem; font-size: 0.74rem;
 .acquisition-form { padding: 1.4rem; border: 1px solid #cfdfd1; border-radius: 12px; background: #f5f9f4; font-size: 0.85rem; }
 .acquisition-form h3, .acquisition-form p { margin: 0.3rem 0; }
 .acquisition-form h3 { margin-bottom: 0.5rem; }
+.index-form > input, .index-form > select { display: block; width: min(100%, 32rem); margin-bottom: 0.8rem; }
+.index-form > label { display: block; margin-top: 0.6rem; }
 .listing-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 1rem; }
 .listing-fields input { margin: 0.25rem 0; }
 .checkbox-label { display: flex; align-items: flex-start; gap: 0.65rem; margin: 0.75rem 0; }

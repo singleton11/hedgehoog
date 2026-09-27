@@ -23,6 +23,8 @@ from celery_app import enqueue_etf_import
 from config import Settings
 from customer_planner import ensure_indexes as ensure_customer_planner_indexes, router as customer_planner_router
 from instrument_routes import router as instrument_router
+from index_routes import router as index_router
+from indices import ensure_catalogue as ensure_index_catalogue
 from goal_planner import router as goal_router
 from market_data import DataError
 from manual_splits import ensure_indexes as ensure_manual_split_indexes
@@ -44,6 +46,7 @@ def create_app(settings: Settings | None = None, client_factory=MongoClient) -> 
             await run_in_threadpool(ensure_customer_planner_indexes, app.state.database)
             await run_in_threadpool(ensure_portfolio_indexes, app.state.database)
             await run_in_threadpool(ensure_manual_split_indexes, app.state.database)
+            await run_in_threadpool(ensure_index_catalogue, app.state.database)
             await run_in_threadpool(enqueue_etf_import, config)
             yield
         finally:
@@ -51,6 +54,7 @@ def create_app(settings: Settings | None = None, client_factory=MongoClient) -> 
 
     app = FastAPI(lifespan=lifespan)
     app.include_router(instrument_router)
+    app.include_router(index_router)
     app.include_router(goal_router)
     app.include_router(customer_planner_router)
     app.include_router(portfolio_router)
