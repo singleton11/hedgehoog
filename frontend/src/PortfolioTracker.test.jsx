@@ -43,6 +43,8 @@ function mockServer() {
     const url = new URL(path, 'http://localhost');
     if (url.pathname === `/customers/${cid}`) return server.customer(options);
     if (url.pathname === `/customers/${cid}/goals`) return server.goalList(url.searchParams, options);
+    if (url.pathname === '/indices') return page([], url.searchParams);
+    if (url.pathname.endsWith('/performance')) return { portfolio_id: url.pathname.split('/').at(-2), currency: 'EUR', method: 'daily_twr', cash_flow_timing: 'deposits_start_withdrawals_end', as_of: '2026-09-24T00:00:00Z', start_date: null, end_date: null, points: [], benchmark: null, warnings: [] };
     if (url.pathname === '/portfolio-instruments') return server.instrumentList(url.searchParams, options);
     if (url.pathname === base) return options.method === 'POST' ? server.create(options.body, options) : server.portfolioList(url.searchParams, options);
     if (url.pathname.startsWith(`${transactionsPath}/`) && options.method === 'DELETE') return server.remove(url.pathname.split('/').at(-1), options);
@@ -481,6 +483,22 @@ describe('exact manually dated cash and trade transactions', () => {
 });
 
 describe('portfolio detail interactions', () => {
+  it('refreshes performance below summary after refresh, deposit and removal', async () => {
+    mockServer(); await open();
+    const reads = () => request.mock.calls.filter(([url]) => url === `${detailPath}/performance`).length;
+    expect(reads()).toBe(1);
+    const chart = screen.getByRole('region', { name: 'Portfolio performance' });
+    expect(screen.getByRole('region', { name: 'Portfolio summary' }).compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(chart.compareDocumentPosition(screen.getByRole('tablist')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolio' })); await flush();
+    expect(reads()).toBe(2);
+    addTransaction(); change('Amount (EUR)', '100'); await submit(cashForm());
+    expect(reads()).toBe(3);
+    transactionsTab(); await flush();
+    fireEvent.click(screen.getByRole('button', { name: /^Remove deposit/ }));
+    await submit(screen.getByRole('form', { name: 'Remove transaction' }));
+    expect(reads()).toBe(4);
+  });
   it.each(['Positions', 'Transactions'])('expands transaction entry inline above %s and preserves the draft while using the page', async (tab) => {
     mockServer(); await open();
     fireEvent.click(screen.getByRole('tab', { name: tab }));

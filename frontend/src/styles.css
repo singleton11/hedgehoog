@@ -488,6 +488,18 @@ main.login-page { display: grid; grid-template-columns: 1fr 1fr; width: min(calc
   .login-panel h1 { font-size: 1.8rem; }
   .login-panel form { margin-top: 1.5rem; }
 }
+.portfolio-performance { margin: 1.5rem 0; padding: 1rem; border: 1px solid var(--line); border-radius: 8px; }
+.portfolio-performance select { display: block; max-width: 100%; margin: .5rem 0; }
+.performance-chart svg { display: block; width: 100%; min-width: 680px; height: auto; }
+.performance-notes summary { cursor: pointer; font-weight: 600; padding: .5rem 0; }
+.performance-notes p { font-size: .85rem; }
+.performance-chart svg text { fill: currentColor; font-size: 11px; }
+.performance-chart input[type="range"] { display: block; width: 100%; }
+.performance-grid { stroke: currentColor; opacity: .18; }
+.performance-legend { display: flex; flex-wrap: wrap; gap: 1.5rem; padding-left: 1.5rem; }
+.performance-portfolio { color: #1768aa; }
+.performance-benchmark { color: #905300; }
+.performance-benchmark path { stroke-dasharray: 6 4; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
 }

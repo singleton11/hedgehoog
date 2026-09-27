@@ -66,6 +66,83 @@ A portfolio pins its instrument's symbol/exchange; it never silently switches to
 a different listing. Existing EUR trade snapshots remain sellable even if their
 catalogue/profile is removed. Such removal does not erase balances or history.
 
+## Performance: TWR and an optional index benchmark
+
+The **Portfolio performance** graph above the detail tabs shows cumulative
+**time-weighted return (TWR)** in percent, including cash and trading commissions.
+The default is **No benchmark**. Choose a downloaded index to overlay its
+percentage change on the same graph; clear the choice to show only portfolio
+TWR. The selection is local to the open portfolio view, not a saved portfolio
+setting. Use the date slider or hover over the graph for individual values.
+On narrow screens the graph scrolls horizontally. Expand **Calculation and data
+notes** for the timing and price assumptions; data-quality warnings remain visible.
+
+The index selector loads the complete active index catalogue. Indices without
+saved history must first be explicitly downloaded on **Indices**. Opening,
+refreshing or selecting a benchmark never downloads prices or consumes provider
+quota. Adding, importing or removing transactions refreshes performance.
+
+### Calculation and dates
+
+Ledger entries have dates, not execution timestamps. This is therefore a
+**daily saved-price TWR estimate**, not intraday TWR measured at each cash flow.
+For each day with a transaction or saved price observation, let `V_previous` be
+the preceding ending equity, `V_end` the ending cash plus marked holdings, `D`
+the day's deposits, and `W` its withdrawals. The convention is deposits at the
+**start** of the day and withdrawals at the **end**:
+
+`daily growth factor = (V_end + W) / (V_previous + D)`
+
+`cumulative TWR (%) = (product of daily growth factors − 1) × 100`
+
+Buys and sells are internal movements, not external flows. Execution prices,
+cent-rounded settlement and all commissions affect equity and therefore return;
+first-day fees are not lost by starting the graph at that day's closing value.
+The graph includes a zero baseline on the calendar day before the first active
+funding entry (when representable), and continues through the current UTC date.
+For example, +10% followed by −10% is −1% cumulative, not zero. Depositing or
+withdrawing cash by itself creates no return. After a complete withdrawal, an
+unfunded interval preserves the prior cumulative return; a new funded period
+links onto it. A complete investment loss remains −100% under geometric linking,
+even after later refunding; the graph is never silently restarted.
+
+Holdings are replayed historically, not today's positions applied to old prices.
+Each date uses the most recent **raw saved close on or before that date**, on the
+trade's pinned listing and currently published history generation. Prior closes
+carry forward across weekends, holidays, missing observations and after the last
+saved close. Thus stale marks can defer a price movement, and newer transactions
+may be valued against an older close. No exchange calendar or live price is
+inferred. Historical provider revisions are reflected on refresh; this is not a
+point-in-time backtest of information available when the trade occurred.
+
+No future close or execution price fills a missing initial mark, and an invalid
+latest observation is never replaced by an older valid or adjusted close. Currency is checked on each selected observation: a later currency metadata gap
+cannot invalidate earlier confirmed EUR marks, and an override can fill missing
+currency only on its matching pinned listing, never relabel a foreign price. If any
+closing holding lacks a valid confirmed EUR mark, the portfolio return is
+unavailable from that date onward, rather than reporting a partial return or
+restarting at a convenient later date. Repair/download the missing history to
+restore the chain. A same-day fully liquidated holding needs no closing mark.
+Removed entries do not contribute; imported entries follow the same rules.
+
+### Benchmark interpretation
+
+The benchmark is `(saved index level / baseline index level − 1) × 100`, using
+its last saved close on or before the same baseline date. It is **not rebased to
+a later overlapping date** if initial history is missing; an unavailable index
+leaves portfolio TWR available. Index dates are included in the graph and prior
+index closes carry forward, with no use of future observations. An invalid index
+observation creates a gap, which may recover at the next valid observation
+because every point is normalized directly to the fixed valid baseline.
+
+An index is compared in its **own recorded currency**, with **no FX conversion**
+to EUR. Its recorded variant may be price, net total return, gross total return,
+or unknown; identity verification does not establish that variant. Consequently
+this is not necessarily a like-for-like EUR total-return comparison. The portfolio
+ledger still does not process dividends, splits, taxes, interest or other
+corporate actions, and its raw-price TWR can be misleading across them. Inspect
+these limitations rather than treating the chart as a fully adjusted return.
+
 ## Import a DEGIRO account statement
 
 Open a portfolio's **Transactions** tab and select **Import DEGIRO CSV**, choose
@@ -252,6 +329,7 @@ protection. Browser requests use the `/api` prefix.
 | `GET /customers/{cid}/portfolios?limit=20&offset=0` | Customer-scoped portfolio metadata plus net worth, realized/unrealized/Today/total PnL and Today interval dates |
 | `POST /customers/{cid}/portfolios` | `{name, goal_id?: string|null}` |
 | `GET /customers/{cid}/portfolios/{pid}` | Metadata, balances, positions, PnL and warnings |
+| `GET /customers/{cid}/portfolios/{pid}/performance?benchmark_id=idx-UUID` | Read-only cumulative daily TWR and optional saved index comparison; omit `benchmark_id` for TWR only |
 | `PATCH /customers/{cid}/portfolios/{pid}` | `{name, goal_id?: string|null}`; null/omission detaches goal |
 | `GET /customers/{cid}/portfolios/{pid}/transactions?limit=20&offset=0` | Ledger newest date/entry first |
 | `POST /customers/{cid}/portfolios/{pid}/transactions` | Append a validated transaction |
@@ -264,6 +342,17 @@ are calculated only for the requested page, sharing a request-local saved-quote
 cache. Amounts are two-decimal strings or null when unavailable; date fields are
 `today_from_date` / `today_to_date`. Creation, settings and detail metadata remain
 unchanged; list summaries are derived, never stored or accepted as editable data.
+
+Performance responses contain `portfolio_id`, `currency: "EUR"`,
+`method: "daily_twr"`, `cash_flow_timing: "deposits_start_withdrawals_end"`,
+`as_of`, nullable `start_date` / `end_date`, `warnings`, nullable `benchmark`
+metadata, and date-ordered `points`. Each point contains `date`, `twr_percent`
+and `benchmark_percent`; percentages are eight-decimal strings (`"10.00000000"`
+means 10%) or null, not fractions or JSON floats. Empty portfolios have no points.
+No benchmark means null benchmark metadata and values. The response is derived
+from the whole active ledger, independent of transaction-history pagination, and
+nothing is persisted. Unknown/removed benchmark IDs return 404; ETF ISINs or
+malformed index IDs return 422. Normal portfolio owner/customer scoping applies.
 
 Cash transaction example:
 
