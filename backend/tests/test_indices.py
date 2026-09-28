@@ -160,7 +160,7 @@ def test_worker_uses_yahoo_full_boundary_no_fake_inception_and_keeps_unknowns(db
     job = db.acquisition_jobs.find_one({"_id": result["id"]})
     assert job["provider"] == "yfinance" and job["instrument_kind"] == "index"
     assert job["date_from"] == job["splits_date_from"] == indices.HISTORY_START
-    assert source.calls == [("tickerinfo", "^GSPC"), ("eod", "^GSPC", "YAHOO", indices.HISTORY_START, "2026-09-16", 0)]
+    assert source.calls == [("tickerinfo", "^GSPC"), ("eod", "^GSPC", "YAHOO", indices.HISTORY_START, "2026-09-17", 0)]
     assert db.marketstack_usage.count_documents({}) == 0
     assert db.raw_eod_pages.count_documents({}) == db.raw_split_pages.count_documents({}) == 1
     detail = indices.index_detail(db, index["instrument_id"])

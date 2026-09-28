@@ -24,7 +24,7 @@ Yahoo also serves indices (for example `^990100-USD-STRD`). The separate **Indic
 
 ## Full-history refresh and atomic visibility
 
-Every Yahoo initial request, update or older-history retry requests available daily history from catalogue inception through yesterday UTC. The adapter translates the inclusive end into Yahoo's exclusive end. This intentionally replaces incremental acquisition: Yahoo can revise older split/dividend adjustments, so appending new dates would mix incompatible adjustment vintages.
+Every Yahoo initial request, update or older-history retry requests available daily history from catalogue inception through the current UTC date. Providers return only completed trading-day bars, so requesting today also captures a quote published later on the current day; the adapter translates the inclusive end into Yahoo's exclusive end. This intentionally replaces incremental acquisition: Yahoo can revise older split/dividend adjustments, so appending new dates would mix incompatible adjustment vintages.
 
 Each request creates an immutable **generation** identified by its job UUID:
 

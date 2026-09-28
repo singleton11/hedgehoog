@@ -1,3 +1,6 @@
+# Pi local configuration and session data
+.pi/
+
 # Local environment files and secrets (keep example configuration)
 .env
 .env.*

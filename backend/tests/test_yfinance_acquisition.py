@@ -230,7 +230,7 @@ def test_every_update_requests_full_history_and_publishes_one_generation(db, con
     clock[0] += timedelta(seconds=2)
     second, source = run(db, config, [quote("2026-09-15", "55")])
     assert second["mode"] == "refresh"
-    assert next(call for call in source.calls if call[0] == "eod")[3:5] == ("2010-05-19", "2026-09-16")
+    assert next(call for call in source.calls if call[0] == "eod")[3:5] == ("2010-05-19", "2026-09-17")
     latest = md.read_quotes(db, ISIN)
     assert [(row["date"], row["close"]) for row in latest["items"]] == [("2026-09-15", "55")]
     old = md.read_quotes(db, ISIN, as_of=cutoff)

@@ -488,7 +488,12 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
     same_listing = state_listing == listing
     last_complete = state.get("last_complete_quote_date") if same_listing else None
     dates = quote_dates(db, isin, listing) if listing else []
-    end = utcnow().date() - timedelta(days=1)
+    # Yahoo can publish the current day's completed bar after the previous
+    # UTC day ended. Request that inclusive boundary; the provider returns no
+    # bar when the market has not closed yet. Keep the legacy Marketstack
+    # boundary unchanged for compatibility with its incremental watermark.
+    collection_date = utcnow().date() if name == "yfinance" else utcnow().date() - timedelta(days=1)
+    end = collection_date
     start = inception
     actual_mode = "initial"
     if name == "yfinance":
@@ -513,7 +518,7 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
         # Always refresh all actions, including on incremental/no-new-price
         # updates and older-price backfills. Corrections may affect old quotes.
         "splits_date_from": min(inception.isoformat(), dates[0]) if dates else inception.isoformat(),
-        "splits_date_to": max(inception.isoformat(), (utcnow().date() - timedelta(days=1)).isoformat()),
+        "splits_date_to": max(inception.isoformat(), collection_date.isoformat()),
         "status": "queued", "active": True, "phase": "queued", "pages": 0, "rows": 0, "flagged_rows": 0, "unindexed_rows": 0, "calls": 0,
         "next_offset": 0, "expected_total": None, "started_at": None, "finished_at": None,
         "error": None, "warning": None,
