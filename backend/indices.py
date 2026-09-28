@@ -14,10 +14,11 @@ from market_data import (DataError, expire_stalled_jobs, history_generation,
 
 HISTORY_START = "1900-01-01"
 SEED_NAMESPACE = UUID("da8a221b-8295-47f3-8293-cc89019dd179")
-# Labels are curated conveniences, not verified financial metadata. In particular
-# DAX's return variant must not be inferred from its familiar display name.
-SEEDS = (("^GSPC", "S&P 500"), ("^DJI", "Dow Jones Industrial Average"),
-         ("^IXIC", "NASDAQ Composite"), ("^FTSE", "FTSE 100"), ("^GDAXI", "DAX"))
+# Labels are curated conveniences, not verified financial metadata. Return variants
+# must not be inferred from familiar display names.
+SEEDS = (("^GSPC", "S&P 500"),
+         ("^990100-USD-STRD", "MSCI World"),
+         ("^ESTR", "€STR (Euro Short-Term Rate)"))
 
 
 def search_indices(settings, query, limit=15):
@@ -56,16 +57,25 @@ def ensure_catalogue(db):
     db.indices.create_index("symbol", unique=True)
     db.indices.create_index("instrument_id", unique=True)
     db.indices.create_index([("name", ASCENDING), ("instrument_id", ASCENDING)])
+    desired_symbols = {symbol for symbol, _ in SEEDS}
+    # Retire removed curated defaults without deleting their identity or history.
+    db.indices.update_many(
+        {"provenance.source": "curated", "symbol": {"$nin": list(desired_symbols)},
+         "removed_at": {"$exists": False}},
+        {"$set": {"removed_at": utcnow(), "removed_by": "catalogue-maintenance"}},
+    )
     for symbol, name in SEEDS:
         identifier = "idx-" + str(uuid5(SEED_NAMESPACE, symbol))
         try:
-            db.indices.update_one({"symbol": symbol}, {"$setOnInsert": {
-                "_id": identifier, "instrument_id": identifier, "symbol": symbol,
-                "name": name, "currency": None, "return_variant": "unknown",
-                "verification_status": "unverified", "provider": "yfinance",
-                "provenance": {"source": "curated", "metadata_verified": False},
-                "created_at": utcnow(),
-            }}, upsert=True)
+            db.indices.update_one({"symbol": symbol}, {
+                "$setOnInsert": {
+                    "_id": identifier, "instrument_id": identifier, "symbol": symbol,
+                    "name": name, "currency": None, "return_variant": "unknown",
+                    "verification_status": "unverified", "provider": "yfinance",
+                    "provenance": {"source": "curated", "metadata_verified": False},
+                    "created_at": utcnow(),
+                },
+            }, upsert=True)
         except DuplicateKeyError:
             # Another startup or a concurrent manual add won the same symbol.
             pass
