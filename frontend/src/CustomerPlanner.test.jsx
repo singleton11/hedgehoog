@@ -20,7 +20,7 @@ const buyAndHold = {
 const pair = { id: 'test_pair', name: 'Two instruments', description: 'A test-only strategy with generic parameters.',
   parameters: ['primary', 'secondary'].map((key) => ({ key, label: `${key} instrument`, type: 'instrument', required: true, universe: 'acquired' })) };
 const selection = (instrument = A) => ({ id: BUY_AND_HOLD_ID, parameters: { instrument } });
-const settings = (extra = {}) => ({ strategy: selection(), starting_capital_eur: '10000.00', reliability: 0.9, ...extra });
+const settings = (extra = {}) => ({ strategy: selection(), starting_capital_eur: '0.00', reliability: 0.75, ...extra });
 const customerPath = (cid = customer.id) => `/customers/${cid}`;
 const goalPath = (gid = goal.id, cid = customer.id) => `${customerPath(cid)}/goals/${gid}`;
 const customerRoute = (cid = customer.id) => `#/goal/customers/${cid}`;
@@ -712,6 +712,8 @@ describe('preview first, explicit idempotent save and immutable reports', () => 
   it('keeps previews out of history, saves only chosen results, and reloads the original unchanged after another saved calculation', async () => {
     const server = mockServer(); const view = await open(newRoute());
     const fixed = structuredClone(server.goals.get(goal.id));
+    expect(screen.getByLabelText('Starting capital (EUR)')).toHaveValue('0');
+    expect(screen.getByLabelText('Reliability target (%)')).toHaveValue(75);
     await submit();
     const discarded = structuredClone([...server.previews.values()][0]);
     expect(result()).toBeInTheDocument(); expect(saveButton()).toBeEnabled(); expect(server.saved.size).toBe(0);
@@ -744,7 +746,7 @@ describe('preview first, explicit idempotent save and immutable reports', () => 
     expect(historyLinks()).not.toContain(reportRoute(discarded.id));
     const rows = within(comparison()).getAllByRole('row');
     expect(rows[1]).toHaveTextContent('€20,000.00'); expect(rows[1]).toHaveTextContent('95%'); expect(rows[1]).toHaveTextContent('€987.65');
-    expect(rows[2]).toHaveTextContent('€10,000.00'); expect(rows[2]).toHaveTextContent('90%'); expect(rows[2]).toHaveTextContent('€456.78');
+    expect(rows[2]).toHaveTextContent('€0.00'); expect(rows[2]).toHaveTextContent('75%'); expect(rows[2]).toHaveTextContent('€456.78');
     view.unmount(); server.definitions = []; server.acquiredItems = []; request.mockClear();
     await open(reportRoute(original.id));
     expect(within(result()).getByRole('status')).toHaveTextContent('€456.78');

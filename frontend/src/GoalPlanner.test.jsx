@@ -412,12 +412,12 @@ describe('explicit monthly simulation', () => {
     expect(posts()).toHaveLength(0);
     await submit();
     expect(posts()).toEqual([['/goals/simulate', expect.objectContaining({ method: 'POST', signal: expect.any(AbortSignal), body: {
-      strategy: selection(), goal_eur: '100000.00', starting_capital_eur: '10000.00', goal_date: '2036-09-17', reliability: 0.9,
+      strategy: selection(), goal_eur: '100000.00', starting_capital_eur: '10000.00', goal_date: '2036-09-17', reliability: 0.75,
     } })]]);
     expect(result()).toBeInTheDocument();
     const view = within(result());
     expect(view.getByRole('status')).toHaveTextContent('€456.78 per month');
-    expect(view.getByRole('status')).toHaveTextContent('90.43% estimated success · 90% target');
+    expect(view.getByRole('status')).toHaveTextContent('90.43% estimated success · 75% target');
     expect(view.getByText('120 payments')).toBeInTheDocument();
     expect(view.getByText('€54,813.60')).toBeInTheDocument();
     expect(view.getByText('€64,813.60')).toBeInTheDocument();

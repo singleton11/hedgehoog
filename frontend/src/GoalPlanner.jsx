@@ -119,7 +119,7 @@ export default function GoalPlanner({ isin, goal, apiBase, reportHref }) {
   const strategy = strategies.find((item) => item.id === strategyId) || (strategyId === null ? strategies[0] : null);
   const selection = strategy ? { id: strategy.id, parameters } : null;
   const [readiness, setReadiness] = useState({});
-  const [inputs, setInputs] = useState(() => ({ goal: goal?.goal_eur || '100000', capital: '10000', date: goal?.goal_date || monthlyAnniversary(new Date(), 120), reliability: '90' }));
+  const [inputs, setInputs] = useState(() => ({ goal: goal?.goal_eur || '100000', capital: '0', date: goal?.goal_date || monthlyAnniversary(new Date(), 120), reliability: '75' }));
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
