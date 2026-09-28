@@ -49,7 +49,6 @@ function InstrumentParameter({ parameter, value = '', instruments, onChange, onR
           </div>}
         <details className="disclosure"><summary>Saved return statistics</summary><div className="disclosure-content">
           <StatisticsSummary statistics={statistics} />
-          <button type="button" className="secondary" onClick={refresh}>Refresh statistics</button>
         </div></details>
       </>}
     </section>}

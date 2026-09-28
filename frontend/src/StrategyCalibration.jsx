@@ -42,8 +42,7 @@ function CalibrationHistory({ request }) {
   const data = current ? state.data : null;
   return <>
     <div className="section-heading"><h2 className="instrument-name">Calibration</h2>
-      <div className="calibration-actions"><button type="button" className="secondary" onClick={() => { setOffset(0); setAttempt((value) => value + 1); }}>Refresh</button>
-        <a className="button-link" href="#/calibration/new">New run</a></div></div>
+      <div className="calibration-actions"><a className="button-link" href="#/calibration/new">New run</a></div></div>
     <p className="muted">Your saved calibration runs, newest first. Each run keeps its parameters, scores and report.</p>
     {!current ? <p role="status">Loading calibration history…</p> : state.error ? <>
       <p role="alert">Could not load calibration history: {state.error}</p>

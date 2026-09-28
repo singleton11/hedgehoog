@@ -65,7 +65,7 @@ function PagedList({ request, path, label, validate, children, empty }) {
   const resource = useRead(request, `${path}?limit=${PAGE_SIZE}&offset=${offset}`);
   // A successful creation changes the component key in the parent, starting at page one.
   return <section aria-label={label} className="planner-list">
-    <div className="section-heading"><h3>{label}</h3><button type="button" className="secondary" onClick={resource.retry}>Refresh {label.toLowerCase()}</button></div>
+    <div className="section-heading"><h3>{label}</h3></div>
     <LoadState resource={resource} valid={validPage(resource.data, offset, validate)}>
       {resource.data?.total === 0 ? <p className="empty-state">{empty}</p> : <>
         {resource.data && children(resource.data.items)}

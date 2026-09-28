@@ -185,7 +185,7 @@ function MetadataForm({ request, customerId, plans, onSaved, onCancel }) {
     <MutationStatus mutation={mutation} />
   </form>;
 }
-function PortfolioHeader({ request, customerId, portfolio, plans, onSaved, onRefresh, disabled }) {
+function PortfolioHeader({ request, customerId, portfolio, plans, onSaved, disabled }) {
   const [editor, setEditor] = useState(null);
   const [name, setName] = useState('');
   const [planId, setPlanId] = useState('');
@@ -232,7 +232,6 @@ function PortfolioHeader({ request, customerId, portfolio, plans, onSaved, onRef
         </div>
         <p className="muted">EUR · {portfolio.plan_id ? planName(plans.data?.find((plan) => plan.id === portfolio.plan_id)) : 'No linked plan'}</p>
       </div>
-      <button className="secondary" type="button" onClick={onRefresh}>Refresh portfolio</button>
     </div>
     {editor === 'plan' && <form id="portfolio-plan-form" className="goal-form planner-create portfolio-plan-form" aria-label="Assign portfolio plan" onSubmit={save} onKeyDown={cancelOnEscape}>
       <h3>{portfolio.plan_id ? 'Change plan' : 'Assign plan'}</h3>
@@ -280,7 +279,7 @@ function PortfolioList({ request, customerId, plans }) {
     {creating && <MetadataForm request={request} customerId={customerId} plans={plans} onCancel={() => setCreating(false)}
       onSaved={() => { setOffset(0); setRevision((value) => value + 1); setCreating(false); }} />}
     <section className="planner-list" aria-label="Portfolios">
-      <div className="section-heading"><h3>Portfolios</h3><button className="secondary" type="button" onClick={resource.retry}>Refresh portfolios</button></div>
+      <div className="section-heading"><h3>Portfolios</h3></div>
       <ReadStatus resource={resource} label="portfolios" invalid={!valid} />
       {!resource.loading && !resource.error && valid && <>{resource.data.total === 0 ? <p className="empty-state">No portfolios yet. Select Add portfolio to create your first portfolio.</p> : <>
         <p id="portfolio-summary-scroll" className="portfolio-scroll-hint">Scroll horizontally to view all columns.</p>
@@ -435,7 +434,7 @@ function Transactions({ request, path, revision, onRemoved }) {
       () => { setSelected(null); historyHeading.current?.focus(); onRemoved(); }, 'Transaction removed.');
   }
   return <section className="planner-list" aria-label="Transaction history">
-    <div className="section-heading"><h3 ref={historyHeading} tabIndex={-1}>Transaction history</h3><button type="button" className="secondary" disabled={mutation.busy} onClick={resource.retry}>Refresh transactions</button></div>
+    <div className="section-heading"><h3 ref={historyHeading} tabIndex={-1}>Transaction history</h3></div>
     <ReadStatus resource={resource} label="transactions" invalid={!valid} />
     {selected && <form className="goal-form planner-create" aria-label="Remove transaction" onSubmit={remove}>
       <h4 ref={confirmationHeading} tabIndex={-1}>Remove transaction?</h4>
@@ -488,7 +487,7 @@ function PortfolioDetail({ request, customerId, portfolioId, plans }) {
   return <>
     <ReadStatus resource={resource} label="portfolio" invalid={!valid} />
     {valid && <>
-      <PortfolioHeader request={request} customerId={customerId} portfolio={resource.data.portfolio} plans={plans} onSaved={refresh} onRefresh={refresh} disabled={resource.loading || Boolean(resource.error)} />
+      <PortfolioHeader request={request} customerId={customerId} portfolio={resource.data.portfolio} plans={plans} onSaved={refresh} disabled={resource.loading || Boolean(resource.error)} />
       <Summary data={resource.data} performance={performance?.request === request && performance.portfolioPath === path && performance.revision === revision ? performance.summary : null} />
       {!resource.loading && !resource.error && <PortfolioPlanTracking request={request} portfolioPath={path} planId={resource.data.portfolio.plan_id} revision={revision} />}
       <div className="portfolio-section-controls">
