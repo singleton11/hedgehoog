@@ -135,6 +135,23 @@ function ConfirmDownload({ item, busy, onConfirm, onCancel }) {
   </form>;
 }
 
+function ConfirmAllDownload({ count, busy, onConfirm, onCancel }) {
+  const [confirmed, setConfirmed] = useState(false);
+  const heading = useRef(null);
+  useEffect(() => { heading.current?.focus(); }, []);
+  return <form className="acquisition-form" aria-label="Confirm all index downloads" onSubmit={(event) => {
+    event.preventDefault();
+    if (confirmed && !busy) onConfirm();
+  }}>
+    <h3 tabIndex={-1} ref={heading}>Download market data for all indexes?</h3>
+    <p>Queue available Yahoo Finance history for all {count} indexes in the catalogue. Each download will require explicit provider access.</p>
+    <label className="checkbox-label"><input type="checkbox" checked={confirmed} required disabled={busy}
+      onChange={(event) => setConfirmed(event.target.checked)} />Allow these requests to fetch Yahoo Finance data.</label>
+    <div className="button-group"><button disabled={!confirmed || busy}>Confirm all downloads</button>
+      <button type="button" className="secondary" disabled={busy} onClick={onCancel}>Cancel</button></div>
+  </form>;
+}
+
 function ConfirmRemoval({ item, busy, onConfirm, onCancel }) {
   const heading = useRef(null);
   useEffect(() => { heading.current?.focus(); }, []);
@@ -160,6 +177,7 @@ export default function Indices() {
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
   const [selection, setSelection] = useState(null);
+  const [allDownloads, setAllDownloads] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [notice, setNotice] = useState(null);
   const readController = useRef(null);
@@ -209,6 +227,7 @@ export default function Indices() {
   function closeForms() {
     setAdding(false);
     setSelection(null);
+    setAllDownloads(false);
     setRemoving(false);
     setError(null);
     trigger.current?.focus();
@@ -255,11 +274,15 @@ export default function Indices() {
     <div className="section-heading page-heading"><div><p className="eyebrow">Market reference data</p>
       <h2 id="indices-heading">Indices{page ? ` (${page.total})` : ''}</h2>
       <p className="muted">A small, curated catalogue — not a complete global directory. Downloads happen only on request.</p>
-    </div><button disabled={busy || adding || Boolean(selection)} onClick={(event) => {
+    </div><div className="button-group"><button className="secondary" disabled={busy || adding || Boolean(selection) || allDownloads || !page?.total} onClick={(event) => {
+      trigger.current = event.currentTarget; setAllDownloads(true); setError(null); setNotice(null);
+    }}>Download all market data</button><button disabled={busy || adding || Boolean(selection) || allDownloads} onClick={(event) => {
       trigger.current = event.currentTarget; setAdding(true); setError(null); setNotice(null);
-    }}><Icon name="plus" />Add index</button></div>
+    }}><Icon name="plus" />Add index</button></div></div>
     <p className="muted">Benchmark comparisons and ETF proxy assignments are not enabled. Index identity checks do not verify currency or dividend-reinvestment semantics.</p>
     {adding && <AddIndex busy={busy} onCancel={closeForms} onSave={(body) => mutate('/indices', body, 'Index saved. No market data was downloaded.')} />}
+    {allDownloads && <ConfirmAllDownload count={page?.total || 0} busy={busy} onCancel={closeForms}
+      onConfirm={() => mutate('/indices/acquisitions', { confirmed: true }, 'Downloads requested for all indexes. Status will update automatically.')} />}
     {selection && removing && <ConfirmRemoval key={selection.instrument_id} item={selection} busy={busy} onCancel={closeForms}
       onConfirm={() => mutate(`/indices/${encodeURIComponent(selection.instrument_id)}`, undefined, 'Index removed from the catalogue. Downloaded data was preserved.', 'DELETE')} />}
     {selection && !removing && <ConfirmDownload key={selection.instrument_id} item={selection} busy={busy} onCancel={closeForms}

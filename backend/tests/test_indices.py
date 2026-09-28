@@ -140,6 +140,19 @@ def test_explicit_confirmation_dedup_and_validation(api, db, index, monkeypatch)
     assert client.get("/indices/" + ISIN).status_code == 422
 
 
+def test_bulk_acquisition_queues_every_active_index(api, db, index, monkeypatch):
+    client, _ = api
+    publish = Mock()
+    monkeypatch.setattr("index_routes.enqueue_acquisition", publish)
+    login(client)
+    response = client.post("/indices/acquisitions", json={"confirmed": True})
+    assert response.status_code == 202
+    jobs = response.json()["jobs"]
+    active = list(db.indices.find({"removed_at": {"$exists": False}}))
+    assert {job["instrument_id"] for job in jobs} == {row["instrument_id"] for row in active}
+    assert publish.call_count == len(active)
+
+
 def test_worker_uses_yahoo_full_boundary_no_fake_inception_and_keeps_unknowns(db, config, index):
     # Indices explicitly use Yahoo even when legacy ETF acquisitions are configured.
     result, source = run(db, config, index)

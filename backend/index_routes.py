@@ -70,6 +70,18 @@ def remove(instrument_id: IndexId, request: Request, user: CurrentUser):
     return remove_index(request.app.state.database, instrument_id, str(user["_id"]))
 
 
+@router.post("/acquisitions", status_code=202)
+def acquire_all(body: IndexAcquisitionRequest, request: Request, user: CurrentUser):
+    database = request.app.state.database
+    jobs = []
+    records = database.indices.find({"removed_at": {"$exists": False}}, {"instrument_id": 1, "symbol": 1})
+    for record in records:
+        jobs.append(request_acquisition(database, request.app.state.settings,
+                                        record["instrument_id"], {"symbol": record["symbol"], "exchange": "YAHOO"},
+                                        "update", str(user["_id"]), enqueue_acquisition))
+    return {"jobs": jobs}
+
+
 @router.post("/{instrument_id}/acquisitions", status_code=202)
 def acquire(instrument_id: IndexId, body: IndexAcquisitionRequest, request: Request, user: CurrentUser):
     record = require_index(request.app.state.database, instrument_id)

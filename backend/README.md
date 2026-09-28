@@ -132,7 +132,7 @@ uv run pytest  # Includes provider MockTransport, acquisition and API tests; no 
 Indices use their own MongoDB `indices` catalogue and stable `idx-<UUID>` IDs,
 never fabricated ISINs or fund inception dates. Startup and lazy list/add seeding
 are offline and idempotent. The small curated symbol set (`^GSPC`,
-`^990100-USD-STRD`, `^ESTR`) starts unverified with unknown currency and return
+`^990100-USD-STRD`, `DE000SLA1W63.SG`) starts unverified with unknown currency and return
 variant. No benchmark selection, ETF proxies, or portfolio index holdings are
 included; index profiles are excluded from ETF acquired inventory and selectors.
 
