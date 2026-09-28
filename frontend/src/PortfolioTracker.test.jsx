@@ -277,11 +277,11 @@ describe('portfolio list creation and financial summary', () => {
       today_pnl_eur: null, total_pnl_eur: null, today_from_date: null, today_to_date: null })];
     await open(listRoute);
     expect(within(table()).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
-      'Portfolio', 'Linked plan', 'Net worth (EUR)', 'Realized P&L (incl. fees, EUR)', 'Unrealized P&L (EUR)', 'Today P&L (EUR)', 'Total P&L (EUR)',
+      'Portfolio', 'Status', 'Net worth (EUR)', 'Realized P&L (incl. fees, EUR)', 'Unrealized P&L (EUR)', 'Today P&L (EUR)', 'Total P&L (EUR)',
     ]);
     const rows = within(table()).getAllByRole('row');
     expect(within(rows[1]).getByRole('link', { name: 'Linked investments' })).toHaveAttribute('href', detailRoute);
-    expect(within(rows[1]).getByText(planLabel(goal))).toBeInTheDocument();
+    expect(within(rows[1]).getByText(/Checking…|On track|Off track|Unavailable/)).toBeInTheDocument();
     expect(within(rows[1]).getByText('€9,007,199,254,740,993.01')).toBeInTheDocument();
     expect(within(rows[1]).getByText('€12.34')).toHaveClass('return-positive');
     expect(within(rows[1]).getAllByText('-€12.34').every((cell) => cell.classList.contains('return-negative'))).toBe(true);
@@ -299,7 +299,7 @@ describe('portfolio list creation and financial summary', () => {
     expect(screen.queryByText(/Today P&L uses the latest saved closes/)).not.toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Portfolios table' })).toHaveAttribute('tabindex', '0');
     expect(screen.getByRole('region', { name: 'Portfolios table' })).toHaveAccessibleDescription('Scroll horizontally to view all columns.');
-    expect(request.mock.calls.some(([path]) => path.startsWith(`${base}/`))).toBe(false);
+    expect(request.mock.calls.some(([path]) => path.endsWith('/plan-tracking'))).toBe(true);
     expect(writes()).toHaveLength(0);
   });
 

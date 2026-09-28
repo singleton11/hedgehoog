@@ -247,6 +247,20 @@ function PortfolioHeader({ request, customerId, portfolio, plans, onSaved, onRef
     <MutationStatus mutation={mutation} />
   </header>;
 }
+function PortfolioStatus({ request, customerId, portfolio }) {
+  const [status, setStatus] = useState(null);
+  const path = portfolioPath(customerId, portfolio.id);
+  useEffect(() => {
+    if (!portfolio.plan_id) return;
+    const abort = new AbortController();
+    request(`${path}/plan-tracking`, { signal: abort.signal }).then((data) => {
+      if (!abort.signal.aborted) setStatus(data?.plan_id === portfolio.plan_id && typeof data.on_track === 'boolean'
+        ? (data.on_track ? 'On track' : 'Off track') : 'Unavailable');
+    }).catch(() => { if (!abort.signal.aborted) setStatus('Unavailable'); });
+    return () => abort.abort();
+  }, [request, path, portfolio.plan_id]);
+  return <span role="status">{!portfolio.plan_id ? 'No plan' : status || 'Checking…'}</span>;
+}
 function PortfolioList({ request, customerId, plans }) {
   const [offset, setOffset] = useState(0);
   const [revision, setRevision] = useState(0);
@@ -273,12 +287,12 @@ function PortfolioList({ request, customerId, plans }) {
         <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Portfolios table" aria-describedby="portfolio-summary-scroll">
           <table className="planner-table planner-summary-table portfolios-table">
             <caption>Portfolio summary</caption>
-            <thead><tr><th scope="col">Portfolio</th><th scope="col">Linked plan</th><th scope="col">Net worth (EUR)</th>
+            <thead><tr><th scope="col">Portfolio</th><th scope="col">Status</th><th scope="col">Net worth (EUR)</th>
               {pnlColumns.map(([label, key]) => <th key={key} scope="col">{label}</th>)}
             </tr></thead>
             <tbody>{resource.data.items.map((portfolio) => <tr key={portfolio.id}>
               <th scope="row"><a href={portfoliosRoute(customerId, portfolio.id)}>{portfolio.name}</a></th>
-              <td>{portfolio.plan_id ? planName(plans.data?.find((plan) => plan.id === portfolio.plan_id)) : 'No plan'}</td>
+              <td><PortfolioStatus request={request} customerId={customerId} portfolio={portfolio} /></td>
               <td>{formatEuros(portfolio.net_worth_eur)}{portfolio.net_worth_eur === null && <span className="simulation-parameter">Some holdings cannot be valued.</span>}</td>
               {pnlColumns.map(([, key]) => <td key={key} title={key === 'today_pnl_eur' && portfolio.today_to_date ? `Price date: ${portfolio.today_to_date}` : undefined}>
                 <span className={pnlClass(portfolio[key])}>{formatEuros(portfolio[key])}</span>
