@@ -289,11 +289,28 @@ For buy-and-hold, `backend/goal_simulation.py` simulates 10,000 paths using NumP
 seed `20260919`. Repeated requests with the same date, inputs and history are
 repeatable. Path count/seed are server-controlled, not request parameters.
 
-Starting capital is invested today (UTC). Payments occur at calendar-month
-anniversaries, first one month from today, clamped to the last day of shorter
-months using the original day-of-month. No payment is made today. A final partial
+Starting capital is invested on the simulation's UTC origin date. Payments occur at calendar-month
+anniversaries, first one month from that date, clamped to the last day of shorter
+months using the original day-of-month. No payment is made on the origin date. A final partial
 month grows investments to the goal date without an extra payment. Horizon must
 allow at least one payment and cannot exceed 50 years (600 payments).
+
+`POST /goals/simulate` and customer-goal `/simulate` accept an optional timezone-aware
+`as_of` timestamp. Without it, the server captures one UTC timestamp and uses it
+for both the data cutoff and forecast origin; the response reports this as
+`data_as_of`. With an explicit `as_of`, the simulation is historical: statistics
+use only observations collected by that timestamp, quote dates through its UTC
+date, and the history generation published by that timestamp. Later revisions,
+quotes and generations cannot affect the estimate. Historical requests do not
+write the current statistics cache or expire/change active acquisition jobs.
+The goal date must still allow at least one contribution after the origin, and
+`as_of` cannot be in the future. No provider requests occur.
+
+This is point-in-time market-data selection, not a full historical account
+reconstruction: acquired-instrument membership, catalogue/listing identity and
+manual currency labels are current metadata. Those can introduce survivorship or
+metadata bias. Provider histories can also have adjustment limitations within a
+published generation; see the history and calibration caveats below.
 
 For each interval with `d` actual calendar days:
 
@@ -348,7 +365,7 @@ count rather than storing a 10,000-by-600 history matrix. The response contains
 at most 601 points, including today, monthly dates and any final partial period.
 Terminal graph percentiles match the separately reported terminal percentiles.
 
-`POST /goals/simulate` additionally returns `goal_eur` and `trajectory`, an array
+`POST /goals/simulate` additionally returns `data_as_of`, `goal_eur` and `trajectory`, an array
 of `{date, mean_eur, p05_eur, p25_eur, p50_eur, p75_eur, p95_eur}`. All EUR values
 remain decimal strings; only the frontend chart converts them to finite numbers
 for SVG geometry. No chart library or provider calls are required.
@@ -399,8 +416,9 @@ Origin protections as other commands. None calls the market-data provider.
   unchanged older date does not prevent renaming. Identity, customer attachment,
   creation time, linked portfolios and simulation snapshots are preserved.
 - Under `/customers/{customerId}/goals/{goalId}`:
-  - `POST /simulate` accepts `{strategy, starting_capital_eur, reliability}`.
-    Target/date are loaded from the saved goal, never overridden by the client.
+  - `POST /simulate` accepts `{strategy, starting_capital_eur, reliability}` with
+    optional timezone-aware `as_of`. Target/date are loaded from the saved goal,
+    never overridden by the client. `as_of` selects a historical data/origin cutoff.
     Returns a temporary preview envelope with `id`, `customer_id`, `goal_id`,
     `calculated_at`, `saved_at: null`, full `inputs`, `strategy_definition` and
     `result` (the existing simulation payload), and `is_plan: false`.
@@ -453,16 +471,19 @@ the simulation.
     "goal_eur": "100000.00",
     "starting_capital_eur": "10000.00",
     "goal_date": "2036-09-17",
-    "reliability": 0.9
+    "reliability": 0.9,
+    "as_of": "2026-09-17T12:00:00Z"
   }
   ```
 
   Money may be decimal strings and probability is a fraction. Invalid inputs,
   unknown strategies, invalid/extra parameters, unacquired instruments and
   ineligible history return 422. The legacy top-level `instrument_id` request
-  field is no longer accepted. The response echoes `strategy` and replaces the
-  old single `statistics` object with `parameter_statistics: {"instrument": ...}`.
-  Monetary, schedule, probability, trajectory and warning fields are unchanged.
+  field is no longer accepted. The response echoes `strategy`, reports the exact
+  cutoff in `data_as_of`, and replaces the old single `statistics` object with
+  `parameter_statistics: {"instrument": ...}`. Omit `as_of` to use the current
+  request-time cutoff. Monetary, schedule, probability, trajectory and warning
+  fields otherwise retain their existing contract.
 
 Rebuild the Celery image after updating code/dependencies (`make services-up`)
 and restart the backend. Existing history is processed on demand; no re-download

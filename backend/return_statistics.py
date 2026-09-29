@@ -199,7 +199,7 @@ def calculate_statistics(rows):
     }
 
 
-def refresh_statistics(db, isin, *, force=False, generation=None):
+def refresh_statistics(db, isin, *, force=False, generation=None, as_of=None, point_in_time=False):
     """Persist estimates after acquisition; lazily cover pre-feature/partial data.
 
     Observations are append-only. Their count, listing, split snapshot, model
@@ -208,7 +208,8 @@ def refresh_statistics(db, isin, *, force=False, generation=None):
     """
     state = db.instrument_state.find_one({"_id": isin}) or {}
     listing = state.get("listing")
-    cutoff = md.utcnow()
+    cutoff = as_of or md.utcnow()
+    historical = point_in_time
     generation = generation or md.history_generation(db, isin, listing, cutoff)
     query = md.observation_filter(db, isin, listing, cutoff, generation) if listing else {"instrument_id": isin, "symbol": {"$exists": False}}
     query.update(collected_at={"$lte": cutoff}, date={"$lte": cutoff.date().isoformat()})
@@ -219,9 +220,11 @@ def refresh_statistics(db, isin, *, force=False, generation=None):
                  "generation": publication["_id"] if publication else None,
                  "splits": {"id": splits["_id"], "error": splits.get("error")} if splits else None,
                  "day": cutoff.date().isoformat()}
-    cached = db.instrument_statistics.find_one({"_id": isin})
+    cached = db.instrument_statistics.find_one({"_id": isin}) if not historical else None
     if not force and cached and cached.get("signature") == signature:
-        return cached["statistics"], state
+        statistics = dict(cached["statistics"])
+        statistics["as_of"] = cutoff
+        return statistics, state
     rows = []
     if listing:
         records = db.quotes.aggregate([
@@ -245,16 +248,19 @@ def refresh_statistics(db, isin, *, force=False, generation=None):
         "provider_currencies": sorted(currencies), "unknown_currency": unknown_currency,
     }
     statistics["warnings"].extend(split_warnings)
-    db.instrument_statistics.replace_one({"_id": isin}, {
-        "_id": isin, "signature": signature, "statistics": statistics,
-    }, upsert=True)
+    if not historical:
+        db.instrument_statistics.replace_one({"_id": isin}, {
+            "_id": isin, "signature": signature, "statistics": statistics,
+        }, upsert=True)
     return statistics, state
 
 
-def instrument_statistics(db, isin, generation=None):
+def instrument_statistics(db, isin, generation=None, *, as_of=None, point_in_time=False):
     catalogue = md.require_catalogue(db, isin)
-    md.expire_stalled_jobs(db, isin)
-    estimates, state = refresh_statistics(db, isin, generation=generation)
+    if not point_in_time:
+        md.expire_stalled_jobs(db, isin)
+    estimates, state = refresh_statistics(db, isin, generation=generation, as_of=as_of,
+                                          point_in_time=point_in_time)
     estimates = estimates.copy()
     currencies = set(estimates.pop("provider_currencies"))
     unknown = estimates.pop("unknown_currency")
@@ -274,8 +280,11 @@ def instrument_statistics(db, isin, generation=None):
     if source == "manual":
         warnings.append("Price currency is manually specified, not verified by the provider; no FX conversion is performed.")
     last_date = estimates["last_date"]
-    if last_date and (md.utcnow().date() - date.fromisoformat(last_date)).days > 14:
-        warnings.append("The last usable price is more than 14 days old. Update EOD history before relying on these estimates.")
+    reference_date = as_of.date() if as_of is not None else md.utcnow().date()
+    if last_date and (reference_date - date.fromisoformat(last_date)).days > 14:
+        warnings.append("The last usable price is more than 14 days old at the selected cutoff. Update EOD history before relying on these estimates.")
+    if point_in_time:
+        warnings.append("Historical origin uses quote observations and a published history generation known by the selected timestamp. Present-day acquired-instrument membership and manual currency labels may still introduce selection or metadata bias.")
     reason = None
     if not estimates["quote_count"]:
         reason = "Download EOD history for this instrument first."
@@ -285,7 +294,7 @@ def instrument_statistics(db, isin, generation=None):
         reason = f"At least {MIN_RETURNS} usable daily returns are required; download more EOD history."
     elif estimates["daily_log_return_variance"] is None:
         reason = "Return estimates are not numerically usable for simulation."
-    elif db.acquisition_jobs.find_one({"instrument_id": isin, "active": True}):
+    elif not point_in_time and db.acquisition_jobs.find_one({"instrument_id": isin, "active": True}):
         reason = "Wait for the current EOD acquisition to finish, then refresh these estimates."
     return md.public({
         "instrument_id": isin, "name": catalogue.get("name"), "listing": state.get("listing"),

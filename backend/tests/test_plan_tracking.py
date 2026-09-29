@@ -40,9 +40,9 @@ def test_refreshes_estimates_and_reuses_seed_and_paths(planner, monkeypatch):
     client, path, saved = linked(planner)
     calls = []
     real = gs.instrument_statistics
-    def refreshed(db, instrument):
+    def refreshed(db, instrument, **options):
         calls.append(instrument)
-        estimates = real(db, instrument)
+        estimates = real(db, instrument, **options)
         return {**estimates, 'daily_mean_log_return': -0.001, 'daily_log_return_variance': 0.0001}
     monkeypatch.setattr(gs, 'instrument_statistics', refreshed)
     result = client.get(path + '/plan-tracking').json()

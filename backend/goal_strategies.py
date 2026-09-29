@@ -66,7 +66,8 @@ class StrategyDefinition(Generic[Parameters]):
 
 
 def buy_and_hold_single_instrument(parameters: BuyAndHoldParameters, goals: GoalInputs, db: Database, today: date, **simulation_options):
-    estimates = instrument_statistics(db, parameters.instrument)
+    estimates = instrument_statistics(db, parameters.instrument, as_of=goals._effective_as_of,
+                                       point_in_time=goals._point_in_time)
     if not estimates["eligible"]:
         raise md.DataError(422, estimates["ineligible_reason"])
     return {

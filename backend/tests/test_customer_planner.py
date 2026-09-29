@@ -319,7 +319,13 @@ def test_multiple_previews_and_saved_reports_are_independent(planner, db, clock)
     second = calculate(client, url, starting_capital_eur="20000", reliability=0.99)
     third = calculate(client, url)
     assert len({item["id"] for item in (first, second, third)}) == 3
-    assert first["result"] == third["result"]
+    def calculation_payload(preview):
+        result = deepcopy(preview["result"])
+        result.pop("data_as_of")
+        result["parameter_statistics"]["instrument"].pop("as_of")
+        return result
+
+    assert calculation_payload(first) == calculation_payload(third)
     assert first["result"] != second["result"]
     assert client.get(url + "/simulations").json()["total"] == 0
     saved_second = save(client, url, second)
@@ -361,7 +367,8 @@ def test_generic_strategy_dispatch_snapshots_normalized_typed_parameters(planner
     normalized = {"id": "test", "parameters": {"periods": 3, "settlement": NOW.date().isoformat()}}
     assert preview["inputs"]["strategy"] == normalized
     assert preview["inputs"]["starting_capital_eur"] == "0.00"
-    assert preview["result"] == {**expected, "strategy": normalized}
+    assert preview["result"] == {**expected, "data_as_of": NOW.isoformat().replace("+00:00", "Z"),
+                                  "strategy": normalized}
     assert preview["strategy_definition"] == strategy.public_definition()
     assert save(client, url, preview)["result"] == preview["result"]
     execute.assert_called_once()

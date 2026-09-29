@@ -20,6 +20,19 @@ class CalibrationRequest(RandomCalibrationInputs):
     strategy: StrategySelection
 
 
+def simulation_cutoff(body):
+    """Pin model inputs and the horizon to one UTC knowledge-time cutoff."""
+    now = md.utcnow()
+    cutoff = body.as_of or now
+    if cutoff > now:
+        raise md.DataError(422, "Simulation as_of cannot be in the future.")
+    effective = body.model_copy()
+    effective._point_in_time = body.as_of is not None
+    effective._effective_as_of = cutoff
+    contribution_dates(cutoff.date(), effective.goal_date)
+    return effective, cutoff
+
+
 @router.post("/calibrate")
 def calibrate(body: CalibrationRequest, request: Request, user: CurrentUser, response: Response):
     response.headers["Cache-Control"] = "no-store"
@@ -68,10 +81,10 @@ def saved_calibration(strategy_id: str, request: Request, user: CurrentUser, res
 
 @router.post("/simulate")
 def simulate(body: GoalRequest, request: Request, user: CurrentUser):
-    today = md.utcnow().date()
-    # Validate the horizon before doing database work or allocating paths.
-    contribution_dates(today, body.goal_date)
+    # One captured cutoff drives both historical statistics and the forecast schedule.
+    body, cutoff = simulation_cutoff(body)
     strategy = get_strategy(body.strategy.id)
     parameters = strategy.resolve_parameters(body.strategy.parameters, request.app.state.database)
-    result = strategy.simulate(parameters, body, request.app.state.database, today)
-    return {**result, "strategy": body.strategy.model_dump(mode="json")}
+    result = strategy.simulate(parameters, body, request.app.state.database, cutoff.date())
+    return {**result, "data_as_of": md.public(cutoff),
+            "strategy": body.strategy.model_dump(mode="json")}

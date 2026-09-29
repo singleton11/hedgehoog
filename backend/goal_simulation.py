@@ -1,13 +1,13 @@
 """Bounded, reproducible buy-and-hold Monte Carlo savings projections."""
 
 from calendar import monthrange
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP, localcontext
 import math
 from typing import Annotated
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 import market_data as md
 from return_statistics import TRADING_DAYS
@@ -26,6 +26,17 @@ class GoalInputs(BaseModel):
     starting_capital_eur: Money
     goal_date: date
     reliability: float = Field(ge=0.5, le=0.99, allow_inf_nan=False)
+    as_of: datetime | None = None
+    _point_in_time: bool = PrivateAttr(default=False)
+    _effective_as_of: datetime | None = PrivateAttr(default=None)
+
+    @model_validator(mode="after")
+    def normalize_as_of(self):
+        if self.as_of is not None:
+            if self.as_of.utcoffset() is None:
+                raise ValueError("as_of must include a timezone")
+            self.as_of = self.as_of.astimezone(timezone.utc)
+        return self
 
 
 def add_months(day, months):

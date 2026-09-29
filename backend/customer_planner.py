@@ -1,6 +1,6 @@
 """Owner-scoped customers, editable goals and explicitly saved simulation snapshots."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated
 
 from bson import ObjectId
@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 from pymongo import ReturnDocument
 
 from auth import CurrentUser
-from goal_planner import GoalRequest
+from goal_planner import GoalRequest, simulation_cutoff
 from goal_simulation import Money, contribution_dates, money_string
 from goal_strategies import StrategySelection, get_strategy
 import market_data as md
@@ -59,6 +59,15 @@ class SimulationRequest(BaseModel):
     strategy: StrategySelection
     starting_capital_eur: Money
     reliability: float = Field(ge=0.5, le=0.99, allow_inf_nan=False)
+    as_of: datetime | None = None
+
+    @model_validator(mode="after")
+    def normalize_as_of(self):
+        if self.as_of is not None:
+            if self.as_of.utcoffset() is None:
+                raise ValueError("as_of must include a timezone")
+            self.as_of = self.as_of.astimezone(timezone.utc)
+        return self
 
 
 class SaveRequest(BaseModel):
@@ -236,15 +245,15 @@ def simulate(customer_id: str, goal_id: str, body: SimulationRequest, request: R
     db, owner = request.app.state.database, str(user["_id"])
     target = _goal(db, owner, customer_id, goal_id)
     inputs = GoalRequest(goal_eur=target["goal_eur"], goal_date=target["goal_date"], **body.model_dump())
-    today = md.utcnow().date()
-    contribution_dates(today, inputs.goal_date)
+    inputs, cutoff = simulation_cutoff(inputs)
     strategy = get_strategy(inputs.strategy.id)
     parameters = strategy.resolve_parameters(inputs.strategy.parameters, db)
     # Dispatch through the same fresh eligibility checks and exact solver as
     # /goals/simulate. Nothing here changes the numerical model.
-    result = strategy.simulate(parameters, inputs, db, today)
+    result = strategy.simulate(parameters, inputs, db, cutoff.date())
+    result = {**result, "data_as_of": md.public(cutoff)}
     now = md.utcnow()
-    normalized_inputs = {**inputs.model_dump(mode="json"), "goal_eur": money_string(inputs.goal_eur),
+    normalized_inputs = {**inputs.model_dump(mode="json", exclude_none=True), "goal_eur": money_string(inputs.goal_eur),
                          "starting_capital_eur": money_string(inputs.starting_capital_eur)}
     document = {
         "_id": str(ObjectId()), **_simulation_scope(owner, customer_id, goal_id),

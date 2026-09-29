@@ -192,6 +192,10 @@ needed, plus model success probability and terminal-value percentiles. A project
 graph shows average portfolio value as a line, shaded 5th–95th and 25th–75th
 percentile clouds across all 10,000 traces, and the goal as a dashed line. It requires
 at least 60 usable daily returns; monthly payments start one month from today.
+An optional timezone-aware `as_of` timestamp on simulation requests enables
+historical-origin estimates using only quote observations and published history
+known by that cutoff. Normal current simulations also pin statistics and their
+forecast date to one captured UTC timestamp (`data_as_of` in the result).
 
 This is a **model estimate, not a guarantee**. It uses historical log returns,
 assumes fractional shares and independent returns, and excludes inflation, taxes

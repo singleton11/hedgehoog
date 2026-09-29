@@ -437,6 +437,68 @@ def test_extreme_simulation_rejected_not_silently_clipped():
         simulate_buy_and_hold(flat_estimates(m=1000, v=1), GoalInputs(**goal_inputs()), NOW.date())
 
 
+def test_historical_simulation_excludes_later_quote_publications(api, db, clock):
+    client, _ = api
+    seed_history(db)
+    seed_profile(db)
+    cutoff = NOW - timedelta(days=1)
+    # The history was already known by this historical origin.
+    db.quotes.update_many({}, {"$set": {"collected_at": cutoff - timedelta(hours=1)}})
+    login(client)
+    body = request_body(as_of=cutoff.isoformat())
+    before = client.post("/goals/simulate", json=body)
+    assert before.status_code == 200, before.text
+    baseline = before.json()
+    assert baseline["data_as_of"] == cutoff.isoformat().replace("+00:00", "Z")
+    assert baseline["parameter_statistics"]["instrument"]["as_of"] == cutoff.isoformat().replace("+00:00", "Z")
+    assert baseline["parameter_statistics"]["instrument"]["quote_count"] == 81
+    assert db.instrument_statistics.find_one({"_id": ISIN}) is None
+
+    latest = db.quotes.find_one(sort=[("date", -1)])
+    revision = {key: value for key, value in latest.items() if key != "_id"}
+    revision.update(job_id="later-revision", collected_at=NOW,
+                    data={**latest["data"], "close": "999999", "adj_close": "999999"})
+    db.quotes.insert_one(revision)
+    future = {key: value for key, value in latest.items() if key != "_id"}
+    future.update(job_id="later-date", date=(cutoff.date() + timedelta(days=1)).isoformat(),
+                  collected_at=NOW, data={**latest["data"], "date": (cutoff.date() + timedelta(days=1)).isoformat()})
+    db.quotes.insert_one(future)
+
+    after = client.post("/goals/simulate", json=body)
+    assert after.status_code == 200, after.text
+    assert after.json() == baseline
+    assert db.instrument_statistics.find_one({"_id": ISIN}) is None
+
+
+def test_current_simulation_shares_one_cutoff_across_utc_midnight(api, db, clock, monkeypatch):
+    client, _ = api
+    seed_history(db)
+    seed_profile(db)
+    before_midnight = NOW.replace(hour=23, minute=59, second=59)
+    after_midnight = before_midnight + timedelta(seconds=2)
+    latest = db.quotes.find_one(sort=[("date", -1)])
+    revision = {key: value for key, value in latest.items() if key != "_id"}
+    revision.update(job_id="next-day-revision", collected_at=after_midnight,
+                    data={**latest["data"], "close": "999999", "adj_close": "999999"})
+    db.quotes.insert_one(revision)
+    clock_calls = []
+
+    def cross_midnight():
+        clock_calls.append(None)
+        return before_midnight if len(clock_calls) == 1 else after_midnight
+
+    monkeypatch.setattr(md, "utcnow", cross_midnight)
+    login(client)
+    response = client.post("/goals/simulate", json=request_body())
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["valuation_date"] == before_midnight.date().isoformat()
+    assert result["data_as_of"] == before_midnight.isoformat().replace("+00:00", "Z")
+    assert result["parameter_statistics"]["instrument"]["as_of"] == before_midnight.isoformat().replace("+00:00", "Z")
+    assert result["parameter_statistics"]["instrument"]["quote_count"] == 81
+    assert len(clock_calls) > 1
+
+
 def test_api_statistics_and_simulation_auth_origin_and_no_provider_calls(api, db, config, monkeypatch):
     client, publish = api
     seed_history(db)
@@ -480,6 +542,8 @@ def test_api_statistics_and_simulation_auth_origin_and_no_provider_calls(api, db
     {"reliability": 0.499}, {"reliability": 1}, {"reliability": "NaN"},
     {"goal_date": "2026-10-16"}, {"goal_date": "2026-09-17"}, {"goal_date": "2076-09-18"},
     {"goal_date": "tomorrow"}, {"paths": 1000000},
+    {"as_of": "2026-09-17T12:00:00"}, {"as_of": "2026-09-18T12:00:00Z"},
+    {"as_of": "2026-09-16T12:00:00Z", "goal_date": "2026-09-17"},
 ])
 def test_api_input_bounds_before_strategy_database_work(api, db, changes, monkeypatch):
     client, _ = api
@@ -726,7 +790,7 @@ def test_registry_dispatches_another_typed_strategy_without_buy_and_hold_assumpt
     selection = {"id": definition.id, "parameters": {"periods": "3"}}
     response = client.post("/goals/simulate", json=request_body(strategy=selection))
     assert response.status_code == 200, response.text
-    assert response.json() == {**output, "strategy": {
+    assert response.json() == {**output, "data_as_of": NOW.isoformat().replace("+00:00", "Z"), "strategy": {
         "id": definition.id, "parameters": {"periods": 3, "settlement_date": NOW.date().isoformat()},
     }}
     assert len(calls) == 1
