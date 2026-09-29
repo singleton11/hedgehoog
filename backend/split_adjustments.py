@@ -69,7 +69,11 @@ def load_provider_split_snapshot(db, isin, listing, cutoff, generation=None):
         "instrument_id": isin, "listing": listing, "splits_date_from": {"$exists": True},
         "requested_at": {"$lte": cutoff},
     }, sort=[("requested_at", DESCENDING), ("_id", DESCENDING)])
-    if attempt and attempt.get("calls", 0) > 0 and not attempt.get("active") and (snapshot is None or attempt["_id"] != snapshot["_id"]):
+    # A job requested before the cutoff may finish afterward. Its current
+    # inactive state must not retroactively invalidate an earlier snapshot.
+    if (attempt and attempt.get("calls", 0) > 0 and not attempt.get("active")
+            and attempt.get("finished_at") is not None and md.aware(attempt["finished_at"]) <= cutoff
+            and (snapshot is None or attempt["_id"] != snapshot["_id"])):
         return {"_id": attempt["_id"], "error": "Split history download is incomplete. Request market data again before using derived statistics."}
     return snapshot
 

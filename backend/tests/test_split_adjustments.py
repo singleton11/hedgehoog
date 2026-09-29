@@ -260,6 +260,28 @@ def test_failed_split_refresh_does_not_reuse_an_old_successful_snapshot(db, conf
     assert any("Split history download is incomplete" in w for w in stats["warnings"])
 
 
+def test_historical_split_snapshot_ignores_job_failure_after_cutoff(db, config, clock):
+    collect(db, config, Provider([page(history())], splits=[page([event(factor="2")])]))
+    clock[0] += timedelta(minutes=1)
+    job = enqueue(db, config)
+    db.acquisition_jobs.update_one({"_id": job["id"]}, {"$set": {"calls": 1}})
+    cutoff = clock[0] + timedelta(minutes=1)
+    clock[0] = cutoff + timedelta(minutes=1)
+
+    before = instrument_statistics(db, ISIN, as_of=cutoff, point_in_time=True)
+    assert before["eligible"] and before["price_basis"] == BASIS
+    db.acquisition_jobs.update_one({"_id": job["id"]}, {"$set": {
+        "status": "failed", "active": False, "finished_at": clock[0],
+    }})
+    after = instrument_statistics(db, ISIN, as_of=cutoff, point_in_time=True)
+    assert after == before
+
+    # A failure already known at the cutoff must still invalidate the older snapshot.
+    failed_at_cutoff = instrument_statistics(db, ISIN, as_of=clock[0], point_in_time=True)
+    assert not failed_at_cutoff["eligible"]
+    assert any("Split history download is incomplete" in w for w in failed_at_cutoff["warnings"])
+
+
 def test_uncovered_snapshot_never_falls_back_to_adj_close():
     rows = [{"date": "2026-09-16", "close": "100", "adj_close": "100"}]
     corrected, warnings = adjusted_rows(rows, snapshot([], date_to="2026-09-15"))
