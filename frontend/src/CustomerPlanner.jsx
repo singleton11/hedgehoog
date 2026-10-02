@@ -13,6 +13,12 @@ const validCustomer = (value) => id(value?.id) && text(value.name);
 const pnlMoney = (value) => typeof value === 'string' && /^-?\d+\.\d{2}$/.test(value);
 const pnlClass = (value) => !pnlMoney(value) || !/[1-9]/.test(value) ? '' : value.startsWith('-') ? 'return-negative' : 'return-positive';
 const signedEuros = (value) => pnlMoney(value) && !value.startsWith('-') && /[1-9]/.test(value) ? `+${formatEuros(value)}` : formatEuros(value);
+const percentOf = (value, basis) => {
+  const amount = Number(value), denominator = Number(basis);
+  if (!Number.isFinite(amount) || !Number.isFinite(denominator) || denominator <= 0) return null;
+  const result = amount / denominator * 100;
+  return `${result > 0 ? '+' : ''}${result.toFixed(2)}%`;
+};
 const pnlColumns = [['Realized P&L (incl. fees, EUR)', 'realized_pnl_eur'], ['Unrealized P&L (EUR)', 'unrealized_pnl_eur'],
   ['Today P&L (EUR)', 'today_pnl_eur'], ['Total P&L (EUR)', 'total_pnl_eur']];
 const validDate = (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
@@ -20,6 +26,7 @@ const validDate = (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.
 const validCustomerSummary = (value) => validCustomer(value) && (value.net_worth_eur === null || money(value.net_worth_eur))
   && Number.isSafeInteger(value.goal_count) && value.goal_count >= 0 && pnlMoney(value.realized_pnl_eur)
   && ['unrealized_pnl_eur', 'today_pnl_eur', 'total_pnl_eur'].every((key) => value[key] === null || pnlMoney(value[key]))
+  && ['cost_basis_eur', 'previous_value_eur'].every((key) => value[key] === undefined || value[key] === null || pnlMoney(value[key]))
   && ((value.today_from_date === null && value.today_to_date === null && [null, '0.00'].includes(value.today_pnl_eur))
     || (value.today_pnl_eur !== null && validDate(value.today_from_date) && validDate(value.today_to_date) && value.today_from_date < value.today_to_date));
 const validGoal = (value, customerId) => validCustomer(value) && value.customer_id === customerId && money(value.goal_eur)
@@ -221,7 +228,7 @@ function Customers({ request, isin }) {
               <td>{customer.goal_count}</td>
               <td>{formatEuros(customer.net_worth_eur)}{customer.net_worth_eur === null && <span className="simulation-parameter">Some holdings cannot be valued.</span>}</td>
               {pnlColumns.map(([, key]) => <td key={key} title={key === 'today_pnl_eur' && customer.today_to_date ? `Price date: ${customer.today_to_date}` : undefined}>
-                <span className={pnlClass(customer[key])}>{signedEuros(customer[key])}</span>
+                <span className={pnlClass(customer[key])}>{signedEuros(customer[key])}{key === 'unrealized_pnl_eur' ? ` (${percentOf(customer[key], customer.cost_basis_eur) ?? 'Unavailable'})` : key === 'today_pnl_eur' ? ` (${percentOf(customer[key], customer.previous_value_eur) ?? 'Unavailable'})` : ''}</span>
               </td>)}
             </tr>)}</tbody>
           </table>

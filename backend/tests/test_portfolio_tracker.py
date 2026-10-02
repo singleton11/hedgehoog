@@ -154,7 +154,7 @@ def test_named_multiple_portfolios_attach_detach_and_independent_balances(tracke
     listed = client.get(f"/customers/{customer_id}/portfolios").json()["items"][0]
     assert {key: listed[key] for key in second} == second
     assert set(listed) == set(first) | {"net_worth_eur", "realized_pnl_eur", "unrealized_pnl_eur", "today_pnl_eur",
-                                        "total_pnl_eur", "today_from_date", "today_to_date"}
+                                        "total_pnl_eur", "today_from_date", "today_to_date", "cost_basis_eur", "previous_value_eur"}
 
 
 def test_customer_net_worth_sums_cash_and_holdings_across_linked_and_unlinked_portfolios(tracker, db):

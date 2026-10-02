@@ -33,6 +33,7 @@ const validPortfolioSummary = (item, cid) => validPortfolio(item, cid)
   && (item.net_worth_eur === null || (money(item.net_worth_eur) && !item.net_worth_eur.startsWith('-')))
   && money(item.realized_pnl_eur)
   && ['unrealized_pnl_eur', 'today_pnl_eur', 'total_pnl_eur'].every((key) => item[key] === null || money(item[key]))
+  && ['cost_basis_eur', 'previous_value_eur'].every((key) => item[key] === undefined || item[key] === null || money(item[key]))
   && ((item.today_from_date === null && item.today_to_date === null && [null, '0.00'].includes(item.today_pnl_eur))
     || (item.today_pnl_eur !== null && validDate(item.today_from_date) && validDate(item.today_to_date) && item.today_from_date < item.today_to_date));
 const validPosition = (item) => validInstrument(item?.instrument) && ['quantity', 'average_price_eur', 'cost_basis_eur'].every((key) => decimal(item[key]))
@@ -305,7 +306,7 @@ function PortfolioList({ request, customerId, plans }) {
               <td><PortfolioStatus request={request} customerId={customerId} portfolio={portfolio} /></td>
               <td>{formatEuros(portfolio.net_worth_eur)}{portfolio.net_worth_eur === null && <span className="simulation-parameter">Some holdings cannot be valued.</span>}</td>
               {pnlColumns.map(([, key]) => <td key={key} title={key === 'today_pnl_eur' && portfolio.today_to_date ? `Price date: ${portfolio.today_to_date}` : undefined}>
-                <span className={pnlClass(portfolio[key])}>{signedEuros(portfolio[key])}</span>
+                <span className={pnlClass(portfolio[key])}>{signedEuros(portfolio[key])}{key === 'unrealized_pnl_eur' ? ` (${percentOf(portfolio[key], portfolio.cost_basis_eur) ?? 'Unavailable'})` : key === 'today_pnl_eur' ? ` (${percentOf(portfolio[key], portfolio.previous_value_eur) ?? 'Unavailable'})` : ''}</span>
               </td>)}
             </tr>)}</tbody>
           </table>

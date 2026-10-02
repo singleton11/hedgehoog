@@ -284,11 +284,12 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
                           "price_date": latest.get("date"), "previous_price_date": anchors.get(isin, (None,))[0],
                           "position_value_eur": euros(value), "unrealized_pnl_eur": euros(unrealized),
                           "daily_unrealized_pnl_eur": euros(daily), "warning": warning,
-                          "_value": value, "_unrealized": unrealized, "_daily": daily})
+                          "_value": value, "_unrealized": unrealized, "_daily": daily, "_cost_basis": position["cost"]})
         items.sort(key=lambda item: (item["instrument"]["name"], item["instrument"]["instrument_id"]))
         def total(key):
             return sum((item[key] for item in items), ZERO) if all(item[key] is not None for item in items) else None
         value, unrealized, daily = total("_value"), total("_unrealized"), total("_daily")
+        cost_basis = total("_cost_basis")
         periods = {(item["previous_price_date"], item["price_date"]) for item in items}
         if len(periods) > 1:
             daily = None
@@ -298,6 +299,8 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
         return {"portfolio": metadata(document), "cash_eur": amount(cash), "positions_value_eur": amount(value),
                 "equity_eur": amount(cash + value) if value is not None else None, "realized_pnl_eur": amount(realized),
                 "unrealized_pnl_eur": amount(unrealized), "daily_unrealized_pnl_eur": amount(daily),
+                "cost_basis_eur": amount(cost_basis),
+                "previous_value_eur": amount(value - daily) if value is not None and daily is not None else None,
                 "daily_from_date": period[0], "daily_to_date": period[1],
                 "positions": [event_public(item) for item in items], "warnings": warnings}
 
@@ -384,7 +387,8 @@ def customer_portfolio_summaries(db, owner, customer_ids):
     with localcontext() as context:
         context.prec = 80
         fields = {"net_worth_eur": "equity_eur", "realized_pnl_eur": "realized_pnl_eur",
-                  "unrealized_pnl_eur": "unrealized_pnl_eur"}
+                  "unrealized_pnl_eur": "unrealized_pnl_eur", "cost_basis_eur": "cost_basis_eur",
+                  "previous_value_eur": "previous_value_eur"}
         totals = {customer_id: dict.fromkeys(fields, ZERO) for customer_id in customer_ids}
         grouped = {customer_id: [] for customer_id in customer_ids}
         now, quote_cache = md.utcnow(), {}
@@ -421,6 +425,8 @@ def portfolio_summary(db, document, now, quote_cache):
         return {**metadata(document), "net_worth_eur": euros(snapshot["equity_eur"]),
                 "realized_pnl_eur": euros(snapshot["realized_pnl_eur"]),
                 "unrealized_pnl_eur": euros(unrealized), "total_pnl_eur": euros(total),
+                "cost_basis_eur": euros(snapshot["cost_basis_eur"]),
+                "previous_value_eur": euros(snapshot["previous_value_eur"]),
                 **_daily_pnl(db, [document], now, quote_cache)}
 
 
