@@ -3,6 +3,8 @@ import { useAuth } from './Auth.jsx';
 import CustomerTabs from './CustomerTabs.jsx';
 import GoalPlanner, { monthlyAnniversary, normalizeEuros, SimulationResult, validSimulationRecord } from './GoalPlanner.jsx';
 import { formatEuros } from './goalProjection.js';
+import { goalProgress } from './goalProgress.js';
+import GoalProgressBar from './GoalProgressBar.jsx';
 import { percent } from './ReturnStatistics.jsx';
 
 const PAGE_SIZE = 20;
@@ -249,6 +251,10 @@ function CreatedDate({ value }) {
   if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) return 'Unavailable';
   return <time dateTime={value}>{new Date(value).toISOString().slice(0, 10)}</time>;
 }
+const validGoalSummary = (value, customerId) => validGoal(value, customerId)
+  && Number.isSafeInteger(value.linked_portfolio_count) && value.linked_portfolio_count >= 0
+  && (value.linked_equity_eur === null || pnlMoney(value.linked_equity_eur))
+  && (value.linked_portfolio_count !== 0 || value.linked_equity_eur === null);
 function CustomerGoals({ request, customer, isin }) {
   const [revision, setRevision] = useState(0);
   const [creating, setCreating] = useState(false);
@@ -261,21 +267,27 @@ function CustomerGoals({ request, customer, isin }) {
   return <>
     <CustomerTabs customer={customer} active="goals" isin={isin} />
     <div className="section-heading goals-heading">
-      <p className="muted">Choose a goal to review saved simulations or explore ways to fund it.</p>
+      <p className="muted">Choose a goal to review saved simulations. Progress compares combined linked portfolio equity with the current goal target; saved plan targets may differ after edits.</p>
       <button ref={addButton} type="button" disabled={creating} aria-expanded={creating} aria-controls={creating ? 'new-goal-form' : undefined} onClick={() => setCreating(true)}>Add goal</button>
     </div>
     {creating && <CreateForm request={request} customerId={customer.id} onCancel={() => setCreating(false)}
       onCreated={() => { setRevision((value) => value + 1); setCreating(false); }} />}
-    <PagedList key={revision} request={request} path={`${customerPath(customer.id)}/goals`} label="Goals" validate={(item) => validGoal(item, customer.id)} empty="No goals yet. Select Add goal to create your first goal.">
+    <PagedList key={revision} request={request} path={`${customerPath(customer.id)}/goals`} label="Goals" validate={(item) => validGoalSummary(item, customer.id)} empty="No goals yet. Select Add goal to create your first goal.">
       {(items) => <>
         <p className="goals-scroll-hint muted" id="goals-scroll-note">Scroll horizontally to see all goal details.</p>
         <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Goals table" aria-describedby="goals-scroll-note">
           <table className="planner-table goals-table">
             <caption>Goal summary for {customer.name}</caption>
-            <thead><tr>{['Goal', 'Target (EUR)', 'Goal date (UTC)', 'Time remaining', 'Created (UTC)'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+            <thead><tr>{['Goal', 'Target (EUR)', 'Linked equity (EUR)', 'Achieved', 'Remaining (EUR)', 'Goal date (UTC)', 'Time remaining', 'Created (UTC)'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
             <tbody>{items.map((goal) => <tr key={goal.id}>
               <th scope="row"><a href={`${goalRoute(customer.id, goal.id)}${prefill(isin)}`}>{goal.name}</a></th>
               <td>{formatEuros(goal.goal_eur)}</td>
+              <td>{goal.linked_equity_eur === null ? (goal.linked_portfolio_count ? 'Unavailable' : 'No linked portfolios') : formatEuros(goal.linked_equity_eur)}</td>
+              <td className="goal-progress-cell">{goal.linked_equity_eur === null ? '—' : <>
+                {goalProgress(goal.linked_equity_eur, goal.goal_eur).achieved}
+                <GoalProgressBar achieved={goalProgress(goal.linked_equity_eur, goal.goal_eur).achieved} label={`${goal.name} goal progress`} />
+              </>}</td>
+              <td>{goal.linked_equity_eur === null ? '—' : formatEuros(goalProgress(goal.linked_equity_eur, goal.goal_eur).remaining)}</td>
               <td><time dateTime={goal.goal_date}>{goal.goal_date}</time></td>
               <td>{timeRemaining(goal.goal_date)}</td>
               <td><CreatedDate value={goal.created_at} /></td>

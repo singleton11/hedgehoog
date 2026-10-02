@@ -107,7 +107,8 @@ function mockServer({ seed = true } = {}) {
     goal_count: [...server.goals.values()].filter((goal) => goal.customer_id === item.id).length, ...item,
   })), query);
   server.goalList = async (cid, query) => page([...server.goals.values()].filter((item) => item.customer_id === cid)
-    .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id)), query);
+    .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))
+    .map((item) => ({ ...item, linked_portfolio_count: 0, linked_equity_eur: null })), query);
   server.history = async (cid, gid, query) => page([...server.saved.values()].filter((run) => run.customer_id === cid && run.goal_id === gid)
     .sort((a, b) => b.calculated_at.localeCompare(a.calculated_at) || b.id.localeCompare(a.id)).map(summary), query);
   server.report = async (cid, gid, sid) => {
@@ -295,10 +296,12 @@ describe('goal summary table and on-demand creation', () => {
     await open(`${customerRoute()}/goals?instrument=${A}`);
     const table = within(screen.getByRole('table', { name: 'Goal summary for Alice' }));
     expect(table.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
-      'Goal', 'Target (EUR)', 'Goal date (UTC)', 'Time remaining', 'Created (UTC)',
+      'Goal', 'Target (EUR)', 'Linked equity (EUR)', 'Achieved', 'Remaining (EUR)', 'Goal date (UTC)', 'Time remaining', 'Created (UTC)',
     ]);
     const row = within(table.getByRole('row', { name: /Retirement/ }));
     expect(row.getByText('€9,007,199,254,740,993.01')).toBeInTheDocument();
+    expect(row.getByText('No linked portfolios')).toBeInTheDocument();
+    expect(row.queryByRole('progressbar')).not.toBeInTheDocument();
     expect(row.getByText('2036-09-24')).toHaveAttribute('datetime', '2036-09-24');
     expect(row.getByText('3,653 days left')).toBeInTheDocument();
     expect(row.getByText('2026-08-01')).toHaveAttribute('datetime', goal.created_at);
@@ -307,6 +310,22 @@ describe('goal summary table and on-demand creation', () => {
     expect(screen.queryByRole('form', { name: 'New goal' })).not.toBeInTheDocument();
     expect(request.mock.calls.map(([path]) => path)).toEqual([customerPath(), pagePath(`${customerPath()}/goals`)]);
     expect(posts()).toHaveLength(0);
+  });
+
+  it('displays combined linked equity and exact progress, without inventing values for missing marks', async () => {
+    const server = mockServer();
+    const listing = server.goalList;
+    server.goalList = async (...args) => {
+      const page = await listing(...args);
+      return { ...page, items: page.items.map((item) => ({ ...item, linked_portfolio_count: 2, linked_equity_eur: '12500.00' })) };
+    };
+    await open(`${customerRoute()}/goals`);
+    const row = within(screen.getByRole('table', { name: 'Goal summary for Alice' }).querySelector('tbody tr'));
+    expect(row.getByText('€12,500.00')).toBeInTheDocument();
+    expect(row.getByText('12.5%')).toBeInTheDocument();
+    expect(row.getByRole('progressbar', { name: 'Retirement goal progress' })).toHaveAttribute('value', '12.5');
+    expect(row.getByRole('progressbar')).toHaveAttribute('aria-valuetext', '12.5% of goal achieved');
+    expect(row.getByText('€87,500.00')).toBeInTheDocument();
   });
 
   it.each([

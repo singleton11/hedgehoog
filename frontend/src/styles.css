@@ -196,6 +196,10 @@ button.sign-out { min-height: 34px; padding: 0.4rem 0.65rem; font-size: 0.74rem;
 .facts > div { min-width: 0; padding: 1rem; border-radius: 10px; background: #f7f9f7; }
 .facts dt { font-size: 0.72rem; color: var(--muted); }
 .facts dd { margin: 0.4rem 0 0; font-size: 0.9rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+.goal-progress-bar { display: block; width: 100%; height: 0.7rem; margin-top: 0.45rem; overflow: hidden; border: 0; border-radius: 999px; background: #dbe8dc; accent-color: #247348; }
+.goal-progress-bar::-webkit-progress-bar { background: #dbe8dc; border-radius: 999px; }
+.goal-progress-bar::-webkit-progress-value { background: #247348; border-radius: 999px; }
+.goal-progress-bar::-moz-progress-bar { background: #247348; border-radius: 999px; }
 .acquisition-form { padding: 1.4rem; border: 1px solid #cfdfd1; border-radius: 12px; background: #f5f9f4; font-size: 0.85rem; }
 .acquisition-form h3, .acquisition-form p { margin: 0.3rem 0; }
 .acquisition-form h3 { margin-bottom: 0.5rem; }
@@ -296,6 +300,8 @@ summary::marker { color: #839a8b; }
 .planner-table thead { color: var(--muted); font-size: 0.75rem; }
 .planner-summary-table { min-width: 66rem; }
 .goals-table { min-width: 48rem; }
+.goals-table .goal-progress-cell { min-width: 9rem; }
+.goals-table .goal-progress-bar { margin-left: auto; }
 :is(.planner-summary-table, .goals-table) th, :is(.planner-summary-table, .goals-table) td { font-variant-numeric: tabular-nums; }
 :is(.planner-summary-table, .goals-table) th:first-child { min-width: 12rem; max-width: 22rem; overflow-wrap: anywhere; }
 .planner-summary-table th:nth-child(2), .planner-summary-table td:nth-child(2) { min-width: 3rem; }

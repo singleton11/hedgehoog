@@ -26,7 +26,7 @@ GOAL = {"name": "Retirement", "goal_eur": "100000", "goal_date": "2036-09-17"}
 def empty_summary(customer, goal_count=0):
     return {**customer, "net_worth_eur": "0.00", "goal_count": goal_count,
             "realized_pnl_eur": "0.00", "unrealized_pnl_eur": "0.00", "today_pnl_eur": "0.00", "total_pnl_eur": "0.00",
-            "today_from_date": None, "today_to_date": None}
+            "cost_basis_eur": "0.00", "previous_value_eur": "0.00", "today_from_date": None, "today_to_date": None}
 
 
 def selection(**changes):
@@ -84,7 +84,7 @@ def test_creation_normalizes_and_reads_only_public_fields_with_startup_indexes(a
     assert client.get(f"/customers/{customer['id']}").json() == customer
     assert client.get(url).json() == goal
     assert client.get("/customers").json()["items"] == [empty_summary(customer, 1)]
-    assert client.get(f"/customers/{customer['id']}/goals").json()["items"] == [goal]
+    assert client.get(f"/customers/{customer['id']}/goals").json()["items"] == [{**goal, "linked_portfolio_count": 0, "linked_equity_eur": None}]
     assert client.get(url + "/simulations").json() == {"items": [], "total": 0, "limit": 20, "offset": 0}
     owner = str(db.users.find_one({"login": "admin"})["_id"])
     assert db.planner_customers.find_one()["user_id"] == owner
@@ -109,7 +109,7 @@ def test_goal_update_normalizes_partial_changes_and_preserves_identity(planner, 
     assert response.status_code == 200, response.text
     updated = {**renamed, "goal_eur": "234.50", "goal_date": "2031-09-17"}
     assert response.json() == updated
-    assert client.get(f"/customers/{customer['id']}/goals").json()["items"] == [updated]
+    assert client.get(f"/customers/{customer['id']}/goals").json()["items"] == [{**updated, "linked_portfolio_count": 0, "linked_equity_eur": None}]
     assert db.planner_goals.count_documents({}) == 1
     assert client.patch(url, json={"name": updated["name"]}).json() == updated
 
@@ -465,7 +465,8 @@ def test_customers_and_goals_pagination_defaults_bounds_and_timestamp_ties(plann
     for name in ("Second", "Third"):
         goals.append(client.post(endpoint, json={**GOAL, "name": name}).json())
     customer_summaries = [empty_summary(item, 3 if item["id"] == customer["id"] else 1) for item in customers]
-    for endpoint, items in (("/customers", customer_summaries), (endpoint, goals)):
+    for endpoint, items in (("/customers", customer_summaries), (endpoint,
+                            [{**item, "linked_portfolio_count": 0, "linked_equity_eur": None} for item in goals])):
         assert client.get(endpoint).json() == {"items": list(reversed(items)), "total": 3, "limit": 20, "offset": 0}
         assert client.get(endpoint, params={"limit": 1, "offset": 1}).json() == {
             "items": [items[1]], "total": 3, "limit": 1, "offset": 1,

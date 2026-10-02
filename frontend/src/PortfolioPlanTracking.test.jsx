@@ -20,8 +20,11 @@ describe('Portfolio plan tracking', () => {
     expect(screen.queryByText(/pp|Gap to target|Change from saved plan|Monthly change from plan/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Model and valuation warnings|Model uncertainty|From today's portfolio|Buy and hold/)).not.toBeInTheDocument();
     const section = screen.getByRole('region', { name: 'Plan progress' });
-    expect(section.querySelectorAll('dl.facts')).toHaveLength(3);
-    expect(section.querySelectorAll('dl.facts > div')).toHaveLength(7);
+    expect(section.querySelectorAll('dl.facts')).toHaveLength(4);
+    expect(section.querySelectorAll('dl.facts > div')).toHaveLength(11);
+    expect(screen.getByText('Goal achieved').nextElementSibling).toHaveTextContent('12.0%');
+    expect(screen.getByRole('progressbar', { name: 'Portfolio goal progress' })).toHaveAttribute('value', '12');
+    expect(screen.getByText('Amount remaining').nextElementSibling).toHaveTextContent('€88,000.00');
     expect(screen.getByText('Below target probability')).toHaveClass('return-negative');
     expect(screen.getByText('Planned monthly investment')).toBeInTheDocument();
     expect(screen.getByText('Monthly investment needed to reach target')).toBeInTheDocument();
@@ -51,6 +54,19 @@ describe('Portfolio plan tracking', () => {
       schedule_difference_months: null, schedule_difference_years: null,
     })} />);
     expect(await screen.findByText(label)).toBeInTheDocument();
+  });
+  it('shows uncapped achieved percentage with a visually full bar above the target', async () => {
+    render(<PortfolioPlanTracking {...props} equity="150000.00" target="100000.00" request={vi.fn().mockRejectedValue(new Error('Deadline reached'))} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Deadline reached');
+    expect(screen.getByText('Goal achieved').nextElementSibling).toHaveTextContent('150.0%');
+    expect(screen.getByRole('progressbar')).toHaveAttribute('value', '100');
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuetext', '150.0% of goal achieved');
+  });
+  it('shows arithmetic progress even when forecasting fails', async () => {
+    render(<PortfolioPlanTracking {...props} equity="12000.00" target="100000.00" request={vi.fn().mockRejectedValue(new Error('Deadline reached'))} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Deadline reached');
+    expect(screen.getByText('Goal achieved').nextElementSibling).toHaveTextContent('12.0%');
+    expect(screen.getByText('Amount remaining').nextElementSibling).toHaveTextContent('€88,000.00');
   });
   it('rejects malformed timing', async () => {
     render(<PortfolioPlanTracking {...props} request={vi.fn().mockResolvedValue({ ...result, schedule_difference_months: null })} />);

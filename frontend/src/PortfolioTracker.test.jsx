@@ -9,7 +9,7 @@ const cid = 'customer-a', pid = 'portfolio-a';
 const A = 'IE00B4L5Y983', B = 'IE00B5BMR087';
 const instrument = { instrument_id: A, name: 'World ETF', symbol: 'WORLD', exchange: 'XETR', currency: 'EUR' };
 const held = { ...instrument, instrument_id: B, name: 'Retired ETF', symbol: 'HELD' };
-const goal = { id: 'goal-a', customer_id: cid, name: 'Retirement', goal_eur: '100000.00', goal_date: '2036-09-24' };
+const goal = { id: 'goal-a', customer_id: cid, name: 'Retirement', goal_eur: '100000.00', goal_date: '2036-09-24', linked_portfolio_count: 0, linked_equity_eur: null };
 const asPlan = (goal) => ({ id: goal.id, goal_id: 'source-goal', is_plan: true, strategy_name: goal.name,
   saved_at: '2026-09-24T00:00:00Z', inputs: { goal_date: goal.goal_date } });
 const planLabel = (goal) => `${goal.name} · ${goal.goal_date} · ${goal.id}`;

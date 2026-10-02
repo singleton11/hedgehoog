@@ -192,11 +192,37 @@ def plans(customer_id: str, request: Request, user: CurrentUser, limit: Limit = 
 
 @router.get("/{customer_id}/goals")
 def goals(customer_id: str, request: Request, user: CurrentUser, limit: Limit = 20, offset: Offset = 0):
+    from decimal import Decimal, localcontext
+    from portfolio_tracker import valuation
+
     db, owner = request.app.state.database, str(user["_id"])
     _customer(db, owner, customer_id)
-    return _page(db.planner_goals, {"user_id": owner, "customer_id": customer_id},
+    page = _page(db.planner_goals, {"user_id": owner, "customer_id": customer_id},
                  {field: 1 for field in GOAL_FIELDS}, CREATED_ORDER,
                  lambda row: _public(row, GOAL_FIELDS), limit, offset)
+    goal_ids = {item["id"] for item in page["items"]}
+    if not goal_ids:
+        return page
+    plans = db.planner_simulations.find({"user_id": owner, "customer_id": customer_id,
+                                         "goal_id": {"$in": list(goal_ids)}, "is_plan": True,
+                                         "saved_at": {"$ne": None}}, {"_id": 1, "goal_id": 1})
+    goal_by_plan = {plan["_id"]: plan["goal_id"] for plan in plans}
+    totals = {goal_id: [0, Decimal("0"), True] for goal_id in goal_ids}
+    if goal_by_plan:
+        now, quote_cache = md.utcnow(), {}
+        with localcontext() as context:
+            context.prec = 80
+            for portfolio in db.portfolios.find({"user_id": owner, "customer_id": customer_id,
+                                                 "plan_id": {"$in": list(goal_by_plan)}}):
+                count, equity, complete = totals[goal_by_plan[portfolio["plan_id"]]]
+                amount = valuation(db, portfolio, now=now, quote_cache=quote_cache, exact_totals=True)["equity_eur"]
+                totals[goal_by_plan[portfolio["plan_id"]]] = [count + 1,
+                    equity + amount if amount is not None else equity, complete and amount is not None]
+    for item in page["items"]:
+        count, equity, complete = totals[item["id"]]
+        item.update(linked_portfolio_count=count,
+                    linked_equity_eur=money_string(equity) if count and complete else None)
+    return page
 
 
 @router.post("/{customer_id}/goals", status_code=201)

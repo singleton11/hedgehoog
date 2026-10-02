@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { formatEuros } from './goalProjection.js';
+import { goalProgress } from './goalProgress.js';
+import GoalProgressBar from './GoalProgressBar.jsx';
 
 const probability = (value) => Number.isFinite(value) && value >= 0 && value <= 1;
 const money = (value) => typeof value === 'string' && /^-?\d+\.\d{2}$/.test(value);
@@ -24,7 +26,7 @@ function valid(data, planId) {
       : data.forecast_goal_date === null && data.schedule_difference_months === null && data.schedule_difference_years === null)
     && Array.isArray(data.warnings) && data.warnings.every((value) => typeof value === 'string');
 }
-export default function PortfolioPlanTracking({ request, portfolioPath, planId, revision }) {
+export default function PortfolioPlanTracking({ request, portfolioPath, planId, revision, equity, target }) {
   const [state, setState] = useState(null);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
@@ -41,8 +43,16 @@ export default function PortfolioPlanTracking({ request, portfolioPath, planId, 
   const current = state?.request === request && state.portfolioPath === portfolioPath && state.planId === planId && state.revision === revision && state.attempt === attempt;
   const data = current ? state.data : null;
   const ahead = data?.on_track && BigInt(data.required_monthly_contribution_eur.replace('.', '')) < BigInt(data.monthly_contribution_eur.replace('.', ''));
+  const progress = goalProgress(equity ?? data?.equity_eur, target ?? data?.goal_eur);
   return <section aria-label="Plan progress">
     <h3>Plan progress</h3>
+    {planId && progress && <dl className="facts">
+      <div><dt>Portfolio equity</dt><dd>{formatEuros(equity ?? data.equity_eur)}</dd></div>
+      <div><dt>Saved plan target</dt><dd>{formatEuros(target ?? data.goal_eur)}</dd></div>
+      <div><dt>Goal achieved</dt><dd>{progress.achieved}<GoalProgressBar achieved={progress.achieved} label="Portfolio goal progress" /></dd></div>
+      <div><dt>Amount remaining</dt><dd>{formatEuros(progress.remaining)}</dd></div>
+    </dl>}
+    {planId && equity === null && <p className="muted">Goal progress unavailable until every holding has a EUR valuation.</p>}
     {!planId ? <p className="muted">Assign a saved plan to see whether this portfolio is on track.</p>
       : !current ? <p role="status">Calculating plan progress…</p>
         : state.error ? <><p role="alert">{state.error}</p><button className="secondary" onClick={() => setAttempt((value) => value + 1)}>Retry plan progress</button></>
