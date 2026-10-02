@@ -324,7 +324,7 @@ function Summary({ data, performance }) {
   const values = { ...data, total_pnl_eur: totalPnl };
   return <section aria-label="Portfolio summary"><h3>Portfolio summary</h3>
     <dl className="facts">{metrics.map(([label, key]) => <div key={key}><dt>{label}</dt><dd className={key.includes('pnl') ? pnlClass(values[key]) : undefined}>{key === 'unrealized_pnl_eur' ? pnlDisplay(values[key], data.positions_value_eur === null ? null : Number(data.positions_value_eur) - Number(values[key])) : key === 'daily_unrealized_pnl_eur' ? pnlDisplay(values[key], previousPortfolioValue) : key.includes('pnl') ? signedEuros(values[key]) : formatEuros(values[key])}</dd></div>)}</dl>
-    <dl className="facts">{[['TWR', 'twr_percent'], ['Sharpe', 'sharpe'], ['Sortino', 'sortino']].map(([label, key]) => <div key={key}><dt>{label}</dt><dd>{typeof performance?.[key] === 'string' && Number.isFinite(Number(performance[key])) ? `${Number(performance[key]).toFixed(2)}${key === 'twr_percent' ? '%' : ''}` : 'Unavailable'}</dd></div>)}</dl>
+    <dl className="facts">{[['TWR', 'twr_percent'], ['Average Sharpe', 'sharpe'], ['Average Sortino', 'sortino']].map(([label, key]) => <div key={key}><dt>{label}</dt><dd>{typeof performance?.[key] === 'string' && Number.isFinite(Number(performance[key])) ? `${Number(performance[key]).toFixed(2)}${key === 'twr_percent' ? '%' : ''}` : 'Unavailable'}</dd></div>)}</dl>
     {data.warnings.length > 0 && <ul className="portfolio-warnings" aria-label="Valuation warnings">{data.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
   </section>;
 }

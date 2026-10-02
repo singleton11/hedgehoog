@@ -152,9 +152,11 @@ def performance(db, document, benchmark_id=None, *, now=None):
         # marks. Overrides fill absent currency only, on the pinned listing.
         marks[isin] = SavedMarks(rows, required_currency="EUR", currency_override=override)
         dates.update(day for day in marks[isin].dates if first <= day <= today)
+    portfolio_ratio_dates = set(dates)
     if benchmark_marks:
         dates.update(day for day in benchmark_marks.dates if first <= day <= today)
     result.update(start_date=baseline, end_date=today)
+    ratio_summaries = []
     with localcontext() as context:
         context.prec = 80
         benchmark_base = benchmark_marks.at(baseline) if benchmark_marks else None
@@ -245,9 +247,15 @@ def performance(db, document, benchmark_id=None, *, now=None):
                 elif not benchmark_gap:
                     result["warnings"].append(f"Benchmark has an invalid saved close from {day}; unavailable observations are not replaced by older valid prices.")
                     benchmark_gap = True
+            point_ratios = ratios.values()
+            if day in portfolio_ratio_dates:
+                ratio_summaries.append(point_ratios)
             result["points"].append({"date": day, "twr_percent": percent(growth),
-                                     "benchmark_percent": percent(benchmark_growth), **ratios.values()})
-    result["summary"] = {key: result["points"][-1][key] for key in ("twr_percent", "sharpe", "sortino")}
+                                     "benchmark_percent": percent(benchmark_growth), **point_ratios})
+    result["summary"] = {"twr_percent": result["points"][-1]["twr_percent"]}
+    for key in ("sharpe", "sortino"):
+        values = [Decimal(item[key]) for item in ratio_summaries if item[key] is not None]
+        result["summary"][key] = format(sum(values, Decimal(0)) / len(values), ".8f") if values else None
     if proxy and not ratios.valid:
         result["warnings"].append("Sharpe and Sortino unavailable: a funded daily return or matching EUR proxy history is missing, invalid or non-positive. Repair history; no partial sample is used.")
     return result

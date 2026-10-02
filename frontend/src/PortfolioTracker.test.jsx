@@ -495,8 +495,8 @@ describe('portfolio detail interactions', () => {
     const reads = () => request.mock.calls.filter(([url]) => url === `${detailPath}/performance`).length;
     expect(reads()).toBe(1);
     expect(summaryValue('TWR')).toHaveTextContent('10.00%');
-    expect(summaryValue('Sharpe')).toHaveTextContent('-0.25');
-    expect(summaryValue('Sortino')).toHaveTextContent('0.00');
+    expect(summaryValue('Average Sharpe')).toHaveTextContent('-0.25');
+    expect(summaryValue('Average Sortino')).toHaveTextContent('0.00');
     expect(screen.queryByRole('region', { name: 'Portfolio performance' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Performance' }));
     const chart = screen.getByRole('region', { name: 'Portfolio performance' });

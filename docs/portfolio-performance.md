@@ -1,6 +1,6 @@
 # Portfolio performance
 
-The portfolio detail summary shows cumulative TWR and the latest Sharpe and Sortino ratios. The Performance tab contains a TWR/index comparison chart and a separate, unitless chart containing both ratios. All three tabs retain their state while hidden; refreshes and ledger edits invalidate performance and summary values together.
+The portfolio detail summary shows cumulative TWR and the average of the available expanding Sharpe and Sortino ratio observations. The Performance tab contains a TWR/index comparison chart and a separate, unitless chart containing both ratios. All three tabs retain their state while hidden; refreshes and ledger edits invalidate performance and summary values together.
 
 ## App-wide proxy setting
 
@@ -12,7 +12,7 @@ Changing the setting affects historical ratios on the next portfolio read/refres
 
 ## Calculation contract
 
-`GET /customers/{customer}/portfolios/{portfolio}/performance` retains the existing daily TWR cash-flow timing: deposits at period start, withdrawals at period end, trades/fees internal. Each point additionally contains nullable eight-decimal `sharpe` and `sortino` strings. The response adds `risk_proxy`, `ratio_method` and `summary: { twr_percent, sharpe, sortino }`.
+`GET /customers/{customer}/portfolios/{portfolio}/performance` retains the existing daily TWR cash-flow timing: deposits at period start, withdrawals at period end, trades/fees internal. Each point additionally contains nullable eight-decimal `sharpe` and `sortino` strings. The response adds `risk_proxy`, `ratio_method` and `summary: { twr_percent, sharpe, sortino }`. Summary Sharpe and Sortino are arithmetic averages of the non-null ratio values shown across the response points; TWR remains the latest cumulative value.
 
 Ratios are expanding **since-inception daily log excess-return ratios**, not rolling-year or conventional simple-return ratios:
 

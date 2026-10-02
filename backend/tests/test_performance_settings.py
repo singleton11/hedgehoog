@@ -176,7 +176,10 @@ def test_api_summary_proxy_gaps_and_benchmark_independence(tracker, db):
     assert result['summary']['twr_percent'] == '10.00000000'
     assert result['summary']['sharpe'] is not None
     assert result['summary']['sortino'] is not None
-    assert result['summary'] == {key: result['points'][-1][key] for key in result['summary']}
+    assert result['summary']['twr_percent'] == result['points'][-1]['twr_percent']
+    for key in ('sharpe', 'sortino'):
+        values = [float(point[key]) for point in result['points'] if point[key] is not None]
+        assert float(result['summary'][key]) == pytest.approx(statistics.mean(values), abs=1e-8)
     benchmark = index_history(db, [('2026-09-14', '100'), ('2026-09-17', '101')])
     assert get(client, url, benchmark)['summary'] == result['summary']
     db.quotes.delete_many({'instrument_id': SECOND_ISIN, 'date': '2026-09-14'})
@@ -200,7 +203,10 @@ def test_sparse_calendar_sampling_matches_daily_oracle_and_extra_benchmark_dates
     # Calendar dates 10..17 inclusive, including carried weekends. Funded
     # days with no saved/event date must contribute real zero observations.
     excess = [0, 0, math.log(1.1), -math.log(1.5), 0, math.log(100 / 110), math.log(1.1), 0]
-    assert float(result['summary']['sharpe']) == pytest.approx(statistics.mean(excess) * math.sqrt(365) / statistics.stdev(excess), abs=1e-8)
+    expected_final = statistics.mean(excess) * math.sqrt(365) / statistics.stdev(excess)
+    assert float(result['points'][-1]['sharpe']) == pytest.approx(expected_final, abs=1e-8)
+    ratio_points = [float(point['sharpe']) for point in result['points'] if point['sharpe'] is not None]
+    assert float(result['summary']['sharpe']) == pytest.approx(statistics.mean(ratio_points), abs=1e-8)
     benchmark = index_history(db, [('2026-09-09', '100'), ('2026-09-11', '101'), ('2026-09-14', '102')])
     compared = get(client, url, benchmark)
     assert compared['summary'] == result['summary']
