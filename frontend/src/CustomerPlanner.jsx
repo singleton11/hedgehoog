@@ -12,6 +12,7 @@ const money = (value) => typeof value === 'string' && /^\d+\.\d{2}$/.test(value)
 const validCustomer = (value) => id(value?.id) && text(value.name);
 const pnlMoney = (value) => typeof value === 'string' && /^-?\d+\.\d{2}$/.test(value);
 const pnlClass = (value) => !pnlMoney(value) || !/[1-9]/.test(value) ? '' : value.startsWith('-') ? 'return-negative' : 'return-positive';
+const signedEuros = (value) => pnlMoney(value) && !value.startsWith('-') && /[1-9]/.test(value) ? `+${formatEuros(value)}` : formatEuros(value);
 const pnlColumns = [['Realized P&L (incl. fees, EUR)', 'realized_pnl_eur'], ['Unrealized P&L (EUR)', 'unrealized_pnl_eur'],
   ['Today P&L (EUR)', 'today_pnl_eur'], ['Total P&L (EUR)', 'total_pnl_eur']];
 const validDate = (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
@@ -220,7 +221,7 @@ function Customers({ request, isin }) {
               <td>{customer.goal_count}</td>
               <td>{formatEuros(customer.net_worth_eur)}{customer.net_worth_eur === null && <span className="simulation-parameter">Some holdings cannot be valued.</span>}</td>
               {pnlColumns.map(([, key]) => <td key={key} title={key === 'today_pnl_eur' && customer.today_to_date ? `Price date: ${customer.today_to_date}` : undefined}>
-                <span className={pnlClass(customer[key])}>{formatEuros(customer[key])}</span>
+                <span className={pnlClass(customer[key])}>{signedEuros(customer[key])}</span>
               </td>)}
             </tr>)}</tbody>
           </table>
