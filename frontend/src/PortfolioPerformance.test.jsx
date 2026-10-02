@@ -169,12 +169,17 @@ describe('Performance chart', () => {
     expect(screen.getByRole('status', { name: 'Risk ratio values' })).toHaveTextContent('Sharpe: -0.50');
     expect(screen.getByRole('status', { name: 'Risk ratio values' })).toHaveTextContent('Sortino: -0.75');
   });
-  it('breaks null gaps and exposes values on hover, tap and keyboard focus without a slider', () => {
+  it('bridges benchmark gaps but not portfolio gaps, and exposes unavailable dates without a slider', () => {
     const gapped = [...points, { date: '2026-09-23', twr_percent: null, benchmark_percent: null }, { date: '2026-09-24', twr_percent: '5', benchmark_percent: '6' }];
     render(<PerformanceChart points={gapped} benchmark={index()} />);
     const graph = screen.getByRole('img');
     const readout = () => screen.getByRole('status', { name: 'Performance values' });
     expect(screen.getByTestId('twr_percent-line').getAttribute('d').match(/M/g)).toHaveLength(2);
+    const benchmarkPath = screen.getByTestId('benchmark_percent-line').getAttribute('d');
+    expect(benchmarkPath.match(/M/g)).toHaveLength(1);
+    expect(benchmarkPath.match(/L/g)).toHaveLength(3);
+    expect(document.querySelectorAll('.performance-benchmark circle')).toHaveLength(4);
+    expect(graph).toHaveAccessibleDescription(expect.stringContaining('connects available observations across unavailable dates'));
     expect(screen.getByText('-2.5%')).toBeInTheDocument(); expect(screen.getByText('0%')).toBeInTheDocument();
     expect(screen.queryByRole('slider')).not.toBeInTheDocument();
     expect(graph).not.toHaveAccessibleDescription(expect.stringContaining('slider'));
@@ -201,6 +206,19 @@ describe('Performance chart', () => {
     fireEvent.click(document.querySelectorAll('.performance-portfolio circle')[1]);
     expect(readout()).toHaveTextContent('2026-09-21');
     expect(readout()).toHaveTextContent('Portfolio TWR: -2.50%');
+  });
+  it('does not extend a benchmark line into leading or trailing unavailable dates', () => {
+    render(<PerformanceChart benchmark={index()} points={[
+      { date: '2026-09-20', twr_percent: '0', benchmark_percent: null },
+      { date: '2026-09-21', twr_percent: '1', benchmark_percent: '2' },
+      { date: '2026-09-22', twr_percent: '1', benchmark_percent: null },
+      { date: '2026-09-23', twr_percent: '1', benchmark_percent: '3' },
+      { date: '2026-09-24', twr_percent: '1', benchmark_percent: null },
+    ]} />);
+    const path = screen.getByTestId('benchmark_percent-line').getAttribute('d');
+    expect(path.match(/M/g)).toHaveLength(1);
+    expect(path.match(/L/g)).toHaveLength(1);
+    expect(document.querySelectorAll('.performance-benchmark circle')).toHaveLength(2);
   });
   it('handles empty, all-null and a single date without invalid SVG numbers', () => {
     const view = render(<PerformanceChart points={[]} />);

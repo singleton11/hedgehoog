@@ -52,7 +52,7 @@ export function PerformanceChart({ points, benchmark = null, ratios = false }) {
     <svg viewBox="0 0 720 260" role="img" tabIndex={0} aria-labelledby={`${id}-title`} aria-describedby={`${id}-description`}
       onFocus={() => setPosition(points.length - 1)} onBlur={() => setPosition(null)} onKeyDown={navigate}>
       <title id={`${id}-title`}>{ratios ? 'Sharpe and Sortino' : 'Cumulative performance (%)'}</title>
-      <desc id={`${id}-description`}>Gaps indicate unavailable values. Hover or tap a point for values. With the chart focused, use Left and Right to browse dates, or Home and End.</desc>
+      <desc id={`${id}-description`}>{benchmark && !ratios ? 'The benchmark line connects available observations across unavailable dates; those dates have no plotted value. Portfolio gaps remain disconnected. ' : 'Gaps indicate unavailable values. '}Hover or tap a point for values. With the chart focused, use Left and Right to browse dates, or Home and End.</desc>
       {[bottom, (bottom + top) / 2, top, ...(bottom < 0 && top > 0 ? [0] : [])].map((tick, i) => <g key={i}>
         <line x1="90" x2="690" y1={y(tick * scale)} y2={y(tick * scale)} className="performance-grid" />
         <text x="82" y={y(tick * scale) + 4} textAnchor="end">{(tick * scale).toLocaleString('en', { maximumFractionDigits: 2, notation: Math.abs(tick * scale) >= 100000 ? 'scientific' : 'standard' })}{ratios ? '' : '%'}</text>
@@ -62,7 +62,7 @@ export function PerformanceChart({ points, benchmark = null, ratios = false }) {
         let drawing = false;
         const path = points.map((point) => {
           const value = number(point[key]);
-          if (value === null) { drawing = false; return ''; }
+          if (value === null) { if (key !== 'benchmark_percent') drawing = false; return ''; }
           const command = drawing ? 'L' : 'M'; drawing = true;
           return `${command}${x(point)},${y(value)}`;
         }).join(' ');
