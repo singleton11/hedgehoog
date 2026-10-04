@@ -10,7 +10,7 @@ from pymongo import ReturnDocument
 
 from auth import CurrentUser
 from goal_planner import GoalRequest, simulation_cutoff
-from goal_simulation import Money, contribution_dates, money_string
+from goal_simulation import Money, SimulationSettings, contribution_dates, money_string
 from goal_strategies import StrategySelection, get_strategy
 import market_data as md
 
@@ -54,8 +54,7 @@ class CustomerGoalUpdate(BaseModel):
         return self
 
 
-class SimulationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class SimulationRequest(SimulationSettings):
     strategy: StrategySelection
     starting_capital_eur: Money
     reliability: float = Field(ge=0.5, le=0.99, allow_inf_nan=False)

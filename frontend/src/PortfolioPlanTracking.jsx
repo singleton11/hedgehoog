@@ -19,6 +19,9 @@ function valid(data, planId) {
     && ['probability_change_pp', 'target_gap_pp'].every((key) => Number.isFinite(data[key]))
     && ['equity_eur', 'monthly_contribution_eur', 'required_monthly_contribution_eur', 'monthly_contribution_change_eur', 'goal_eur'].every((key) => money(data[key]))
     && typeof data.strategy_name === 'string' && typeof data.goal_date === 'string'
+    && (data.simulation_method === 'block_bootstrap'
+      ? Number.isInteger(data.block_size) && data.block_size >= 1 && data.block_size <= 60
+      : (data.simulation_method === undefined || data.simulation_method === 'standard') && data.block_size == null)
     && ['reached', 'not_reached', 'unavailable'].includes(data.forecast_status)
     && typeof data.forecast_search_end_date === 'string'
     && (data.forecast_status === 'reached'
@@ -61,6 +64,7 @@ export default function PortfolioPlanTracking({ request, portfolioPath, planId, 
               <div><dt>Plan status</dt><dd className={data.on_track ? 'return-positive' : 'return-negative'}>{ahead ? 'Ahead of plan' : data.on_track ? 'On track' : 'Below target probability'}</dd></div>
               <div><dt>Probability at planned payment</dt><dd>{percent(data.success_probability)}</dd></div>
               <div><dt>Target probability</dt><dd>{percent(data.target_probability)}</dd></div>
+              <div><dt>Plan simulation</dt><dd>{data.simulation_method === 'block_bootstrap' ? `Block bootstrap · ${data.block_size} trading days` : 'Standard Monte Carlo'}</dd></div>
             </dl>
             <dl className="facts">
               <div><dt title="First checkpoint reaching the target probability at the original payment, using refreshed estimates and the planned strategy; not a guarantee.">Estimated goal date</dt><dd>{data.forecast_goal_date ?? 'Not available'}</dd></div>

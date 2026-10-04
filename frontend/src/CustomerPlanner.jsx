@@ -304,6 +304,10 @@ function Time({ value }) {
 function Parameters({ strategy }) {
   return Object.entries(strategy.parameters).map(([key, value]) => <span key={key} className="simulation-parameter">{key.replaceAll('_', ' ')}: {String(value)}</span>);
 }
+function Method({ inputs }) {
+  return <span className="simulation-parameter">{inputs.simulation_method === 'block_bootstrap'
+    ? `Block bootstrap · ${inputs.block_size} trading days` : 'Standard Monte Carlo'}</span>;
+}
 function MakePlan({ request, goal, run }) {
   const [promoted, setPromoted] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -342,6 +346,9 @@ function SimulationHistory({ request, goal, isin, onUpdated }) {
     && money(item.inputs?.goal_eur) && /^\d{4}-\d{2}-\d{2}$/.test(item.inputs?.goal_date)
     && money(item.inputs?.starting_capital_eur) && typeof item.inputs?.reliability === 'number'
     && typeof item.inputs?.strategy?.parameters === 'object' && item.inputs.strategy.parameters !== null
+    && (item.inputs.simulation_method === 'block_bootstrap'
+      ? Number.isInteger(item.inputs.block_size) && item.inputs.block_size >= 1 && item.inputs.block_size <= 60
+      : (item.inputs.simulation_method === undefined || item.inputs.simulation_method === 'standard') && item.inputs.block_size == null)
     && typeof item.success_probability === 'number' && item.success_probability >= 0 && item.success_probability <= 1;
   return <>
     <div className="section-heading page-heading"><div><h2 className="instrument-name">{goal.name}</h2>
@@ -361,7 +368,7 @@ function SimulationHistory({ request, goal, isin, onUpdated }) {
           <tbody>{items.map((run) => <tr key={run.id}>
             <th scope="row"><a href={simulationRoute(goal.customer_id, goal.id, run.id)}><Time value={run.saved_at} /></a></th>
             <td>{formatEuros(run.inputs.goal_eur)}<span className="simulation-parameter">{run.inputs.goal_date}</span></td>
-            <td>{run.strategy_name}<Parameters strategy={run.inputs.strategy} /></td>
+            <td>{run.strategy_name}<Parameters strategy={run.inputs.strategy} /><Method inputs={run.inputs} /></td>
             <td>{formatEuros(run.inputs.starting_capital_eur)}</td><td>{percent(run.inputs.reliability)}</td>
             <td>{formatEuros(run.monthly_contribution_eur)}</td><td>{percent(run.success_probability)}</td>
             <td><MakePlan key={run.id} request={request} goal={goal} run={run} /></td>
@@ -385,6 +392,7 @@ function SavedSimulation({ request, goal, simulationId }) {
           <div><dt>Starting capital</dt><dd>{formatEuros(run.inputs.starting_capital_eur)}</dd></div>
           <div><dt>Reliability target</dt><dd>{percent(run.inputs.reliability)}</dd></div>
           <div><dt>Strategy</dt><dd>{run.strategy_definition.name}<Parameters strategy={run.inputs.strategy} /></dd></div>
+          <div><dt>Simulation method</dt><dd><Method inputs={run.inputs} /></dd></div>
         </dl>
         <a className="button-link" href={`${goalRoute(goal.customer_id, goal.id)}/new`}>New simulation</a>
         <MakePlan key={run.id} request={request} goal={goal} run={run} />

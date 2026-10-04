@@ -12,7 +12,7 @@ from goal_simulation import GoalInputs, simulate_buy_and_hold
 from goal_calibration import RandomCalibrationInputs, calibrate_instrument
 from random_calibration import evaluate_random_history
 import market_data as md
-from return_statistics import instrument_statistics
+from return_statistics import instrument_return_runs, instrument_statistics
 
 
 AcquiredInstrument = Annotated[str, Field(
@@ -70,8 +70,10 @@ def buy_and_hold_single_instrument(parameters: BuyAndHoldParameters, goals: Goal
                                        point_in_time=goals._point_in_time)
     if not estimates["eligible"]:
         raise md.DataError(422, estimates["ineligible_reason"])
+    returns = (instrument_return_runs(db, parameters.instrument, as_of=goals._effective_as_of or md.utcnow())
+               if goals.simulation_method == "block_bootstrap" else None)
     return {
-        **simulate_buy_and_hold(estimates, goals, today, **simulation_options),
+        **simulate_buy_and_hold(estimates, goals, today, return_runs=returns, **simulation_options),
         "parameter_statistics": {"instrument": estimates},
     }
 

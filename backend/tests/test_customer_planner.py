@@ -260,7 +260,7 @@ def test_preview_exactly_matches_existing_simulation_and_save_is_not_recalculati
     preview = calculate(client, url)
     assert set(preview) == {"id", "customer_id", "goal_id", "calculated_at", "saved_at", "inputs", "strategy_definition", "result", "is_plan"}
     assert preview["result"] == expected
-    assert preview["inputs"] == request_body()
+    assert preview["inputs"] == {**request_body(), "simulation_method": "standard"}
     assert preview["strategy_definition"] == gs.STRATEGIES[STRATEGY].public_definition()
     assert preview["customer_id"] == customer["id"] and preview["goal_id"] == goal["id"]
     assert preview["saved_at"] is None

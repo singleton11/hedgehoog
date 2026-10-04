@@ -6,7 +6,7 @@ import numpy as np
 from goal_simulation import MAX_MONTHS, add_months, period_factors
 
 
-def forecast_goal_date(estimates, body, today, monthly, *, paths, seed):
+def forecast_goal_date(estimates, body, today, monthly, *, paths, seed, return_runs=None):
     limit = add_months(today, MAX_MONTHS)
     result = {"forecast_goal_date": None, "forecast_status": "not_reached",
               "forecast_search_end_date": limit.isoformat()}
@@ -23,6 +23,8 @@ def forecast_goal_date(estimates, body, today, monthly, *, paths, seed):
             for day, deposit, factors in period_factors(
                 sorted(steps.items()), today, estimates["daily_mean_log_return"],
                 estimates["daily_log_return_variance"], paths, seed,
+                **({"return_runs": return_runs, "block_size": body.block_size}
+                   if body.simulation_method == "block_bootstrap" else {}),
             ):
                 growth *= factors
                 annuity *= factors

@@ -17,6 +17,8 @@ def track_plan(db, plan, snapshot, today):
     try:
         inputs = GoalInputs.model_validate({
             **{key: plan["inputs"][key] for key in ("goal_eur", "goal_date", "reliability")},
+            "simulation_method": plan["inputs"].get("simulation_method", "standard"),
+            "block_size": plan["inputs"].get("block_size"),
             "starting_capital_eur": snapshot["equity_eur"],
         })
         saved = plan["result"]
@@ -59,5 +61,6 @@ def track_plan(db, plan, snapshot, today):
         "monthly_contribution_change_eur": money_string(Decimal(result["monthly_contribution_eur"]) - monthly),
         "required_contribution_success_probability": result["success_probability"],
         "simulation_paths": paths, "seed": seed,
+        "simulation_method": inputs.simulation_method, "block_size": inputs.block_size,
         "warnings": snapshot["warnings"] + result["warnings"],
     }

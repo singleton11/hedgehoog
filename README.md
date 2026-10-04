@@ -180,7 +180,10 @@ then add named goals with EUR targets and dates. Open a goal and choose **Edit
 goal** to change its name, target or date. Saved simulations retain their original
 settings and results. Each goal can hold multiple saved simulations.
 Choose **New simulation**, configure starting
-capital, reliability (50–99%) and a strategy, then calculate. Click **Save
+capital, reliability (50–99%), a strategy and simulation method, then calculate.
+Standard Monte Carlo is the default; block bootstrap resamples contiguous observed
+daily log returns. Choose a 5-, 10- (recommended), or 20-trading-day block or
+enter a custom size from 1 to 60. Saved plans retain these settings for tracking. Click **Save
 simulation** to keep that exact result; calculation alone does not add it to
 history. Saved reports are read-only and private to your account.
 
@@ -198,7 +201,8 @@ known by that cutoff. Normal current simulations also pin statistics and their
 forecast date to one captured UTC timestamp (`data_as_of` in the result).
 
 This is a **model estimate, not a guarantee**. It uses historical log returns,
-assumes fractional shares and independent returns, and excludes inflation, taxes
+assumes fractional shares and (for standard Monte Carlo) independent normal
+returns, and excludes inflation, taxes
 and transaction fees. Unknown or conflicting currencies must be resolved; a EUR
 label does not convert non-EUR history. See [model, data rules and API details](docs/goal-planner.md).
 Rebuild the worker with `make services-up` after updating backend dependencies.
@@ -215,7 +219,7 @@ it without recalculating. Goal `/simulations` lists saved summaries, and
 Standalone compatibility endpoints: `GET /instruments/{isin}/statistics`,
 `GET /goals/strategies` (strategy catalogue and typed parameter definitions), and
 `POST /goals/simulate` with `{strategy, goal_eur, starting_capital_eur,
-goal_date, reliability}`. A strategy selection is
+goal_date, reliability}` and optional `simulation_method`, `block_size`. A strategy selection is
 `{id: "buy_and_hold_single_instrument", parameters: {instrument: "IE00B4L5Y983"}}`.
 The response echoes `strategy` and returns `parameter_statistics` keyed by
 parameter name. Reliability is a fraction, e.g. `0.90`; money outputs are decimal

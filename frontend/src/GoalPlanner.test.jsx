@@ -36,6 +36,7 @@ const statistics = (isin = A, extra = {}) => ({
 const simulation = (body, extra = {}) => ({
   monthly_contribution_eur: '456.78', target_probability: body.reliability, success_probability: 0.9043,
   zero_contribution_success_probability: 0.15, simulation_paths: 10000, seed: 42,
+  simulation_method: body.simulation_method || 'standard', block_size: body.block_size ?? null,
   valuation_date: '2026-09-17', goal_date: body.goal_date, goal_eur: body.goal_eur, contribution_count: 120,
   trajectory: [
     { date: '2026-09-17', ...Object.fromEntries(['mean', 'p05', 'p25', 'p50', 'p75', 'p95'].map((key) => [`${key}_eur`, body.starting_capital_eur])) },
@@ -127,6 +128,40 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); window.history.replaceState(null, '', '#/'); });
 
 describe('planner routes and eligibility', () => {
+  it('offers block-size shortcuts, validates custom sizes, and sends saved-goal settings', async () => {
+    mockServer();
+    render(<GoalPlanner isin={A} goal={goal} apiBase="/customers/customer-1/goals/goal-1" />);
+    await flush();
+    expect(screen.getByRole('combobox', { name: 'Simulation method' })).toHaveValue('standard');
+    expect(screen.queryByRole('spinbutton', { name: 'Block size (trading days)' })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Simulation method' }), { target: { value: 'block_bootstrap' } });
+    expect(screen.getByRole('spinbutton', { name: 'Block size (trading days)' })).toHaveValue(10);
+    fireEvent.click(screen.getByRole('button', { name: '20 trading days' }));
+    expect(screen.getByRole('spinbutton', { name: 'Block size (trading days)' })).toHaveValue(20);
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Block size (trading days)' }), { target: { value: '61' } });
+    await submit();
+    expect(screen.getByRole('alert')).toHaveTextContent('Block size must be a whole number');
+    expect(posts()).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '5 trading days' }));
+    await submit();
+    expect(posts()[0][1].body).toEqual({ strategy: selection(), starting_capital_eur: '0.00', reliability: 0.75,
+      simulation_method: 'block_bootstrap', block_size: 5 });
+    expect(within(result()).getByText(/Block bootstrap · 5 trading days per block/)).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Simulation method' }), { target: { value: 'standard' } });
+    expect(result()).not.toBeInTheDocument();
+    await submit();
+    expect(posts()[1][1].body).not.toHaveProperty('block_size');
+  });
+
+  it('rejects bootstrap results returned with different settings', async () => {
+    const server = mockServer();
+    server.simulate = async (body) => simulation(body, { block_size: 20 });
+    await openGoal();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Simulation method' }), { target: { value: 'block_bootstrap' } });
+    await submit();
+    expect(screen.getByRole('alert')).toHaveTextContent('unexpected response');
+    expect(result()).not.toBeInTheDocument();
+  });
   it('selects a strategy and its acquired instrument parameter without catalogue search, acquisition or automatic simulation', async () => {
     mockServer();
     await openGoal(null);

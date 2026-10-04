@@ -21,7 +21,8 @@ describe('Portfolio plan tracking', () => {
     expect(screen.queryByText(/Model and valuation warnings|Model uncertainty|From today's portfolio|Buy and hold/)).not.toBeInTheDocument();
     const section = screen.getByRole('region', { name: 'Plan progress' });
     expect(section.querySelectorAll('dl.facts')).toHaveLength(4);
-    expect(section.querySelectorAll('dl.facts > div')).toHaveLength(11);
+    expect(section.querySelectorAll('dl.facts > div')).toHaveLength(12);
+    expect(screen.getByText('Plan simulation').nextElementSibling).toHaveTextContent('Standard Monte Carlo');
     expect(screen.getByText('Goal achieved').nextElementSibling).toHaveTextContent('12.0%');
     expect(screen.getByRole('progressbar', { name: 'Portfolio goal progress' })).toHaveAttribute('value', '12');
     expect(screen.getByText('Amount remaining').nextElementSibling).toHaveTextContent('€88,000.00');
@@ -67,6 +68,17 @@ describe('Portfolio plan tracking', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Deadline reached');
     expect(screen.getByText('Goal achieved').nextElementSibling).toHaveTextContent('12.0%');
     expect(screen.getByText('Amount remaining').nextElementSibling).toHaveTextContent('€88,000.00');
+  });
+  it('shows saved bootstrap settings and rejects a missing block size', async () => {
+    const view = render(<PortfolioPlanTracking {...props} request={vi.fn().mockResolvedValue({
+      ...result, simulation_method: 'block_bootstrap', block_size: 20,
+    })} />);
+    expect(await screen.findByText('Block bootstrap · 20 trading days')).toBeInTheDocument();
+    view.unmount();
+    render(<PortfolioPlanTracking {...props} request={vi.fn().mockResolvedValue({
+      ...result, simulation_method: 'block_bootstrap', block_size: null,
+    })} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unexpected');
   });
   it('rejects malformed timing', async () => {
     render(<PortfolioPlanTracking {...props} request={vi.fn().mockResolvedValue({ ...result, schedule_difference_months: null })} />);

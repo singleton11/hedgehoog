@@ -84,7 +84,7 @@ def calculate_historical_year_return(rows):
     }
 
 
-def calculate_daily_statistics(rows):
+def calculate_daily_statistics(rows, *, include_return_runs=False):
     """Rows are latest-per-date, ascending. Never splice adjusted/raw prices.
 
     Bad prices break the return chain. Only adjacent weekdays form daily
@@ -103,6 +103,7 @@ def calculate_daily_statistics(rows):
     if basis == "close" and rows:
         warnings.append("Adjusted closes are incomplete; all returns use unadjusted closes. Splits and distributions can distort these estimates.")
     logs, valid_dates = [], []
+    runs, run = [], []
     invalid_prices = skipped_gaps = invalid_returns = 0
     previous = None
     for row in rows:
@@ -111,6 +112,9 @@ def calculate_daily_statistics(rows):
         if price is None:
             invalid_prices += 1
             previous = None
+            if run:
+                runs.append(run)
+                run = []
             continue
         valid_dates.append(row["date"])
         if previous:
@@ -119,13 +123,22 @@ def calculate_daily_statistics(rows):
             weekdays = sum((previous_day + timedelta(days=i)).weekday() < 5 for i in range(1, min(gap, 7) + 1))
             if gap > 7 or weekdays != 1:
                 skipped_gaps += 1
+                if run:
+                    runs.append(run)
+                    run = []
             else:
                 log_return = math.log(price) - math.log(previous_price)
                 if math.isfinite(log_return):
                     logs.append(log_return)
+                    run.append(log_return)
                 else:
                     invalid_returns += 1
+                    if run:
+                        runs.append(run)
+                        run = []
         previous = day, price
+    if run:
+        runs.append(run)
     if invalid_prices:
         warnings.append(f"{invalid_prices} non-positive, missing or non-finite price(s) excluded; returns do not bridge these rows.")
     if skipped_gaps:
@@ -159,6 +172,7 @@ def calculate_daily_statistics(rows):
         "last_date": valid_dates[-1] if valid_dates else None,
         "invalid_price_count": invalid_prices, "skipped_gap_count": skipped_gaps, "weekend_quote_count": weekend_count,
         **metrics, "warnings": warnings,
+        **({"return_runs": runs} if include_return_runs else {}),
     }
 
 
@@ -199,6 +213,33 @@ def calculate_statistics(rows):
     }
 
 
+def _latest_rows(db, listing, query):
+    if not listing:
+        return []
+    records = db.quotes.aggregate([
+        {"$match": query},
+        {"$sort": {"date": 1, "collected_at": -1, "_id": -1}},
+        {"$group": {"_id": "$date", "data": {"$first": "$data"}}},
+        {"$sort": {"_id": 1}},
+    ])
+    return [{**record["data"], "date": record["_id"]} for record in records]
+
+
+def instrument_return_runs(db, isin, *, as_of):
+    """Same published vintage, split basis and weekday/gap rules as model estimates."""
+    state = db.instrument_state.find_one({"_id": isin}) or {}
+    listing = state.get("listing")
+    if not listing:
+        return []
+    generation = md.history_generation(db, isin, listing, as_of)
+    query = md.observation_filter(db, isin, listing, as_of, generation)
+    query.update(collected_at={"$lte": as_of}, date={"$lte": as_of.date().isoformat()})
+    rows = _latest_rows(db, listing, query)
+    splits = load_split_snapshot(db, isin, listing, as_of, generation)
+    adjusted, _ = adjusted_rows(rows, splits)
+    return calculate_daily_statistics(adjusted, include_return_runs=True)["return_runs"]
+
+
 def refresh_statistics(db, isin, *, force=False, generation=None, as_of=None, point_in_time=False):
     """Persist estimates after acquisition; lazily cover pre-feature/partial data.
 
@@ -225,15 +266,7 @@ def refresh_statistics(db, isin, *, force=False, generation=None, as_of=None, po
         statistics = dict(cached["statistics"])
         statistics["as_of"] = cutoff
         return statistics, state
-    rows = []
-    if listing:
-        records = db.quotes.aggregate([
-            {"$match": query},
-            {"$sort": {"date": 1, "collected_at": -1, "_id": -1}},
-            {"$group": {"_id": "$date", "data": {"$first": "$data"}}},
-            {"$sort": {"_id": 1}},
-        ])
-        rows = [{**record["data"], "date": record["_id"]} for record in records]
+    rows = _latest_rows(db, listing, query)
     currencies = set()
     unknown_currency = False
     for row in rows:

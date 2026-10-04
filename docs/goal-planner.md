@@ -28,8 +28,8 @@ the first page. Each goal has a name, EUR target and goal date.
 Open a goal and choose **Edit goal** to change its name, target or date, then
 **Save changes**. **Cancel**
 discards your edits. Open **New simulation** to calculate using the current goal
-settings. Starting capital, target reliability (50–99%), strategy and strategy
-parameters vary per simulation; the goal's target and date are read-only within
+settings. Starting capital, target reliability (50–99%), strategy, simulation
+method and (for block bootstrap) block size vary per simulation; the goal's target and date are read-only within
 the simulation form.
 
 **Calculate monthly contribution** previews the result and chart without adding
@@ -143,8 +143,8 @@ the catalogue exposes `supports_calibration` and the current user's latest score
 summary for compatibility. **New run** selects a strategy and parameters; every
 successful calculation gets its own saved report. **Run again** copies a report's
 settings into a new form without overwriting it. Calibration uses automatic
-seeded scenarios only; the original goal-planner simulation contract remains
-unchanged.
+seeded scenarios only; selecting block bootstrap in the goal planner does not
+change calibration runs.
 
 ## Derived statistics
 
@@ -288,6 +288,16 @@ estimates and Monte Carlo inputs are unchanged.
 For buy-and-hold, `backend/goal_simulation.py` simulates 10,000 paths using NumPy's generator and fixed
 seed `20260919`. Repeated requests with the same date, inputs and history are
 repeatable. Path count/seed are server-controlled, not request parameters.
+Choose **Standard Monte Carlo** (the backward-compatible default) or **Block
+bootstrap** in either simulation form. Bootstrap offers quick sizes **5**, **10**
+(default recommendation) and **20** trading days, plus a custom integer **1–60**.
+These are starting points, not data-dependent optimal sizes. Block bootstrap
+uses the same saved, split-corrected, eligible daily log-return history and
+knowledge-time cutoff as the statistics estimator; missing weekdays, invalid
+prices and missing returns break contiguous runs. Every eligible complete block
+start is sampled with replacement across paths, and blocks can repeat. If no
+uninterrupted run accommodates the size, calculation returns 422 and asks for a
+shorter block or more history. No provider calls are made.
 
 Starting capital is invested on the simulation's UTC origin date. Payments occur at calendar-month
 anniversaries, first one month from that date, clamped to the last day of shorter
@@ -312,7 +322,7 @@ manual currency labels are current metadata. Those can introduce survivorship or
 metadata bias. Provider histories can also have adjustment limitations within a
 published generation; see the history and calibration caveats below.
 
-For each interval with `d` actual calendar days:
+For standard Monte Carlo, each interval with `d` actual calendar days uses:
 
 ```
 t = 252 * d / 365.25
@@ -320,9 +330,14 @@ log_growth ~ Normal(m * t, v * t)
 growth_factor = exp(log_growth)
 ```
 
+For block bootstrap, the number of sampled daily returns per interval is
+`max(1, round(t))`. Each path concatenates independently sampled contiguous
+historical blocks of the chosen size, carrying unused block days into the next
+interval; its growth factor is the exponential of their summed **observed** log
+returns. This preserves within-block ordering and empirical drift rather than
+sampling normal deviations. No blocks cross invalid prices or missing weekdays.
 There is no additional `-v/2` drift correction: `m` is already an observed log
-mean. Independent normal log returns imply positive lognormal prices. Payments
-are added **after** each interval's growth.
+mean in the standard method. Payments are added **after** each interval's growth.
 
 Each path's final wealth is linear in the monthly contribution `c`:
 
@@ -374,9 +389,11 @@ for SVG geometry. No chart library or provider calls are required.
 
 Reliability is an **estimated probability conditional on the model**, not a
 promise or statistical confidence in the model parameters. Historical mean is
-particularly uncertain. The model does not capture fat tails, regime changes,
-serial dependence or parameter uncertainty. 10,000 paths also have sampling
-error; a fixed seed improves repeatability, not accuracy.
+particularly uncertain. The standard normal model cannot capture fat tails or serial dependence.
+Block bootstrap replays observed tails and short-range dependence **within**
+blocks, but cannot invent losses or regimes absent from the history, guarantee
+future regime persistence, or resolve parameter uncertainty. 10,000 paths also
+have sampling error; a fixed seed improves repeatability, not accuracy.
 
 Amounts are nominal EUR. There is no inflation, tax, transaction fee, withdrawal,
 lot-size, liquidity or changing-contribution model. Fractional shares are assumed.
@@ -417,7 +434,8 @@ Origin protections as other commands. None calls the market-data provider.
   creation time, linked portfolios and simulation snapshots are preserved.
 - Under `/customers/{customerId}/goals/{goalId}`:
   - `POST /simulate` accepts `{strategy, starting_capital_eur, reliability}` with
-    optional timezone-aware `as_of`. Target/date are loaded from the saved goal,
+    optional timezone-aware `as_of` and the simulation settings described below.
+    Target/date are loaded from the saved goal,
     never overridden by the client. `as_of` selects a historical data/origin cutoff.
     Returns a temporary preview envelope with `id`, `customer_id`, `goal_id`,
     `calculated_at`, `saved_at: null`, full `inputs`, `strategy_definition` and
@@ -438,6 +456,10 @@ Origin protections as other commands. None calls the market-data provider.
 - `GET /customers/{customerId}/plans` lists marked saved simulations across that
   customer's goals using the same compact summary, excluding unmarked runs and previews.
   Portfolios assign these simulation IDs via `plan_id`, not `goal_id`.
+  Saved inputs include `simulation_method` and, for bootstrap, `block_size`.
+  Plan tracking uses these saved settings and saved path count/seed with current
+  portfolio equity and refreshed history; it never mutates the saved simulation.
+  Older plans without settings continue using standard Monte Carlo.
 
 All lists accept `limit` (default 20, maximum 100) and `offset`, returning
 `{items, total, limit, offset}` in deterministic newest-first order (creation
@@ -472,11 +494,17 @@ the simulation.
     "starting_capital_eur": "10000.00",
     "goal_date": "2036-09-17",
     "reliability": 0.9,
+    "simulation_method": "block_bootstrap",
+    "block_size": 10,
     "as_of": "2026-09-17T12:00:00Z"
   }
   ```
 
-  Money may be decimal strings and probability is a fraction. Invalid inputs,
+  Omit both `simulation_method` and `block_size` for standard Monte Carlo, or
+  send `simulation_method: "standard"` with no size. A bootstrap request must
+  include `simulation_method: "block_bootstrap"` and an integer `block_size`
+  between 1 and 60; a size with standard Monte Carlo is rejected. Responses
+  report the selected method and a nullable block size. Money may be decimal strings and probability is a fraction. Invalid inputs,
   unknown strategies, invalid/extra parameters, unacquired instruments and
   ineligible history return 422. The legacy top-level `instrument_id` request
   field is no longer accepted. The response echoes `strategy`, reports the exact

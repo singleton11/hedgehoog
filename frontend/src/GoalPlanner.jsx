@@ -48,6 +48,9 @@ export function validResult(data, body, strategy) {
   const instrumentParameters = strategy.parameters.filter((parameter) => parameter.type === 'instrument' && body.strategy.parameters[parameter.key]);
   return projection && projection.points[0].date === data.valuation_date && projection.points.at(-1).date === data.goal_date
     && sameStrategy(data.strategy, body.strategy)
+    && (body.simulation_method === 'block_bootstrap'
+      ? data.simulation_method === 'block_bootstrap' && data.block_size === body.block_size
+      : (data.simulation_method === undefined || data.simulation_method === 'standard') && data.block_size == null)
     && data.goal_eur === body.goal_eur && Number.isInteger(data.simulation_paths) && data.simulation_paths > 0
     && data.goal_date === body.goal_date && data.target_probability === body.reliability
     && data.parameter_statistics && typeof data.parameter_statistics === 'object' && !Array.isArray(data.parameter_statistics)
@@ -69,6 +72,9 @@ export function validSimulationRecord(data, goal, { saved = false, id } = {}) {
     && (saved || (data.inputs?.goal_eur === goal.goal_eur && data.inputs?.goal_date === goal.goal_date))
     && typeof data.inputs?.starting_capital_eur === 'string' && /^\d+\.\d{2}$/.test(data.inputs.starting_capital_eur)
     && data.strategy_definition?.id === data.inputs?.strategy?.id && typeof data.strategy_definition?.name === 'string'
+    && (data.inputs?.simulation_method === 'block_bootstrap'
+      ? Number.isInteger(data.inputs.block_size) && data.inputs.block_size >= 1 && data.inputs.block_size <= 60
+      : (data.inputs?.simulation_method === undefined || data.inputs.simulation_method === 'standard') && data.inputs?.block_size == null)
     && validResult(data.result, data.inputs, data.strategy_definition);
 }
 
@@ -95,6 +101,7 @@ export function SimulationResult({ result, strategy }) {
     <details className="disclosure"><summary>Calculation details</summary>
       <div className="disclosure-content">
         <p><strong>Strategy:</strong> {strategy.name}</p>
+        <p><strong>Simulation:</strong> {result.simulation_method === 'block_bootstrap' ? `Block bootstrap · ${result.block_size} trading days per block` : 'Standard Monte Carlo · independent normal log returns'}</p>
         <dl className="facts">
           <div><dt>First / last contribution (UTC)</dt><dd>{result.first_contribution_date} / {result.last_contribution_date}</dd></div>
           <div><dt>Valuation / goal date (UTC)</dt><dd>{result.valuation_date} / {result.goal_date}</dd></div>
@@ -119,7 +126,7 @@ export default function GoalPlanner({ isin, goal, apiBase, reportHref }) {
   const strategy = strategies.find((item) => item.id === strategyId) || (strategyId === null ? strategies[0] : null);
   const selection = strategy ? { id: strategy.id, parameters } : null;
   const [readiness, setReadiness] = useState({});
-  const [inputs, setInputs] = useState(() => ({ goal: goal?.goal_eur || '100000', capital: '0', date: goal?.goal_date || monthlyAnniversary(new Date(), 120), reliability: '75' }));
+  const [inputs, setInputs] = useState(() => ({ goal: goal?.goal_eur || '100000', capital: '0', date: goal?.goal_date || monthlyAnniversary(new Date(), 120), reliability: '75', method: 'standard', blockSize: '10' }));
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -175,14 +182,19 @@ export default function GoalPlanner({ isin, goal, apiBase, reportHref }) {
     invalidate();
     const validationError = validateInputs(inputs);
     if (validationError) { setError(validationError); return; }
+    if (inputs.method === 'block_bootstrap' && (!/^\d+$/.test(inputs.blockSize) || Number(inputs.blockSize) < 1 || Number(inputs.blockSize) > 60)) {
+      setError('Block size must be a whole number from 1 to 60 trading days.'); return;
+    }
     const current = ++sequence.current;
     const abort = new AbortController();
     controller.current = abort;
     const body = { strategy: selection, goal_eur: normalizeEuros(inputs.goal), starting_capital_eur: normalizeEuros(inputs.capital),
-      goal_date: inputs.date, reliability: Number(inputs.reliability) / 100 };
+      goal_date: inputs.date, reliability: Number(inputs.reliability) / 100,
+      ...(inputs.method === 'block_bootstrap' ? { simulation_method: 'block_bootstrap', block_size: Number(inputs.blockSize) } : {}) };
     setBusy(true);
     try {
-      const payload = goal ? { strategy: body.strategy, starting_capital_eur: body.starting_capital_eur, reliability: body.reliability } : body;
+      const payload = goal ? { strategy: body.strategy, starting_capital_eur: body.starting_capital_eur, reliability: body.reliability,
+        ...(body.simulation_method ? { simulation_method: body.simulation_method, block_size: body.block_size } : {}) } : body;
       const response = await request(goal ? `${apiBase}/simulate` : '/goals/simulate', { method: 'POST', body: payload, signal: abort.signal });
       if (abort.signal.aborted || sequence.current !== current) return;
       const data = goal ? response?.result : response;
@@ -256,6 +268,15 @@ export default function GoalPlanner({ isin, goal, apiBase, reportHref }) {
           min={monthlyAnniversary(now, 1)} max={monthlyAnniversary(now, 600)} onChange={(event) => change('date', event.target.value)} /></div>
         <div><label htmlFor="goal-reliability">Reliability target (%)</label><input id="goal-reliability" type="number" min="50" max="99" step="any" value={inputs.reliability} required
           onChange={(event) => change('reliability', event.target.value)} /></div>
+        <div><label htmlFor="simulation-method">Simulation method</label><select id="simulation-method" value={inputs.method} onChange={(event) => change('method', event.target.value)}>
+          <option value="standard">Standard Monte Carlo</option><option value="block_bootstrap">Block bootstrap</option>
+        </select></div>
+        {inputs.method === 'block_bootstrap' && <div><label htmlFor="block-size">Block size (trading days)</label>
+          <input id="block-size" type="number" min="1" max="60" step="1" required value={inputs.blockSize} onChange={(event) => change('blockSize', event.target.value)} />
+          <div className="button-group" aria-label="Recommended block sizes">
+            {[5, 10, 20].map((days) => <button key={days} type="button" className="secondary" aria-pressed={inputs.blockSize === String(days)} onClick={() => change('blockSize', String(days))}>{days} trading days{days === 10 ? ' · recommended' : ''}</button>)}
+          </div><p className="muted">Sample contiguous historical returns; 10 trading days is a practical starting point, not a statistically optimal size.</p>
+        </div>}
       </div>
       {error && <p role="alert">{error}</p>}
       <button type="submit" disabled={!eligible || busy}>{busy ? 'Simulating…' : 'Calculate monthly contribution'}</button>

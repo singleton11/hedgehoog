@@ -42,6 +42,7 @@ function simulation(inputs, monthly = '456.78') {
   return { strategy: structuredClone(inputs.strategy), goal_eur: inputs.goal_eur, goal_date: inputs.goal_date,
     monthly_contribution_eur: monthly, target_probability: inputs.reliability, success_probability: 0.9043,
     zero_contribution_success_probability: 0.15, simulation_paths: 10000, seed: 42,
+    simulation_method: inputs.simulation_method || 'standard', block_size: inputs.block_size ?? null,
     valuation_date: '2026-09-24', contribution_count: 120, first_contribution_date: '2026-10-24', last_contribution_date: inputs.goal_date,
     total_contributions_eur: '54813.60', total_invested_eur: '64813.60',
     terminal_percentiles_eur: { p05: '90000.25', p50: '132000.45', p95: '230000.99' },
@@ -728,6 +729,15 @@ describe('simulation plans', () => {
 });
 
 describe('preview first, explicit idempotent save and immutable reports', () => {
+  it('lists saved bootstrap settings and shows them in the read-only plan report', async () => {
+    const server = mockServer();
+    const run = server.seedRun(settings({ simulation_method: 'block_bootstrap', block_size: 20 }));
+    await open(goalRoute());
+    expect(within(comparison()).getByRole('row', { name: /Block bootstrap · 20 trading days/ })).toBeInTheDocument();
+    await navigate(reportRoute(run.id));
+    expect(screen.getByText('Simulation method').nextElementSibling).toHaveTextContent('Block bootstrap · 20 trading days');
+    expect(within(result()).getByText(/Block bootstrap · 20 trading days per block/)).toBeInTheDocument();
+  });
   it('keeps previews out of history, saves only chosen results, and reloads the original unchanged after another saved calculation', async () => {
     const server = mockServer(); const view = await open(newRoute());
     const fixed = structuredClone(server.goals.get(goal.id));
