@@ -16,13 +16,15 @@ const utcTimestamp = (value) => typeof value === 'string'
 
 export const DEFAULT_CALIBRATION_INPUTS = {
   scenarioCount: '1000', minHorizon: '3', maxHorizon: '24', lookback: '12', start: '', end: '', seed: '',
+  simulationMethod: 'standard', blockSize: '10',
 };
 
 export function savedCalibrationInputs(result) {
   const settings = result.settings;
   return { scenarioCount: String(settings.scenario_count), minHorizon: String(settings.min_horizon_months),
     maxHorizon: String(settings.max_horizon_months), lookback: String(settings.lookback_months),
-    start: settings.start_date || '', end: settings.end_date || '', seed: String(result.seed) };
+    start: settings.start_date || '', end: settings.end_date || '', seed: String(result.seed),
+    simulationMethod: settings.simulation_method || 'standard', blockSize: String(settings.block_size ?? 10) };
 }
 
 function months(value, label, minimum) {
@@ -45,7 +47,16 @@ export function calibrationRequest(inputs, strategy) {
     max_horizon_months: months(inputs.maxHorizon, 'Maximum horizon', 1),
     lookback_months: months(inputs.lookback, 'Training lookback', 3),
     start_date: inputs.start || null, end_date: inputs.end || null, seed: null,
+    simulation_method: inputs.simulationMethod || 'standard', block_size: null,
   };
+  if (!['standard', 'block_bootstrap'].includes(body.simulation_method)) throw new Error('Choose a valid simulation method.');
+  if (body.simulation_method === 'block_bootstrap') {
+    const size = String(inputs.blockSize ?? '').trim();
+    if (!/^\d+$/.test(size) || Number(size) < 1 || Number(size) > 60) {
+      throw new Error('Block size must be a whole number from 1 to 60 trading days.');
+    }
+    body.block_size = Number(size);
+  }
   if (body.min_horizon_months > body.max_horizon_months) throw new Error('Minimum horizon must be on or below the maximum horizon.');
   if ((body.start_date && !validDate(body.start_date)) || (body.end_date && !validDate(body.end_date))) {
     throw new Error('Choose valid forecast-origin dates or leave them blank.');
@@ -62,7 +73,12 @@ export function calibrationRequest(inputs, strategy) {
 }
 
 function validSettings(settings) {
-  return object(settings) && Object.keys(settings).length === 7 && settings.mode === 'random'
+  return object(settings) && (Object.keys(settings).length === 7 || Object.keys(settings).length === 9)
+    && (Object.keys(settings).length === 7 || (
+      ['standard', 'block_bootstrap'].includes(settings.simulation_method)
+      && (settings.simulation_method === 'block_bootstrap'
+        ? Number.isInteger(settings.block_size) && settings.block_size >= 1 && settings.block_size <= 60
+        : settings.block_size === null))) && settings.mode === 'random'
     && count(settings.scenario_count) && settings.scenario_count >= 10 && settings.scenario_count <= 5000
     && count(settings.min_horizon_months) && settings.min_horizon_months >= 1
     && count(settings.max_horizon_months) && settings.max_horizon_months >= settings.min_horizon_months && settings.max_horizon_months <= 120

@@ -13,7 +13,7 @@ import market_data as md
 import random_calibration as rc
 from goal_calibration import RandomCalibrationInputs, calibration_metrics, monthly_origins, reaches_goal
 from goal_simulation import add_months, money_string, period_factors
-from return_statistics import calculate_statistics
+from return_statistics import calculate_daily_statistics, calculate_statistics
 from test_goal_calibration import assert_same_calculation, rows_between
 from test_goal_planner import login, seed_history, seed_profile
 from test_market_data import ISIN, api, clock, config, db
@@ -118,6 +118,57 @@ def test_goals_use_pilot_quantiles_and_actual_probabilities_use_independent_draw
     assert example["predicted_probability"] == float(np.mean(reaches_goal(wealth[1], Decimal(expected_goal))))
     assert example["predicted_probability"] != example["requested_probability"]
     assert not np.array_equal(wealth[0], wealth[1])
+
+
+def test_bootstrap_uses_independent_training_only_block_streams_and_seeded_replay():
+    paths, seed = 400, 42
+    rows = rows_between()
+    changes = {"simulation_method": "block_bootstrap", "block_size": 10,
+               "start_date": "2023-03-01", "end_date": "2023-03-01"}
+    result = evaluate(rows, seed=seed, paths=paths, **changes)
+    assert result == evaluate(rows, seed=seed, paths=paths, **changes)
+    assert result["settings"]["block_size"] == 10
+    assert any("both independent target-generation and prediction streams" in w for w in result["warnings"])
+    case = result["forecasts"][0]
+    origin = date.fromisoformat(case["origin_date"])
+    training = [row for row in rows if case["training_start_date"] <= row["date"] <= case["training_end_date"]]
+    stats = calculate_daily_statistics(training, include_return_runs=True)
+    wealth = []
+    for domain in (rc.TARGET_STREAM, rc.PREDICTION_STREAM):
+        steps = [(add_months(origin, month), True) for month in range(1, case["horizon_months"] + 1)]
+        growth, annuity = np.ones(paths), np.zeros(paths)
+        for _, _, factors in period_factors(steps, origin, stats["daily_mean_log_return"],
+                                             stats["daily_log_return_variance"], paths,
+                                             np.random.SeedSequence([seed, origin.toordinal(), domain]),
+                                             return_runs=stats["return_runs"], block_size=10):
+            growth *= factors
+            annuity = annuity * factors + 1
+        wealth.append(float(case["starting_capital_eur"]) * growth + float(case["monthly_contribution_eur"]) * annuity)
+    goal = money_string(float(np.quantile(wealth[0], 1 - case["requested_probability"])))
+    assert case["goal_eur"] == goal
+    assert case["predicted_probability"] == float(np.mean(reaches_goal(wealth[1], Decimal(goal))))
+    assert not np.array_equal(wealth[0], wealth[1])
+    for row in rows:
+        if row["date"] > case["origin_date"]:
+            row["close"] *= 0.1
+            row["adj_close"] *= 0.1
+    changed = evaluate(rows, seed=seed, paths=paths, **changes)
+    assert [{k: v for k, v in f.items() if k not in {"terminal_value_eur", "observed_success"}}
+            for f in result["forecasts"]] == [
+        {k: v for k, v in f.items() if k not in {"terminal_value_eur", "observed_success"}}
+        for f in changed["forecasts"]]
+
+
+def test_bootstrap_excludes_origins_without_a_complete_training_block():
+    rows = rows_between()
+    # Split each 60-day training run with a missing weekday, leaving enough
+    # individual returns for fitting but no eligible 60-day bootstrap window.
+    for index, row in enumerate(rows):
+        if index % 45 == 0:
+            row["adj_close"] = None
+            row["close"] = None
+    with pytest.raises(md.DataError, match="insufficient block history"):
+        evaluate(rows, simulation_method="block_bootstrap", block_size=60)
 
 
 def test_changing_scoring_stream_cannot_change_scenario_goals_or_observed_outcomes(monkeypatch):
@@ -251,6 +302,11 @@ def test_api_explicit_generated_batch_auth_seed_and_no_provider_calls(api, db, c
     {"max_horizon_months": 6.5}, {"lookback_months": 2}, {"seed": -1}, {"seed": 2**32},
     {"seed": True}, {"start_date": "2025-01-01", "end_date": "2024-01-01"},
     {"mode": "something_else"}, {"goal_eur": "15000"}, {"simulation_paths": 10**9},
+    {"simulation_method": "block_bootstrap", "block_size": None}, {"block_size": 5},
+    {"simulation_method": "unknown"}, {"simulation_method": "block_bootstrap", "block_size": 0},
+    {"simulation_method": "block_bootstrap", "block_size": 61},
+    {"simulation_method": "block_bootstrap", "block_size": 1.5},
+    {"simulation_method": "block_bootstrap", "block_size": True},
 ])
 def test_api_invalid_generated_configuration_fails_before_reading_data(api, db, monkeypatch, changes):
     client, _ = api
@@ -259,6 +315,22 @@ def test_api_invalid_generated_configuration_fails_before_reading_data(api, db, 
     monkeypatch.setattr(db.instruments, "find_one", forbidden)
     assert client.post("/goals/calibrate", json={**body(), **changes}).status_code == 422
     forbidden.assert_not_called()
+
+
+def test_bootstrap_api_saves_settings_for_history_report_and_replay(api, db):
+    client, _ = api
+    seed_history(db, rows_between())
+    seed_profile(db)
+    login(client)
+    request = body(scenario_count=10, simulation_method="block_bootstrap", block_size=5)
+    first_response = client.post("/goals/calibrate", json=request)
+    assert first_response.status_code == 200, first_response.text
+    first = first_response.json()
+    assert first["settings"]["simulation_method"] == "block_bootstrap"
+    assert first["settings"]["block_size"] == 5
+    assert client.get(f"/goals/calibrations/{first['id']}").json()["result"] == first
+    assert client.get("/goals/calibrations").json()["items"][0]["settings"] == first["settings"]
+    assert_same_calculation(first, client.post("/goals/calibrate", json=request).json())
 
 
 def test_calibration_requires_strategy_handler_and_acquired_membership(api, db, monkeypatch):

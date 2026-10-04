@@ -14,7 +14,7 @@ from goal_calibration import (
     reaches_goal, realized_value,
 )
 from goal_simulation import MAX_MONEY, PATHS, add_months, money_string, period_factors
-from return_statistics import MIN_RETURNS, calculate_statistics, positive_price
+from return_statistics import MIN_RETURNS, calculate_daily_statistics, calculate_statistics, positive_price
 
 # Disjoint domains: scheduling, scenario parameters, goal design and validation.
 SCHEDULE_STREAM, SCENARIO_STREAM, TARGET_STREAM, PREDICTION_STREAM = 149, 150, 151, 152
@@ -113,6 +113,14 @@ def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, overri
         if positive_price(rows[index].get(basis)) is None or estimates["daily_log_return_variance"] is None:
             exclude(group, "unusable_training")
             continue
+        return_runs = None
+        if body.simulation_method == "block_bootstrap":
+            # Only the trailing training prefix can supply blocks. Never bridge
+            # gaps or use returns from a held-out goal outcome.
+            return_runs = calculate_daily_statistics(training, include_return_runs=True)["return_runs"]
+            if not any(len(run) >= body.block_size for run in return_runs):
+                exclude(group, "insufficient_block_history")
+                continue
         raw_prices |= basis == "close"
         quality_warning |= bool(estimates["invalid_price_count"] or estimates["skipped_gap_count"])
         by_horizon = defaultdict(list)
@@ -121,7 +129,9 @@ def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, overri
         steps = [(add_months(origin, month), True) for month in range(1, max(by_horizon) + 1)]
         streams = [period_factors(steps, origin, estimates["daily_mean_log_return"],
                                   estimates["daily_log_return_variance"], paths,
-                                  np.random.SeedSequence([seed, origin.toordinal(), domain]))
+                                  np.random.SeedSequence([seed, origin.toordinal(), domain]),
+                                  **({"return_runs": return_runs, "block_size": body.block_size}
+                                     if body.simulation_method == "block_bootstrap" else {}))
                    for domain in (TARGET_STREAM, PREDICTION_STREAM)]
         target_growth, target_annuity = np.ones(paths), np.zeros(paths)
         prediction_growth, prediction_annuity = np.ones(paths), np.zeros(paths)
@@ -181,10 +191,11 @@ def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, overri
     origin_count = len({forecast["origin_date"] for forecast in forecasts})
     warnings = calibration_warnings(overlapping=body.max_horizon_months > 1, sample_count=len(forecasts),
                                     excluded=bool(excluded), raw_prices=raw_prices,
-                                    quality_warning=quality_warning, override=override)
+                                    quality_warning=quality_warning, override=override,
+                                    simulation_method=body.simulation_method, block_size=body.block_size)
     warnings.extend([
         "Generated scenarios are allocated evenly across calendar-eligible origins with a seeded random remainder. Capital and monthly funding are uniform in cents over the displayed ranges; horizons are uniform over the requested range that fits saved calendar coverage. No later price values or outcomes select scenarios, and unavailable cases are not replaced.",
-        "Requested success rates cycle across ten strata spanning 1%–99%. Targets come from training-only simulated wealth quantiles; probabilities are measured on a separate independent Monte Carlo stream. Rounding and flat histories can prevent the actual probabilities from spanning all bins; requested rates are not reported as predictions.",
+        "Requested success rates cycle across ten strata spanning 1%–99%. Targets come from training-only simulated wealth quantiles; probabilities are measured on a separate independent simulation stream using the selected method. Rounding and flat histories can prevent the actual probabilities from spanning all bins; requested rates are not reported as predictions.",
         "Many scenarios reuse the same historical paths and date-local simulations. Scored scenarios are NOT independent market observations. More scenarios improve probability-range coverage, not the amount of historical evidence; inspect the distinct historical-origin count.",
         "Scores weight each scored generated scenario equally and describe this generator's mix of targets, funding and horizons; they are not directly comparable across different generation policies.",
     ])

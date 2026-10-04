@@ -9,6 +9,8 @@ import { calibrationRequest, DEFAULT_CALIBRATION_INPUTS, savedCalibrationInputs,
 
 const PAGE_SIZE = 20;
 const calibrationError = (value) => `${(value * 100).toFixed(1)} pp`;
+const simulationLabel = (settings) => settings.simulation_method === 'block_bootstrap'
+  ? `Block bootstrap · ${settings.block_size} trading days` : 'Standard Monte Carlo';
 const runRoute = (id) => `#/calibration/${encodeURIComponent(id)}`;
 function CalculatedTime({ value }) {
   return <time dateTime={value}>{new Date(value).toLocaleString('en-GB', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'short' })} UTC</time>;
@@ -50,10 +52,10 @@ function CalibrationHistory({ request }) {
     </> : data.total === 0 ? <p className="empty-state">No calibration runs yet. Choose New run to calculate and save your first report.</p> : <>
       <div className="calibration-table-scroll" role="region" aria-label="Calibration history" tabIndex={0}>
         <table className="calibration-table calibration-history"><caption>Calibration runs</caption>
-          <thead><tr>{['Run date', 'Strategy', 'Parameters', 'Brier score', 'Calibration error', 'Scored scenarios'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+          <thead><tr>{['Run date', 'Strategy', 'Simulation', 'Parameters', 'Brier score', 'Calibration error', 'Scored scenarios'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
           <tbody>{data.items.map((run) => <tr key={run.id}>
             <th scope="row"><a href={runRoute(run.id)}><CalculatedTime value={run.calculated_at} /></a></th>
-            <td>{run.strategy_name}</td><td><RunParameters selection={run.strategy} /></td>
+            <td>{run.strategy_name}</td><td>{simulationLabel(run.settings)}</td><td><RunParameters selection={run.strategy} /></td>
             <td>{run.brier_score.toFixed(4)}</td><td>{calibrationError(run.calibration_error)}</td><td>{run.sample_count.toLocaleString('en')}</td>
           </tr>)}</tbody>
         </table>
@@ -90,7 +92,7 @@ function CalibrationResult({ result }) {
   return <section className="calibration-result" aria-label="Calibration report">
     <div className="section-heading"><h3>{result.strategy_name}</h3><a className="button-link" href={`#/calibration/new?from=${encodeURIComponent(result.id)}`}>Run again</a></div>
     <p><RunParameters selection={result.strategy} /> · <CalculatedTime value={result.calculated_at} /></p>
-    <p className="muted">{settings.scenario_count.toLocaleString('en')} scenarios · {settings.min_horizon_months}–{settings.max_horizon_months} month horizons · {settings.lookback_months} month lookback · Seed {result.seed}<br />
+    <p className="muted">{simulationLabel(settings)} · {settings.scenario_count.toLocaleString('en')} scenarios · {settings.min_horizon_months}–{settings.max_horizon_months} month horizons · {settings.lookback_months} month lookback · Seed {result.seed}<br />
       Origins: {settings.start_date || 'All available'} – {settings.end_date || 'All available'}
     </p>
     <dl className="facts calibration-metrics">
@@ -104,6 +106,7 @@ function CalibrationResult({ result }) {
       <dl className="facts">
         <div><dt>Run ID</dt><dd>{result.id}</dd></div>
         <div><dt>Strategy ID</dt><dd>{result.strategy.id}</dd></div>
+        <div><dt>Simulation method</dt><dd>{simulationLabel(settings)}</dd></div>
         <div><dt>Mean predicted probability</dt><dd>{percent(result.mean_predicted_probability)}</dd></div>
         <div><dt>Observed success rate</dt><dd>{percent(result.observed_success_rate)}</dd></div>
         <div><dt>Monte Carlo paths per scenario</dt><dd>{result.simulation_paths.toLocaleString('en')}</dd></div>
@@ -248,6 +251,19 @@ function CalibrationForm({ strategies, instruments, request, source, initialStra
               onChange={changeParameter} onReadiness={onReadiness} onInvalidate={invalidate} />
           </>}
         <div className="goal-fields">
+          <div><label htmlFor="calibration-method">Simulation method</label><select id="calibration-method" value={inputs.simulationMethod}
+            onChange={(event) => change('simulationMethod', event.target.value)}>
+            <option value="standard">Standard Monte Carlo</option><option value="block_bootstrap">Block bootstrap</option>
+          </select></div>
+          {inputs.simulationMethod === 'block_bootstrap' && <div><label htmlFor="calibration-block-size">Block size (trading days)</label>
+            <div className="calibration-actions" role="group" aria-label="Block size shortcuts">
+              {[5, 10, 20].map((days) => <button key={days} type="button" className="secondary" aria-pressed={inputs.blockSize === String(days)}
+                onClick={() => change('blockSize', String(days))}>{days} days{days === 10 ? ' · recommended' : ''}</button>)}
+            </div>
+            <input id="calibration-block-size" type="number" min="1" max="60" step="1" required value={inputs.blockSize}
+              onChange={(event) => change('blockSize', event.target.value)} />
+            <p className="muted">Both the training-only target generator and independent prediction stream use the chosen method. Blocks require uninterrupted eligible training returns.</p>
+          </div>}
           <div><label htmlFor="calibration-count">Number of scenarios</label>
             <input id="calibration-count" type="number" min="10" max="5000" step="1" required value={inputs.scenarioCount} onChange={(event) => change('scenarioCount', event.target.value)} />
           </div>

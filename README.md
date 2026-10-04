@@ -232,14 +232,15 @@ prefilling this instrument, subject to acquired-universe membership. See [extens
 Open **Calibration** (`#/calibration`) for your saved calculation history, with
 **Brier score** and **calibration error** (weighted average gap from ideal
 calibration, shown in percentage points). **New run** lets you choose a strategy,
-set its parameters and run the calculation. Each successful run keeps its own
+set its parameters, select Standard Monte Carlo or block bootstrap with a block
+size, and run the calculation. Each successful run keeps its own
 report, settings, instrument and seed. Open any report and choose **Run again**
 to prefill a new calculation without overwriting the original. Existing saved
 latest results are preserved in the history.
 
 Each run generates 1,000 varied financial goals (10–5,000 configurable). Targets
-use training-only simulations; independent draws estimate probabilities before
-historical outcomes are read. Details include the calibration curve, origin
+use training-only simulations of the selected method; independent draws of
+that same method estimate probabilities before historical outcomes are read. Details include the calibration curve, origin
 count and paginated audit. Provided or generated seeds support replay.
 
 Each monthly forecast fits only its trailing historical window; later prices
@@ -249,7 +250,8 @@ instrument selection and overlapping holding periods remain limitations.
 Calculations use saved data only and do not spend provider quota.
 
 The authenticated `POST /goals/calibrate` accepts generated batches only, with
-`mode: "random"`, count, horizon range and optional date bounds/uint32 seed.
+`mode: "random"`, count, horizon range, optional date bounds/uint32 seed and
+simulation method/block size.
 `GET /goals/calibrations` lists paginated run summaries;
 `GET /goals/calibrations/{runId}` retrieves an immutable saved report. The strategy
 catalogue and latest-result endpoints remain available for compatibility. See

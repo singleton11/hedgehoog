@@ -23,6 +23,7 @@ const selection = { id: BUY_AND_HOLD_ID, parameters: { instrument: A } };
 const expectedBody = {
   mode: 'random', strategy: selection, scenario_count: 1000, min_horizon_months: 3, max_horizon_months: 24,
   lookback_months: 12, start_date: null, end_date: null, seed: null,
+  simulation_method: 'standard', block_size: null,
 };
 const runId = (number = 1) => number.toString(16).padStart(24, '0');
 const reportRoute = (id = runId()) => `#/calibration/${encodeURIComponent(id)}`;
@@ -322,6 +323,44 @@ describe('read-only saved reports and explicit editable clones', () => {
     await open({ route: reportRoute(original.id) }); expect(result()).toHaveTextContent(buyAndHold.name);
     await follow('Run again'); expect(screen.getByRole('option', { name: 'Renamed strategy' })).toBeInTheDocument();
     await submit(); expect(result()).toHaveTextContent('Renamed strategy'); expect(server.runs.get(original.id).strategy_name).toBe(buyAndHold.name);
+  });
+});
+
+describe('simulation method for calibration', () => {
+  it('selects bootstrap with shortcuts, saves and displays its method, and clones settings independently', async () => {
+    const server = mockServer(); await open({ choose: true });
+    change('Simulation method', 'block_bootstrap');
+    expect(screen.getByLabelText('Block size (trading days)')).toHaveValue(10);
+    fireEvent.click(screen.getByRole('button', { name: '20 days' }));
+    expect(screen.getByLabelText('Block size (trading days)')).toHaveValue(20);
+    change('Number of scenarios', '10'); await submit();
+    const first = [...server.runs.values()][0];
+    expect(posts()[0][1].body).toMatchObject({ simulation_method: 'block_bootstrap', block_size: 20 });
+    expect(result()).toHaveTextContent('Block bootstrap · 20 trading days');
+    expect(metric('Simulation method')).toHaveTextContent('Block bootstrap · 20 trading days');
+    await follow('Run again');
+    expect(screen.getByLabelText('Simulation method')).toHaveValue('block_bootstrap');
+    expect(screen.getByLabelText('Block size (trading days)')).toHaveValue(20);
+    fireEvent.click(screen.getByRole('button', { name: '5 days' })); await submit();
+    expect(posts()[1][1].body).toMatchObject({ simulation_method: 'block_bootstrap', block_size: 5 });
+    expect(server.runs.get(first.id).settings.block_size).toBe(20);
+    await navigate('#/calibration');
+    expect(within(historyTable()).getByText('Block bootstrap · 20 trading days')).toBeInTheDocument();
+    expect(within(historyTable()).getByText('Block bootstrap · 5 trading days')).toBeInTheDocument();
+  });
+
+  it('validates block sizes and refuses mismatched server simulation settings', async () => {
+    const server = mockServer(); await open({ choose: true }); change('Simulation method', 'block_bootstrap');
+    change('Block size (trading days)', '0'); await submit();
+    expect(screen.getByRole('alert')).toHaveTextContent('Block size must be a whole number');
+    expect(posts()).toHaveLength(0);
+    change('Block size (trading days)', '7');
+    server.calibrate = async (body) => server.save(generatedCalibration({ ...body, block_size: 10 }));
+    await submit(); expect(screen.getByRole('alert')).toHaveTextContent('unexpected response');
+    expect(window.location.hash).toBe('#/calibration/new');
+    const legacy = generatedCalibration(); delete legacy.settings.simulation_method; delete legacy.settings.block_size;
+    expect(validCalibrationResult(legacy)).toBe(true);
+    expect(savedCalibrationInputs(legacy).simulationMethod).toBe('standard');
   });
 });
 

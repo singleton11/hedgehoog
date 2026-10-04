@@ -16,7 +16,7 @@ from typing import Literal
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from goal_simulation import Money, PATHS, add_months, money_string, period_factors
+from goal_simulation import Money, PATHS, SimulationSettings, add_months, money_string, period_factors
 import market_data as md
 from return_statistics import MIN_RETURNS, calculate_statistics, positive_price
 from split_adjustments import adjusted_rows, load_split_snapshot
@@ -62,7 +62,7 @@ class CalibrationInputs(CalibrationWindow):
                    ("goal_eur", "starting_capital_eur", "monthly_contribution_eur")}}
 
 
-class RandomCalibrationInputs(CalibrationWindow):
+class RandomCalibrationInputs(CalibrationWindow, SimulationSettings):
     mode: Literal["random"]
     scenario_count: int = Field(default=1000, ge=10, le=5000, strict=True)
     min_horizon_months: int = Field(default=3, ge=1, le=120, strict=True)
@@ -76,7 +76,8 @@ class RandomCalibrationInputs(CalibrationWindow):
 
     def public_settings(self):
         return {**super().public_settings(), "mode": self.mode, "scenario_count": self.scenario_count,
-                "min_horizon_months": self.min_horizon_months, "max_horizon_months": self.max_horizon_months}
+                "min_horizon_months": self.min_horizon_months, "max_horizon_months": self.max_horizon_months,
+                "simulation_method": self.simulation_method, "block_size": self.block_size}
 
 
 def is_eur_history(rows, override):
@@ -280,12 +281,15 @@ def evaluate_history(rows, body: CalibrationInputs, *, seed, override=None, path
     }
 
 
-def calibration_warnings(*, overlapping, sample_count, excluded, raw_prices, quality_warning, override):
+def calibration_warnings(*, overlapping, sample_count, excluded, raw_prices, quality_warning, override,
+                         simulation_method="standard", block_size=None):
     warnings = [
         "Walk-forward fitting uses only prices dated on or before each origin. This is not strict point-in-time data: downloaded history may contain later provider corrections and corporate-action adjustments.",
         "The current acquired instrument, listing and any manual currency label are selected today. This does not remove survivorship or instrument-selection bias; do not choose settings by their best historical score.",
         "A forecast starts at the first recorded weekday close of each month. Each trailing lookback is refitted independently using at least 60 usable daily log returns; no held-out outcome is used to fit or tune it.",
-        "Normally distributed independent log returns, 252 trading days/year, calendar days/365.25 and fixed monthly-anniversary payments, as in the goal planner. Forecasts are model estimates, not guarantees.",
+        ("Normally distributed independent log returns, 252 trading days/year, calendar days/365.25 and fixed monthly-anniversary payments, as in the goal planner. Forecasts are model estimates, not guarantees."
+         if simulation_method == "standard" else
+         f"Training-only contiguous {block_size}-day historical log-return blocks are resampled with replacement for both independent target-generation and prediction streams. Missing weekdays and invalid prices break blocks; monthly periods approximate 252 trading days/year. No normal-return assumption. Forecasts are model estimates, not guarantees."),
         "Historical purchases use the first saved weekday close on/after each payment date; uninvested payments stay in cash. Final valuation uses the last close on/before the goal date. Missing prices or gaps over seven days are excluded; no exchange calendar is available. Simulations approximate payments at the anniversary itself.",
         "Nominal EUR; fractional shares, no FX conversion, inflation, taxes or trading fees. Distributions and expenses are reflected only insofar as they are in the chosen price series.",
         "Brier score is the mean squared probability error (0 is best, 1 is worst). Calibration points use the mean forecast probability and actual success frequency of each nonempty bin; empty bins have no point.",
