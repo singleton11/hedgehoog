@@ -5,7 +5,7 @@ import { formatEuros } from './goalProjection.js';
 import { useGoalStrategies } from './goalStrategies.js';
 import { percent, priceBasisLabel } from './ReturnStatistics.jsx';
 import StrategyParameters, { supportsParameter } from './StrategyParameters.jsx';
-import { calibrationRequest, DEFAULT_CALIBRATION_INPUTS, savedCalibrationInputs, validCalibrationHistory, validCalibrationResult, validCalibrationRunSummary } from './strategyCalibration.js';
+import { calibrationRequest, contributionCalibration, DEFAULT_CALIBRATION_INPUTS, savedCalibrationInputs, validCalibrationHistory, validCalibrationResult, validCalibrationRunSummary } from './strategyCalibration.js';
 
 const PAGE_SIZE = 20;
 const calibrationError = (value) => `${(value * 100).toFixed(1)} pp`;
@@ -52,10 +52,12 @@ function CalibrationHistory({ request }) {
     </> : data.total === 0 ? <p className="empty-state">No calibration runs yet. Choose New run to calculate and save your first report.</p> : <>
       <div className="calibration-table-scroll" role="region" aria-label="Calibration history" tabIndex={0}>
         <table className="calibration-table calibration-history"><caption>Calibration runs</caption>
-          <thead><tr>{['Run date', 'Strategy', 'Simulation', 'Parameters', 'Brier score', 'Calibration error', 'Scored scenarios'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+          <thead><tr>{['Run date', 'Strategy', 'Simulation', 'Evaluation', 'Parameters', 'Brier score', 'Calibration error', 'Scored scenarios'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
           <tbody>{data.items.map((run) => <tr key={run.id}>
             <th scope="row"><a href={runRoute(run.id)}><CalculatedTime value={run.calculated_at} /></a></th>
-            <td>{run.strategy_name}</td><td>{simulationLabel(run.settings)}</td><td><RunParameters selection={run.strategy} /></td>
+            <td>{run.strategy_name}</td><td>{simulationLabel(run.settings)}</td>
+            <td>{contributionCalibration(run) ? 'Solved monthly contribution' : 'Legacy · simulated targets'}</td>
+            <td><RunParameters selection={run.strategy} /></td>
             <td>{run.brier_score.toFixed(4)}</td><td>{calibrationError(run.calibration_error)}</td><td>{run.sample_count.toLocaleString('en')}</td>
           </tr>)}</tbody>
         </table>
@@ -89,9 +91,12 @@ function AuditTable({ caption, rows, headings, renderRow }) {
 
 function CalibrationResult({ result }) {
   const settings = result.settings;
+  const contributionSolver = contributionCalibration(result);
   return <section className="calibration-result" aria-label="Calibration report">
     <div className="section-heading"><h3>{result.strategy_name}</h3><a className="button-link" href={`#/calibration/new?from=${encodeURIComponent(result.id)}`}>Run again</a></div>
     <p><RunParameters selection={result.strategy} /> · <CalculatedTime value={result.calculated_at} /></p>
+    {contributionSolver ? <p className="muted">Random starting capital, a higher EUR goal, deadline and requested success rate define each test. The selected simulation solves EUR/month; an independent stream predicts its success, then saved historical prices score that funding plan.</p>
+      : <p role="note" className="muted">Legacy evaluation: targets were selected from simulated wealth with randomly generated monthly funding. These scores are not comparable to contribution-solver runs. Run again uses the new evaluation policy without changing this report.</p>}
     <p className="muted">{simulationLabel(settings)} · {settings.scenario_count.toLocaleString('en')} scenarios · {settings.min_horizon_months}–{settings.max_horizon_months} month horizons · {settings.lookback_months} month lookback · Seed {result.seed}<br />
       Origins: {settings.start_date || 'All available'} – {settings.end_date || 'All available'}
     </p>
@@ -113,14 +118,21 @@ function CalibrationResult({ result }) {
         <div><dt>Available monthly origins</dt><dd>{result.available_origin_count.toLocaleString('en')}</dd></div>
         <div><dt>Saved history</dt><dd>{result.history_first_date} – {result.history_last_date}</dd></div>
         <div><dt>Data snapshot (UTC)</dt><dd>{result.data_as_of}</dd></div>
-        <div><dt>Target-generation paths per scenario</dt><dd>{result.generation.target_simulation_paths.toLocaleString('en')}</dd></div>
+        <div><dt>{contributionSolver ? 'Contribution-solver paths per scenario' : 'Target-generation paths per scenario'}</dt>
+          <dd>{(contributionSolver ? result.generation.solver_simulation_paths : result.generation.target_simulation_paths).toLocaleString('en')}</dd></div>
+        <div><dt>Evaluation policy</dt><dd>{contributionSolver ? 'Independent goals · solved monthly contribution' : 'Legacy · simulated targets'}</dd></div>
+        {contributionSolver && <>
+          <div><dt>Generated starting capital</dt><dd>{formatEuros(result.generation.capital_min_eur)}–{formatEuros(result.generation.capital_max_eur)}</dd></div>
+          <div><dt>Generated EUR goals</dt><dd>Starting capital + €0.01 through {formatEuros(result.generation.goal_max_eur)}</dd></div>
+          <div><dt>Requested success rates</dt><dd>1–99%</dd></div>
+        </>}
         <div><dt>History fingerprint</dt><dd>{result.history_fingerprint}</dd></div>
       </dl>
       {Object.keys(result.skipped_counts).length > 0 && <ul aria-label="Skipped scenario counts">
         {Object.entries(result.skipped_counts).map(([reason, count]) => <li key={reason}>{reason}: {count}</li>)}
       </ul>}
       <AuditTable caption="Per-scenario audit" rows={result.forecasts}
-        headings={['Scenario ID', 'Target (EUR)', 'Starting capital (EUR)', 'Monthly contribution (EUR)', 'Horizon (months)', 'Requested probability',
+        headings={['Scenario ID', 'Target (EUR)', 'Starting capital (EUR)', contributionSolver ? 'Solved EUR/month' : 'Monthly contribution (EUR)', 'Horizon (months)', 'Requested probability',
           'Forecast origin', 'Goal date', 'Training start', 'Training end', 'Training returns', 'Price basis', 'Actual predicted probability', 'Observed success', 'Terminal value (EUR)', 'Valuation date']}
         renderRow={(forecast) => <tr key={forecast.scenario_id}>
           <th scope="row">{forecast.scenario_id}</th><td>{formatEuros(forecast.goal_eur)}</td><td>{formatEuros(forecast.starting_capital_eur)}</td>
@@ -237,6 +249,8 @@ function CalibrationForm({ strategies, instruments, request, source, initialStra
   return <>
     {source ? <p className="muted">Settings copied from a <a href={runRoute(source.id)}>saved run</a>. You can adjust them below; the original report will not change.</p>
       : <p className="muted">Choose a strategy and parameters. Each successful calculation is saved as a separate run.</p>}
+    <p className="muted">Generate random starting capital, a higher EUR target, deadline and requested success rate (1–99%). Solve the monthly contribution with the selected simulation and evaluate that funding plan across historical slices.</p>
+    {source && !contributionCalibration(source) && <p role="note" className="muted">This source uses the legacy simulated-target policy. The new run uses independent goals and solved contributions; its scenarios and scores will differ even with the same seed.</p>}
     <form className="goal-form calibration-form" aria-label="Calibration inputs" noValidate onSubmit={calculate}>
       <fieldset disabled={busy}>
         <div><label htmlFor="calibration-strategy">Strategy</label><select id="calibration-strategy" value={strategy ? strategyId : ''}
@@ -262,7 +276,7 @@ function CalibrationForm({ strategies, instruments, request, source, initialStra
             </div>
             <input id="calibration-block-size" type="number" min="1" max="60" step="1" required value={inputs.blockSize}
               onChange={(event) => change('blockSize', event.target.value)} />
-            <p className="muted">Both the training-only target generator and independent prediction stream use the chosen method. Blocks require uninterrupted eligible training returns.</p>
+            <p className="muted">The contribution solver and independent prediction stream use the chosen method. Goals are generated independently of it. Blocks require uninterrupted eligible training returns.</p>
           </div>}
           <div><label htmlFor="calibration-count">Number of scenarios</label>
             <input id="calibration-count" type="number" min="10" max="5000" step="1" required value={inputs.scenarioCount} onChange={(event) => change('scenarioCount', event.target.value)} />

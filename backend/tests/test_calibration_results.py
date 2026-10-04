@@ -94,7 +94,7 @@ def test_calculation_persists_and_reads_use_saved_reports_and_projected_summarie
     assert document["user_id"] == str(db.users.find_one({"login": "admin"})["_id"])
     assert document["strategy_id"] == STRATEGY
     assert document["result"] == full
-    summary = {key: full[key] for key in saved.SUMMARY_FIELDS}
+    summary = {**{key: full[key] for key in saved.SUMMARY_FIELDS}, "generation": full["generation"]}
     assert document["summary"] == summary
     assert db.strategy_calibrations.count_documents({}) == 0
     forbidden = Mock(side_effect=AssertionError("Saved reads must not simulate or load instrument data"))

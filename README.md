@@ -180,7 +180,7 @@ then add named goals with EUR targets and dates. Open a goal and choose **Edit
 goal** to change its name, target or date. Saved simulations retain their original
 settings and results. Each goal can hold multiple saved simulations.
 Choose **New simulation**, configure starting
-capital, reliability (50–99%), a strategy and simulation method, then calculate.
+capital, reliability (1–99%), a strategy and simulation method, then calculate.
 Standard Monte Carlo is the default; block bootstrap resamples contiguous observed
 daily log returns. Choose a 5-, 10- (recommended), or 20-trading-day block or
 enter a custom size from 1 to 60. Saved plans retain these settings for tracking. Click **Save
@@ -238,9 +238,11 @@ report, settings, instrument and seed. Open any report and choose **Run again**
 to prefill a new calculation without overwriting the original. Existing saved
 latest results are preserved in the history.
 
-Each run generates 1,000 varied financial goals (10–5,000 configurable). Targets
-use training-only simulations of the selected method; independent draws of
-that same method estimate probabilities before historical outcomes are read. Details include the calibration curve, origin
+Each run generates 1,000 varied financial goals (10–5,000 configurable): random
+starting capital, a higher final EUR target, deadline and requested success rate
+(1–99%). These inputs do not depend on the selected simulation method. The method
+solves the required EUR/month using training-only history; an independent stream
+estimates that funded plan's probability before historical outcomes are read. Details include the calibration curve, origin
 count and paginated audit. Provided or generated seeds support replay.
 
 Each monthly forecast fits only its trailing historical window; later prices

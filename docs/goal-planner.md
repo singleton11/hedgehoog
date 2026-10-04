@@ -28,7 +28,7 @@ the first page. Each goal has a name, EUR target and goal date.
 Open a goal and choose **Edit goal** to change its name, target or date, then
 **Save changes**. **Cancel**
 discards your edits. Open **New simulation** to calculate using the current goal
-settings. Starting capital, target reliability (50–99%), strategy, simulation
+settings. Starting capital, target reliability (1–99%), strategy, simulation
 method and (for block bootstrap) block size vary per simulation; the goal's target and date are read-only within
 the simulation form.
 
@@ -142,9 +142,11 @@ Each strategy registers an optional generated-scenario `calibrate` callback;
 the catalogue exposes `supports_calibration` and the current user's latest score
 summary for compatibility. **New run** selects a strategy and parameters; every
 successful calculation gets its own saved report. **Run again** copies a report's
-settings into a new form without overwriting it. Calibration uses automatic
-seeded scenarios only; selecting block bootstrap in the goal planner does not
-change calibration runs.
+settings into a new form without overwriting it. Calibration uses automatic seeded scenarios with independently generated
+starting capital, a higher EUR target, deadline and requested success rate. It
+uses the same contribution solver as the planner, then estimates funded success
+on an independent simulation stream and scores historical outcomes. Selecting
+block bootstrap in the goal planner does not change calibration runs.
 
 ## Derived statistics
 

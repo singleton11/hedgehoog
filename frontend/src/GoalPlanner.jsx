@@ -27,8 +27,8 @@ function validateInputs(inputs, now = new Date()) {
   if (!goal || goal === '0.00') return 'Enter a target greater than zero in EUR, using at most two decimal places.';
   if (!capital) return 'Enter starting capital of zero or more in EUR, using at most two decimal places.';
   const reliability = Number(inputs.reliability);
-  if (!inputs.reliability.trim() || !Number.isFinite(reliability) || reliability < 50 || reliability > 99) {
-    return 'Reliability must be between 50% and 99%, inclusive.';
+  if (!inputs.reliability.trim() || !Number.isFinite(reliability) || reliability < 1 || reliability > 99) {
+    return 'Reliability must be between 1% and 99%, inclusive.';
   }
   const parsed = new Date(`${inputs.date}T00:00:00Z`);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(inputs.date) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== inputs.date
@@ -266,7 +266,7 @@ export default function GoalPlanner({ isin, goal, apiBase, reportHref }) {
           onChange={(event) => change('capital', event.target.value)} /></div>
         <div><label htmlFor="goal-date">Goal date (UTC)</label><input id="goal-date" type="date" value={inputs.date} required readOnly={Boolean(goal)}
           min={monthlyAnniversary(now, 1)} max={monthlyAnniversary(now, 600)} onChange={(event) => change('date', event.target.value)} /></div>
-        <div><label htmlFor="goal-reliability">Reliability target (%)</label><input id="goal-reliability" type="number" min="50" max="99" step="any" value={inputs.reliability} required
+        <div><label htmlFor="goal-reliability">Reliability target (%)</label><input id="goal-reliability" type="number" min="1" max="99" step="any" value={inputs.reliability} required
           onChange={(event) => change('reliability', event.target.value)} /></div>
         <div><label htmlFor="simulation-method">Simulation method</label><select id="simulation-method" value={inputs.method} onChange={(event) => change('method', event.target.value)}>
           <option value="standard">Standard Monte Carlo</option><option value="block_bootstrap">Block bootstrap</option>

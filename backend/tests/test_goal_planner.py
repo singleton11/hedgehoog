@@ -16,7 +16,7 @@ from pymongo.errors import ConnectionFailure
 import goal_strategies as gs
 import market_data as md
 from goal_planner import GoalRequest
-from goal_simulation import GoalInputs, add_months, contribution_dates, simulate_buy_and_hold
+from goal_simulation import GoalInputs, add_months, contribution_dates, required_contribution, simulate_buy_and_hold
 from return_statistics import MODEL_VERSION, calculate_statistics, instrument_statistics
 from test_market_data import ISIN, LISTING, NOW, Provider, api, bar, clock, collect, config, db, enqueue, page
 
@@ -333,6 +333,48 @@ def test_zero_return_known_monthly_solution_and_rounds_up():
     assert result["zero_contribution_success_probability"] == 0
 
 
+@pytest.mark.parametrize("reliability", [0.01, 0.1, 0.499, 0.5, 0.99])
+@pytest.mark.parametrize("goal,annuity,expected", [
+    ("0.44", 3, "0.15"), ("0.45", 3, "0.16"),  # 0.15 * 3 < 0.45 in binary floats.
+    ("0.46", 3, "0.16"), ("10000.00", 12, "833.34"),
+])
+def test_shared_solver_cent_rounding_and_strict_equality_at_all_reliabilities(reliability, goal, annuity, expected):
+    growth, payments = np.ones(100), np.full(100, float(annuity))
+    monthly, terminal = required_contribution(growth, payments, Decimal("0"), Decimal(goal), reliability)
+    assert monthly == Decimal(expected)
+    np.testing.assert_array_equal(terminal, float(monthly) * payments)
+    assert np.all(terminal >= float(goal))
+    body = GoalInputs(**goal_inputs(goal_eur=goal, starting_capital_eur="0", reliability=reliability,
+                                   goal_date=add_months(NOW.date(), annuity).isoformat()))
+    planner = simulate_buy_and_hold(flat_estimates(), body, NOW.date(), paths=100)
+    assert planner["monthly_contribution_eur"] == expected
+    assert planner["success_probability"] == 1
+
+
+@pytest.mark.parametrize("reliability", [0.01, 0.02, 0.499, 0.5, 0.99])
+def test_shared_solver_uses_ceil_rank_without_interpolation(reliability):
+    growth, annuity = np.arange(100, dtype=float), np.ones(100)
+    monthly, terminal = required_contribution(growth, annuity, 1, 100, reliability)
+    assert monthly == Decimal(math.ceil(reliability * 100))
+    assert np.count_nonzero(terminal >= 100) == math.ceil(reliability * 100)
+    # Low requested reliability can legitimately need no contribution.
+    monthly, terminal = required_contribution(growth, annuity, 1, 50, reliability)
+    if reliability <= 0.5:
+        assert monthly == 0
+
+
+@pytest.mark.parametrize("reliability", [0.01, 0.1, 0.499, 0.99])
+def test_api_accepts_full_one_to_ninety_nine_percent_reliability(api, db, reliability):
+    client, _ = api
+    seed_history(db)
+    seed_profile(db)
+    login(client)
+    response = client.post("/goals/simulate", json=request_body(reliability=reliability))
+    assert response.status_code == 200, response.text
+    assert response.json()["target_probability"] == reliability
+    assert response.json()["success_probability"] >= reliability
+
+
 def test_zero_monthly_only_when_initial_capital_alone_meets_probability():
     body = GoalInputs(**goal_inputs(goal_eur="10000", starting_capital_eur="10000"))
     result = simulate_buy_and_hold(flat_estimates(), body, NOW.date())
@@ -539,7 +581,7 @@ def test_api_statistics_and_simulation_auth_origin_and_no_provider_calls(api, db
 @pytest.mark.parametrize("changes", [
     {"goal_eur": "0"}, {"goal_eur": "-1"}, {"goal_eur": "nan"}, {"goal_eur": "Infinity"},
     {"goal_eur": "1000000000001"}, {"goal_eur": "1.001"}, {"starting_capital_eur": "-1"},
-    {"reliability": 0.499}, {"reliability": 1}, {"reliability": "NaN"},
+    {"reliability": 0.009}, {"reliability": 0.991}, {"reliability": 1}, {"reliability": "NaN"},
     {"goal_date": "2026-10-16"}, {"goal_date": "2026-09-17"}, {"goal_date": "2076-09-18"},
     {"goal_date": "tomorrow"}, {"paths": 1000000},
     {"as_of": "2026-09-17T12:00:00"}, {"as_of": "2026-09-18T12:00:00Z"},

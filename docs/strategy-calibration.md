@@ -2,7 +2,7 @@
 
 **Calibration** (`#/calibration`) is the signed-in user's history of successful
 calibration runs, newest-started first, in pages of 20. Each row shows the run
-date, saved strategy name, simulation method and parameters, Brier score,
+date, saved strategy name, simulation method, evaluation policy and parameters, Brier score,
 calibration error and scored-scenario count. Multiple runs of the same strategy remain separate.
 
 **New run** (`#/calibration/new`) lets you choose a strategy, configure its
@@ -58,24 +58,32 @@ not a profitability ranking.
    coverage for the minimum horizon. Allocate cases evenly, using a seeded random
    order for subsets/remainders. Allocation uses dates only, not future price
    quality or outcomes. Invalid assigned cases are excluded, never replaced.
-2. Draw starting capital uniformly in cents from EUR 1,000–100,000, monthly
-   funding from EUR 0–1,000 and a whole-month horizon uniformly within the requested
-   range that fits saved calendar coverage.
-3. Fit each origin's model on its training prefix only. Requested success rates
-   cycle through ten strata spanning 1%–99%. A training-only 10,000-path pilot
-   wealth distribution using the selected simulation method supplies a
-   cent-rounded target at quantile `1 - rate`.
-   Nonpositive or above-EUR-1-trillion targets are excluded, not clipped.
-4. Measure actual goal-success probability using a separate, independent
-   10,000-path stream using that same method. Requested probabilities are not
-   reported as predictions.
-   Flat histories and rounding can leave bins empty; coverage is not fabricated.
-5. Freeze the target and probability, then replay the historical outcome. Brier
-   and ECE weight scored cases equally.
+2. Generate starting capital uniformly in cents from EUR 1,000–100,000. Generate
+   the final goal uniformly in cents from **capital + EUR 0.01** through
+   EUR 1,000,000: the goal is always strictly higher than the starting capital.
+   Generate a whole-month horizon within the requested range that fits saved
+   calendar coverage, and a requested success rate across ten strata from 1%–99%.
+   These draws do not depend on market price values or the simulation method.
+   The same seed, date bounds and scenario settings produce the same test inputs
+   for standard Monte Carlo and block bootstrap.
+3. Fit each origin's model on its trailing training prefix only. Use the selected
+   method to simulate 10,000 paths and **solve the required EUR/month** with the
+   same contribution quantile and upward cent rounding as the goal planner.
+   Monthly funding is an output, never a random input. The target is never
+   obtained from a simulation quantile. Numerically unstable or above-limit
+   funding returns a validation error, never clipped or replaced with a different test.
+4. Estimate the solved funding plan's actual success probability using a separate,
+   independent 10,000-path stream of that same method. This prevents scoring the
+   solution only on the draws that selected it. Requested probabilities remain
+   distinct from actual predictions; zero funding, flat histories and cent
+   rounding can leave bins empty. Coverage is not fabricated.
+5. Freeze the test inputs, solved contribution and prediction, then replay that
+   funding plan on the later historical prices. Brier and ECE weight scored cases
+   equally. No future prices are used to choose funding or test inputs.
 
 Root seed, origin date and date-local case number identify parameter draws.
-Scheduling, parameters, target design and probability estimation use separate RNG
-domains. Two growth/annuity streams are shared across funding cases at each
+Scheduling, scenario inputs, contribution solving and probability estimation use
+separate RNG domains. Two growth/annuity streams are shared across funding cases at each
 origin, avoiding thousands of complete simulations. Increasing count preserves
 common case IDs/definitions when other settings and history are unchanged.
 
@@ -104,7 +112,7 @@ case IDs and reasons. UI pagination limits rendered rows, not metric inputs.
 - Standard Monte Carlo uses the planner's independent normal log-return model.
   Block bootstrap draws complete contiguous blocks of observed daily log returns
   **only from each origin's trailing training prefix**, preserving within-block
-  ordering, split-corrected price basis and gaps. Target-generation and prediction
+  ordering, split-corrected price basis and gaps. Contribution-solving and prediction
   use independent seeded block streams; neither sees later outcomes. An origin
   whose training has 60+ usable returns but no uninterrupted run long enough
   for its chosen block is excluded as `insufficient_block_history`, not silently
@@ -128,6 +136,11 @@ shared simulations mean scenarios are not independent observations. The distinct
 historical-origin count reports the available date support; generating more cases
 improves coverage, not independent evidence. Missing outcomes can bias the scored
 subset. Choosing settings or seeds after inspecting scores is hindsight selection.
+Across methods, generated capital/goal/date/rate inputs are identical for a fixed
+seed, but solved monthly contributions (and therefore realized outcomes) can differ:
+the score evaluates each method's recommended funding plan. Compare common scored
+scenario IDs and inspect exclusions when comparing methods, not only aggregate
+scores. Legacy simulated-target runs use a different policy and are not comparable.
 Block bootstrap can preserve short-range dependence and observed tail events but
 cannot invent unobserved events or ensure future regimes resemble training.
 
@@ -144,7 +157,8 @@ All routes require the normal session; POST also requires same-origin protection
   with compact run summaries only, ordered by calculation start order descending
   and unique ID as a tie-breaker. Limit is 1–100; offset is nonnegative. Summaries
   contain `id`, `strategy_name`, `strategy`, `settings`, `seed`, `calculated_at`,
-  `brier_score`, `calibration_error`, `sample_count` and `origin_count`, not audit
+  `brier_score`, `calibration_error`, `sample_count`, `origin_count` and (for newly
+  saved runs) compact `generation` metadata, not audit
   rows or chart arrays.
 - `GET /goals/calibrations/{runId}`: `{result: fullSavedRun}`. Unknown IDs and
   another user's IDs both return 404.
@@ -189,6 +203,10 @@ and canonical `settings` (including simulation method and block size), with `cal
 `generation` policy metadata, Brier/ECE, mean predicted/observed rates, all ten
 `calibration_bins`, `forecasts`, `excluded_origins`, `skipped_counts` and warnings.
 Requested scenarios equal scored plus excluded cases. Bins use actual predictions.
+New `generation` metadata has `method: "independent_goals_contribution_solver"`,
+`version: 2`, `solver_simulation_paths`, capital bounds, `goal_max_eur`,
+`goal_rule: "above_starting_capital"` and probability bounds. It has no
+`target_simulation_paths` or random monthly-funding range.
 
 `calibration_runs` holds one immutable document per successful calculation with
 server-authenticated ownership. Full result and summary are inserted atomically.
@@ -196,8 +214,13 @@ Identical settings and seeds still produce different run IDs; concurrent runs
 are all retained, even when an earlier request finishes later. Owner-scoped
 indexes support summary projections and latest-run reads without loading audits.
 There are no update/delete run endpoints or automatic background calculations.
-Older saved reports without simulation settings still display Standard Monte Carlo;
-**Run again** fills in those defaults without altering the original report.
+Older saved reports without simulation settings still display Standard Monte Carlo.
+Reports using `training_quantiles_independent_streams` are labeled **Legacy ·
+simulated targets**: they randomly generated monthly funding and selected goals
+from simulated wealth. Their scores remain readable and unchanged, but are not
+comparable to the new policy. **Run again** copies form settings and runs the new
+policy, with an explicit warning that the scenarios differ even with the same
+seed; it never overwrites the original report.
 
 Existing `strategy_calibrations` latest results are imported lazily for their
 authenticated owner, using deterministic `legacy-…` IDs and insert-only upserts.

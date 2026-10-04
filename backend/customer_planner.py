@@ -57,7 +57,7 @@ class CustomerGoalUpdate(BaseModel):
 class SimulationRequest(SimulationSettings):
     strategy: StrategySelection
     starting_capital_eur: Money
-    reliability: float = Field(ge=0.5, le=0.99, allow_inf_nan=False)
+    reliability: float = Field(ge=0.01, le=0.99, allow_inf_nan=False)
     as_of: datetime | None = None
 
     @model_validator(mode="after")

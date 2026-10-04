@@ -2,7 +2,7 @@ from collections import Counter
 from copy import deepcopy
 from dataclasses import replace
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from unittest.mock import Mock
 
 import numpy as np
@@ -11,8 +11,8 @@ import pytest
 import goal_strategies as gs
 import market_data as md
 import random_calibration as rc
-from goal_calibration import RandomCalibrationInputs, calibration_metrics, monthly_origins, reaches_goal
-from goal_simulation import add_months, money_string, period_factors
+from goal_calibration import RandomCalibrationInputs, calibration_metrics, monthly_origins
+from goal_simulation import GoalInputs, add_months, money_string, period_factors, required_contribution, simulate_buy_and_hold
 from return_statistics import calculate_daily_statistics, calculate_statistics
 from test_goal_calibration import assert_same_calculation, rows_between
 from test_goal_planner import login, seed_history, seed_profile
@@ -42,14 +42,22 @@ def test_default_thousand_scenarios_span_probabilities_and_have_honest_origin_co
     assert max(counts.values()) - min(counts.values()) <= 1
     assert all(bin["count"] > 0 for bin in result["calibration_bins"])
     assert sum(bin["count"] for bin in result["calibration_bins"]) == 1000
-    assert result["generation"]["target_simulation_paths"] == result["simulation_paths"] == 10000
+    assert result["generation"] == {
+        "method": "independent_goals_contribution_solver", "version": 2, "solver_simulation_paths": 10000,
+        "capital_min_eur": "1000.00", "capital_max_eur": "100000.00",
+        "goal_max_eur": "1000000.00", "goal_rule": "above_starting_capital",
+        "probability_min": 0.01, "probability_max": 0.99,
+    }
+    assert result["simulation_paths"] == 10000
     assert result["settings"] == RandomCalibrationInputs(mode="random").public_settings()
     forecasts = result["forecasts"]
     assert len({f["scenario_id"] for f in forecasts}) == 1000
     assert len({f["horizon_months"] for f in forecasts}) > 10
     assert len({f["goal_eur"] for f in forecasts}) > 900
     assert all(Decimal("1000") <= Decimal(f["starting_capital_eur"]) <= Decimal("100000") for f in forecasts)
-    assert all(Decimal("0") <= Decimal(f["monthly_contribution_eur"]) <= Decimal("1000") for f in forecasts)
+    assert all(Decimal(f["starting_capital_eur"]) < Decimal(f["goal_eur"]) <= Decimal("1000000") for f in forecasts)
+    assert all(Decimal(f["monthly_contribution_eur"]) >= 0 for f in forecasts)
+    assert any(Decimal(f["monthly_contribution_eur"]) > 1000 for f in forecasts)
     assert all(0.01 <= f["requested_probability"] <= 0.99 for f in forecasts)
     assert all(f["training_end_date"] == f["origin_date"] < f["goal_date"] <= result["history_last_date"] for f in forecasts)
     assert all(3 <= f["horizon_months"] <= 24 for f in forecasts)
@@ -97,59 +105,54 @@ def test_only_prefix_is_fitted_and_changing_future_prices_does_not_change_goals_
     assert [f["terminal_value_eur"] for f in baseline["forecasts"]] != [f["terminal_value_eur"] for f in changed["forecasts"]]
 
 
-def test_goals_use_pilot_quantiles_and_actual_probabilities_use_independent_draws():
-    paths, seed = 800, 42
-    rows = rows_between()
-    result = evaluate(rows, paths=paths, start_date="2023-03-01", end_date="2023-03-01")
-    example = result["forecasts"][0]
-    origin = date.fromisoformat(example["origin_date"])
-    estimates = calculate_statistics([row for row in rows if example["training_start_date"] <= row["date"] <= example["training_end_date"]])
-    wealth = []
-    for domain in [rc.TARGET_STREAM, rc.PREDICTION_STREAM]:
-        steps = [(add_months(origin, month), True) for month in range(1, example["horizon_months"] + 1)]
-        growth, annuity = np.ones(paths), np.zeros(paths)
-        stream = np.random.SeedSequence([seed, origin.toordinal(), domain])
-        for _, _, factors in period_factors(steps, origin, estimates["daily_mean_log_return"], estimates["daily_log_return_variance"], paths, stream):
-            growth *= factors
-            annuity = annuity * factors + 1
-        wealth.append(float(example["starting_capital_eur"]) * growth + float(example["monthly_contribution_eur"]) * annuity)
-    expected_goal = money_string(float(np.quantile(wealth[0], 1 - example["requested_probability"])))
-    assert example["goal_eur"] == expected_goal
-    assert example["predicted_probability"] == float(np.mean(reaches_goal(wealth[1], Decimal(expected_goal))))
-    assert example["predicted_probability"] != example["requested_probability"]
-    assert not np.array_equal(wealth[0], wealth[1])
-
-
-def test_bootstrap_uses_independent_training_only_block_streams_and_seeded_replay():
+@pytest.mark.parametrize("method,block_size", [("standard", None), ("block_bootstrap", 10)])
+def test_solved_funding_matches_planner_and_prediction_uses_independent_training_draws(method, block_size):
     paths, seed = 400, 42
     rows = rows_between()
-    changes = {"simulation_method": "block_bootstrap", "block_size": 10,
+    changes = {"simulation_method": method, "block_size": block_size,
                "start_date": "2023-03-01", "end_date": "2023-03-01"}
     result = evaluate(rows, seed=seed, paths=paths, **changes)
     assert result == evaluate(rows, seed=seed, paths=paths, **changes)
-    assert result["settings"]["block_size"] == 10
-    assert any("both independent target-generation and prediction streams" in w for w in result["warnings"])
-    case = result["forecasts"][0]
-    origin = date.fromisoformat(case["origin_date"])
-    training = [row for row in rows if case["training_start_date"] <= row["date"] <= case["training_end_date"]]
-    stats = calculate_daily_statistics(training, include_return_runs=True)
-    wealth = []
-    for domain in (rc.TARGET_STREAM, rc.PREDICTION_STREAM):
-        steps = [(add_months(origin, month), True) for month in range(1, case["horizon_months"] + 1)]
-        growth, annuity = np.ones(paths), np.zeros(paths)
-        for _, _, factors in period_factors(steps, origin, stats["daily_mean_log_return"],
-                                             stats["daily_log_return_variance"], paths,
-                                             np.random.SeedSequence([seed, origin.toordinal(), domain]),
-                                             return_runs=stats["return_runs"], block_size=10):
-            growth *= factors
-            annuity = annuity * factors + 1
-        wealth.append(float(case["starting_capital_eur"]) * growth + float(case["monthly_contribution_eur"]) * annuity)
-    goal = money_string(float(np.quantile(wealth[0], 1 - case["requested_probability"])))
-    assert case["goal_eur"] == goal
-    assert case["predicted_probability"] == float(np.mean(reaches_goal(wealth[1], Decimal(goal))))
-    assert not np.array_equal(wealth[0], wealth[1])
+    assert result["generation"]["solver_simulation_paths"] == paths
+    assert result["settings"]["block_size"] == block_size
+    if block_size:
+        assert any("both independent contribution-solver and prediction streams" in w for w in result["warnings"])
+    # Cover low, middle and high requested reliabilities, not just the first case.
+    ordered = sorted(result["forecasts"], key=lambda f: f["requested_probability"])
+    assert ordered[0]["requested_probability"] < 0.1
+    assert ordered[-1]["requested_probability"] > 0.9
+    for case in (ordered[0], ordered[len(ordered) // 2], ordered[-1]):
+        origin = date.fromisoformat(case["origin_date"])
+        training = [row for row in rows if case["training_start_date"] <= row["date"] <= case["training_end_date"]]
+        stats = calculate_daily_statistics(training, include_return_runs=True)
+        runs = stats["return_runs"] if block_size else None
+        planner_inputs = GoalInputs(goal_eur=case["goal_eur"], starting_capital_eur=case["starting_capital_eur"],
+                                    goal_date=case["goal_date"], reliability=case["requested_probability"],
+                                    simulation_method=method, block_size=block_size)
+        planner = simulate_buy_and_hold(stats, planner_inputs, origin, paths=paths, return_runs=runs,
+                                       seed=np.random.SeedSequence([seed, origin.toordinal(), rc.SOLVER_STREAM]))
+        assert case["monthly_contribution_eur"] == planner["monthly_contribution_eur"]
+        wealth = []
+        for domain in (rc.SOLVER_STREAM, rc.PREDICTION_STREAM):
+            steps = [(add_months(origin, month), True) for month in range(1, case["horizon_months"] + 1)]
+            growth, annuity = np.ones(paths), np.zeros(paths)
+            for _, _, factors in period_factors(steps, origin, stats["daily_mean_log_return"],
+                                                 stats["daily_log_return_variance"], paths,
+                                                 np.random.SeedSequence([seed, origin.toordinal(), domain]),
+                                                 return_runs=runs, block_size=block_size):
+                growth *= factors
+                annuity = annuity * factors + 1
+            if domain == rc.SOLVER_STREAM:
+                monthly, terminal = required_contribution(growth, annuity, case["starting_capital_eur"],
+                                                         case["goal_eur"], case["requested_probability"])
+                assert money_string(monthly) == case["monthly_contribution_eur"]
+                assert float(np.mean(terminal >= float(case["goal_eur"]))) == planner["success_probability"]
+            wealth.append(float(case["starting_capital_eur"]) * growth + float(case["monthly_contribution_eur"]) * annuity)
+        assert case["predicted_probability"] == float(np.mean(wealth[1] >= float(case["goal_eur"])))
+        assert case["predicted_probability"] != case["requested_probability"]
+        assert not np.array_equal(wealth[0], wealth[1])
     for row in rows:
-        if row["date"] > case["origin_date"]:
+        if row["date"] > "2023-03-01":
             row["close"] *= 0.1
             row["adj_close"] *= 0.1
     changed = evaluate(rows, seed=seed, paths=paths, **changes)
@@ -180,18 +183,38 @@ def test_changing_scoring_stream_cannot_change_scenario_goals_or_observed_outcom
         {k: v for k, v in f.items() if k != "predicted_probability"} for f in after["forecasts"]]
 
 
-def test_cases_share_two_streams_per_origin_not_one_simulation_per_case(monkeypatch):
-    streams = []
+@pytest.mark.parametrize("method,block_size", [("standard", None), ("block_bootstrap", 5)])
+def test_cases_share_two_streams_per_origin_and_replay_solved_funding_without_charts(monkeypatch, method, block_size):
+    streams, solved, replayed = [], [], []
     original = rc.period_factors
+    solve, replay = rc.required_contribution, rc.realized_value
 
-    def capture(*args):
+    def capture(*args, **kwargs):
         streams.append(args[-1].entropy)
-        return original(*args)
+        return original(*args, **kwargs)
 
+    def capture_solve(growth, annuity, capital, goal, reliability):
+        monthly, terminal = solve(growth, annuity, capital, goal, reliability)
+        solved.append((capital, goal, monthly))
+        return monthly, terminal
+
+    def capture_replay(rows, dates, index, goal_date, basis, fixed, override):
+        assert solved[-1] == (fixed.starting_capital_eur, fixed.goal_eur, fixed.monthly_contribution_eur)
+        replayed.append(solved[-1])
+        return replay(rows, dates, index, goal_date, basis, fixed, override)
+
+    forbidden = Mock(side_effect=AssertionError("Calibration must not generate per-case charts"))
+    monkeypatch.setattr("goal_simulation.trajectory_points", forbidden)
     monkeypatch.setattr(rc, "period_factors", capture)
-    result = evaluate(scenario_count=1000, paths=100)
+    monkeypatch.setattr(rc, "required_contribution", capture_solve)
+    monkeypatch.setattr(rc, "realized_value", capture_replay)
+    result = evaluate(scenario_count=1000, paths=100, simulation_method=method, block_size=block_size)
     assert len(streams) == 2 * result["origin_count"]
-    assert {stream[-1] for stream in streams} == {rc.TARGET_STREAM, rc.PREDICTION_STREAM}
+    assert {stream[-1] for stream in streams} == {rc.SOLVER_STREAM, rc.PREDICTION_STREAM}
+    assert len(solved) == len(replayed) == result["sample_count"] == 1000
+    assert sorted(replayed) == sorted((Decimal(f["starting_capital_eur"]), Decimal(f["goal_eur"]),
+                                       Decimal(f["monthly_contribution_eur"])) for f in result["forecasts"])
+    forbidden.assert_not_called()
 
 
 def test_flat_prices_do_not_fabricate_probability_coverage_or_miss_cent_funding():
@@ -201,9 +224,16 @@ def test_flat_prices_do_not_fabricate_probability_coverage_or_miss_cent_funding(
     assert result["brier_score"] == 0
     assert result["calibration_bins"][-1]["count"] == 100
     assert any("Only 1 of 10" in warning for warning in result["warnings"])
+    assert len({case["goal_eur"] for case in result["forecasts"]}) == 100
+    assert len({case["requested_probability"] for case in result["forecasts"]}) == 100
     for case in result["forecasts"]:
-        exact = Decimal(case["starting_capital_eur"]) + case["horizon_months"] * Decimal(case["monthly_contribution_eur"])
-        assert Decimal(case["goal_eur"]) == Decimal(case["terminal_value_eur"]) == exact
+        capital, goal, monthly = map(Decimal, (case["starting_capital_eur"], case["goal_eur"], case["monthly_contribution_eur"]))
+        assert goal > capital
+        exact = capital + case["horizon_months"] * monthly
+        assert Decimal(case["terminal_value_eur"]) == exact >= goal
+        minimum = ((goal - capital) / case["horizon_months"]).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+        # The planner may add one cent for strict floating-point equality.
+        assert minimum <= monthly <= minimum + Decimal("0.01")
         assert 0.01 <= case["requested_probability"] < 1
         assert case["predicted_probability"] == 1
 
@@ -263,10 +293,54 @@ def test_empty_short_or_ineligible_batches_have_no_invented_score(rows):
         evaluate(rows)
 
 
-@pytest.mark.parametrize("level", [0, 1e12 + 1])
-def test_unrepresentable_goals_are_not_silently_clipped(level):
-    with pytest.raises(rc.UnscorableOutcome, match="generated_goal_out_of_bounds"):
-        rc.generated_goal(np.full(100, level), 0.5)
+@pytest.mark.parametrize("seed", [0, 42, 2**32 - 1])
+def test_generator_is_method_and_price_independent_with_stable_common_inputs(seed):
+    settings = inputs()
+    _, dates, origins = monthly_origins(rows_between(), settings)
+    baseline, _ = rc.plan_scenarios(dates, origins, settings, seed)
+    expected = {case.id: case for group in baseline.values() for case in group}
+    for changes in ({"simulation_method": "block_bootstrap", "block_size": 60},
+                    {"scenario_count": 200}, {"start_date": "2023-03-01", "end_date": "2023-06-30"}):
+        variant = inputs(**changes)
+        # Even unusable prices cannot affect the generator's calendar inputs.
+        changed_rows = [{**row, "close": None, "adj_close": -1} for row in rows_between()]
+        _, changed_dates, changed_origins = monthly_origins(changed_rows, variant)
+        groups, _ = rc.plan_scenarios(changed_dates, changed_origins, variant, seed)
+        actual = {case.id: case for group in groups.values() for case in group}
+        common = expected.keys() & actual.keys()
+        assert common and all(expected[key] == actual[key] for key in common)
+    for group in baseline.values():
+        for case in group:
+            assert Decimal("1000") <= case.capital <= Decimal("100000")
+            assert case.capital + Decimal("0.01") <= case.goal <= Decimal("1000000")
+            assert case.goal * 100 == int(case.goal * 100)
+            assert not hasattr(case, "monthly")
+
+
+def test_forecast_inputs_are_identical_across_methods_and_training_price_values():
+    changes = {"start_date": "2023-03-01", "end_date": "2023-03-01"}
+    standard = evaluate(**changes)
+    bootstrap = evaluate(simulation_method="block_bootstrap", block_size=10, **changes)
+    flat = evaluate(rows_between(flat=True), **changes)
+    keys = ("scenario_id", "origin_date", "goal_date", "starting_capital_eur", "goal_eur",
+            "requested_probability", "horizon_months")
+    expected = [[f[key] for key in keys] for f in standard["forecasts"]]
+    for result in (bootstrap, flat):
+        assert [[f[key] for key in keys] for f in result["forecasts"]] == expected
+        assert any(a["monthly_contribution_eur"] != b["monthly_contribution_eur"]
+                   for a, b in zip(standard["forecasts"], result["forecasts"]))
+
+
+def test_changing_solver_stream_changes_funding_not_generated_inputs(monkeypatch):
+    before = evaluate()
+    monkeypatch.setattr(rc, "SOLVER_STREAM", 999)
+    after = evaluate()
+    inputs_keys = ("scenario_id", "origin_date", "goal_date", "starting_capital_eur", "goal_eur",
+                   "requested_probability", "horizon_months")
+    assert [[f[key] for key in inputs_keys] for f in before["forecasts"]] == [
+        [f[key] for key in inputs_keys] for f in after["forecasts"]]
+    assert any(a["monthly_contribution_eur"] != b["monthly_contribution_eur"]
+               for a, b in zip(before["forecasts"], after["forecasts"]))
 
 
 def test_api_explicit_generated_batch_auth_seed_and_no_provider_calls(api, db, config, monkeypatch):
@@ -302,6 +376,7 @@ def test_api_explicit_generated_batch_auth_seed_and_no_provider_calls(api, db, c
     {"max_horizon_months": 6.5}, {"lookback_months": 2}, {"seed": -1}, {"seed": 2**32},
     {"seed": True}, {"start_date": "2025-01-01", "end_date": "2024-01-01"},
     {"mode": "something_else"}, {"goal_eur": "15000"}, {"simulation_paths": 10**9},
+    {"capital_min_eur": "0"}, {"goal_max_eur": "1000"}, {"monthly_max_eur": "1000"},
     {"simulation_method": "block_bootstrap", "block_size": None}, {"block_size": 5},
     {"simulation_method": "unknown"}, {"simulation_method": "block_bootstrap", "block_size": 0},
     {"simulation_method": "block_bootstrap", "block_size": 61},
@@ -317,17 +392,22 @@ def test_api_invalid_generated_configuration_fails_before_reading_data(api, db, 
     forbidden.assert_not_called()
 
 
-def test_bootstrap_api_saves_settings_for_history_report_and_replay(api, db):
+@pytest.mark.parametrize("method,block_size", [("standard", None), ("block_bootstrap", 5)])
+def test_api_saves_solved_forecasts_and_settings_for_history_report_and_replay(api, db, method, block_size):
     client, _ = api
     seed_history(db, rows_between())
     seed_profile(db)
     login(client)
-    request = body(scenario_count=10, simulation_method="block_bootstrap", block_size=5)
+    request = body(scenario_count=10, simulation_method=method, block_size=block_size)
     first_response = client.post("/goals/calibrate", json=request)
     assert first_response.status_code == 200, first_response.text
     first = first_response.json()
-    assert first["settings"]["simulation_method"] == "block_bootstrap"
-    assert first["settings"]["block_size"] == 5
+    assert first["settings"]["simulation_method"] == method
+    assert first["settings"]["block_size"] == block_size
+    assert first["generation"]["version"] == 2
+    assert first["generation"]["method"] == "independent_goals_contribution_solver"
+    assert all(Decimal(f["goal_eur"]) > Decimal(f["starting_capital_eur"]) for f in first["forecasts"])
+    assert any(Decimal(f["monthly_contribution_eur"]) > 1000 for f in first["forecasts"])
     assert client.get(f"/goals/calibrations/{first['id']}").json()["result"] == first
     assert client.get("/goals/calibrations").json()["items"][0]["settings"] == first["settings"]
     assert_same_calculation(first, client.post("/goals/calibrate", json=request).json())

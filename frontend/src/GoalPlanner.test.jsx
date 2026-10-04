@@ -558,9 +558,9 @@ describe('explicit monthly simulation', () => {
     ['Target (EUR)', '1e6', /two decimal places/],
     ['Starting capital (EUR)', '-1', /starting capital of zero or more/],
     ['Starting capital (EUR)', '', /starting capital of zero or more/],
-    ['Reliability target (%)', '49', /between 50% and 99%/],
-    ['Reliability target (%)', '100', /between 50% and 99%/],
-    ['Reliability target (%)', '', /between 50% and 99%/],
+    ['Reliability target (%)', '0', /between 1% and 99%/],
+    ['Reliability target (%)', '100', /between 1% and 99%/],
+    ['Reliability target (%)', '', /between 1% and 99%/],
     ['Goal date (UTC)', '2026-10-16', /next monthly anniversary/],
     ['Goal date (UTC)', '2076-09-18', /50 years/],
     ['Goal date (UTC)', '', /next monthly anniversary/],
@@ -573,7 +573,7 @@ describe('explicit monthly simulation', () => {
     expect(posts()).toHaveLength(0);
   });
 
-  it.each([['50', '2026-10-17'], ['99', '2076-09-17']])('accepts inclusive reliability %s and date %s boundaries', async (reliability, date) => {
+  it.each([['1', '2026-10-17'], ['49', '2026-10-17'], ['99', '2076-09-17']])('accepts inclusive reliability %s and date %s boundaries', async (reliability, date) => {
     mockServer();
     await openGoal();
     expect(screen.getByLabelText('Goal date (UTC)')).toHaveAttribute('min', '2026-10-17');

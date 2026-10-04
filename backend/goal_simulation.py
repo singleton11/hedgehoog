@@ -37,7 +37,7 @@ class GoalInputs(SimulationSettings):
     goal_eur: Money = Field(gt=0)
     starting_capital_eur: Money
     goal_date: date
-    reliability: float = Field(ge=0.5, le=0.99, allow_inf_nan=False)
+    reliability: float = Field(ge=0.01, le=0.99, allow_inf_nan=False)
     as_of: datetime | None = None
     _point_in_time: bool = PrivateAttr(default=False)
     _effective_as_of: datetime | None = PrivateAttr(default=None)
@@ -150,6 +150,34 @@ def trajectory_points(steps, today, mean, variance, paths, seed, capital, monthl
     return points
 
 
+def required_contribution(growth, annuity, capital, goal, reliability):
+    """Solve cent funding on supplied paths, using the planner's strict threshold.
+
+    Shared by the planner and calibration; no new draws or trajectory summaries.
+    Callers provide the floating-point error context and translate numeric errors.
+    """
+    initial_wealth = float(capital) * growth
+    required = np.maximum((float(goal) - initial_wealth) / annuity, 0)
+    if not np.all(np.isfinite(required)):
+        raise FloatingPointError
+    # Each path ends at initial*growth + contribution*annuity. Its
+    # required contribution is solved exactly. The empirical quantile
+    # meets at least ceil(reliability*N) paths using the SAME draws.
+    rank = math.ceil(reliability * len(growth)) - 1
+    needed = float(np.partition(required, rank)[rank])
+    if needed > float(MAX_MONEY):
+        raise md.DataError(422, "The required monthly amount exceeds the EUR 1 trillion calculation limit. Try a longer horizon or a smaller goal.")
+    monthly = Decimal(str(needed)).quantize(CENT, rounding=ROUND_CEILING)
+    terminal = initial_wealth + float(monthly) * annuity
+    if np.count_nonzero(terminal >= float(goal)) < rank + 1:
+        # Protect the empirical threshold against floating-point equality.
+        monthly += CENT
+        terminal = initial_wealth + float(monthly) * annuity
+    if not np.all(np.isfinite(terminal)):
+        raise FloatingPointError
+    return monthly, terminal
+
+
 def simulate_buy_and_hold(estimates, body: GoalInputs, today, *, paths=PATHS, seed=SEED, fixed_monthly=None, return_runs=None):
     deposits = contribution_dates(today, body.goal_date)
     steps = [(day, True) for day in deposits]
@@ -177,24 +205,9 @@ def simulate_buy_and_hold(estimates, body: GoalInputs, today, *, paths=PATHS, se
                 if deposit:
                     annuity += 1.0  # A payment at period end earns only subsequent returns.
             initial_wealth = float(body.starting_capital_eur) * growth
-            required = np.maximum((float(body.goal_eur) - initial_wealth) / annuity, 0)
-            if not np.all(np.isfinite(required)):
-                raise FloatingPointError
-            # Each path ends at initial*growth + contribution*annuity. Its
-            # required contribution is solved exactly. The empirical quantile
-            # meets at least ceil(reliability*N) paths using the SAME draws.
-            rank = math.ceil(body.reliability * paths) - 1
-            needed = float(np.partition(required, rank)[rank])
-            if needed > float(MAX_MONEY):
-                raise md.DataError(422, "The required monthly amount exceeds the EUR 1 trillion calculation limit. Try a longer horizon or a smaller goal.")
-            monthly = Decimal(str(needed)).quantize(CENT, rounding=ROUND_CEILING)
-            terminal = initial_wealth + float(monthly) * annuity
-            if np.count_nonzero(terminal >= float(body.goal_eur)) < rank + 1:
-                # Protect the empirical threshold against floating-point equality.
-                monthly += CENT
-                terminal = initial_wealth + float(monthly) * annuity
-            if not np.all(np.isfinite(terminal)):
-                raise FloatingPointError
+            monthly, terminal = required_contribution(
+                growth, annuity, body.starting_capital_eur, body.goal_eur, body.reliability)
+
             trajectory = trajectory_points(steps, today, mean, variance, paths, seed,
                                            float(body.starting_capital_eur), float(monthly),
                                            return_runs=return_runs, block_size=block_size)

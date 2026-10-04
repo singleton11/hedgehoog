@@ -8,17 +8,18 @@ from test_market_data import api, clock, config, db
 from test_portfolio_tracker import portfolio
 
 
-def linked(planner):
+def linked(planner, **settings):
     client, customer, _, url = planner
-    saved = save(client, url, calculate(client, url, starting_capital_eur='0'))
+    saved = save(client, url, calculate(client, url, starting_capital_eur='0', **settings))
     client.post(f"{url}/simulations/{saved['id']}/plan")
     _, path = portfolio(client, customer['id'])
     client.patch(path, json={'name': 'Tracked', 'plan_id': saved['id']})
     return client, path, saved
 
 
-def test_same_state_replays_saved_probability_and_payment(planner, db):
-    client, path, saved = linked(planner)
+@pytest.mark.parametrize('reliability', [0.01, 0.25, 0.49, 0.9, 0.99])
+def test_same_state_replays_saved_probability_and_payment(planner, db, reliability):
+    client, path, saved = linked(planner, reliability=reliability)
     before = deepcopy(db.planner_simulations.find_one({'_id': saved['id']}))
     response = client.get(path + '/plan-tracking')
     assert response.status_code == 200, response.text

@@ -101,9 +101,24 @@ function validSelection(selection, definition) {
     });
 }
 
+function validGeneration(generation) {
+  if (!object(generation)) return false;
+  const common = { capital_min_eur: '1000.00', capital_max_eur: '100000.00', probability_min: 0.01, probability_max: 0.99 };
+  const policy = generation.method === 'independent_goals_contribution_solver'
+    ? { version: 2, solver_simulation_paths: 10000, goal_max_eur: '1000000.00', goal_rule: 'above_starting_capital' }
+    : generation.method === 'training_quantiles_independent_streams'
+      && (generation.version === undefined || generation.version === 1)
+      ? { target_simulation_paths: 10000, monthly_min_eur: '0.00', monthly_max_eur: '1000.00' } : null;
+  return policy !== null && Object.entries({ ...common, ...policy }).every(([key, value]) => generation[key] === value);
+}
+
+export const contributionCalibration = (data) => data?.generation?.method === 'independent_goals_contribution_solver'
+  && data.generation.version === 2;
+
 // The catalogue carries compact summaries only, never the audit arrays.
 export function validCalibrationSummary(data, definition) {
   return object(data) && validSelection(data.strategy, definition) && validSettings(data.settings)
+    && (data.generation === undefined || validGeneration(data.generation))
     && utcTimestamp(data.calculated_at) && validSeed(data.seed)
     && probability(data.brier_score) && probability(data.calibration_error)
     && count(data.sample_count) && data.sample_count > 0 && data.sample_count <= data.settings.scenario_count
@@ -125,8 +140,10 @@ export function validCalibrationHistory(data, limit, offset) {
 // Validate saved experiments as strictly as new calculations, including their
 // metrics against both bins and the per-scenario audit. No missing metric is zero.
 export function validCalibrationResult(data, body = null, definition = null) {
-  if (!validCalibrationSummary(data, definition)) return false;
+  if (!validCalibrationSummary(data, definition) || !validGeneration(data.generation)) return false;
+  const contributionSolver = contributionCalibration(data);
   if (body) {
+    if (!contributionSolver) return false;
     const settings = Object.entries(body).filter(([key]) => key !== 'strategy' && key !== 'seed');
     if (body.mode !== 'random' || !sameStrategy(data.strategy, body.strategy)
       || Object.keys(data.settings).length !== settings.length
@@ -165,7 +182,9 @@ export function validCalibrationResult(data, body = null, definition = null) {
       && typeof forecast.observed_success === 'boolean' && money(forecast.terminal_value_eur)
       && scenarioId(forecast.scenario_id) && money(forecast.goal_eur) && Number(forecast.goal_eur) > 0
       && money(forecast.starting_capital_eur) && Number(forecast.starting_capital_eur) >= 1000 && Number(forecast.starting_capital_eur) <= 100000
-      && money(forecast.monthly_contribution_eur) && Number(forecast.monthly_contribution_eur) <= 1000
+      && money(forecast.monthly_contribution_eur) && Number(forecast.monthly_contribution_eur) <= (contributionSolver ? 1e12 : 1000)
+      && (!contributionSolver || Number(forecast.goal_eur) > Number(forecast.starting_capital_eur)
+        && Number(forecast.goal_eur) <= 1000000)
       && count(forecast.horizon_months) && forecast.horizon_months >= settings.min_horizon_months && forecast.horizon_months <= settings.max_horizon_months
       && probability(forecast.requested_probability) && forecast.requested_probability >= 0.01 && forecast.requested_probability <= 0.99)
     && Array.isArray(data.excluded_origins) && data.excluded_origins.every((origin) => object(origin)
@@ -185,14 +204,8 @@ export function validCalibrationResult(data, body = null, definition = null) {
       || close(bin.mean_predicted_probability, auditBins[index].predicted / bin.count)
         && close(bin.observed_success_rate, auditBins[index].observed / bin.count)))) return false;
 
-  const expectedGeneration = {
-    method: 'training_quantiles_independent_streams', target_simulation_paths: 10000,
-    capital_min_eur: '1000.00', capital_max_eur: '100000.00', monthly_min_eur: '0.00', monthly_max_eur: '1000.00',
-    probability_min: 0.01, probability_max: 0.99,
-  };
   const skipped = Object.values(data.skipped_counts).reduce((sum, value) => sum + value, 0);
-  if (!object(data.generation) || !Object.entries(expectedGeneration).every(([key, value]) => data.generation[key] === value)
-    || typeof data.history_fingerprint !== 'string' || !data.history_fingerprint.trim()
+  if (typeof data.history_fingerprint !== 'string' || !data.history_fingerprint.trim()
     || data.candidate_count !== data.sample_count + skipped || data.excluded_origins.length !== skipped
     || !count(data.available_origin_count) || data.available_origin_count < data.origin_count
     || data.origin_count !== new Set(data.forecasts.map((forecast) => forecast.origin_date)).size) return false;

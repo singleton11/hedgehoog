@@ -52,8 +52,8 @@ function generatedCalibration(body = expectedBody, sampleCount = body.scenario_c
     data_as_of: '2026-09-23T11:00:00+00:00', history_first_date: '2021-01-01', history_last_date: '2026-09-22',
     history_fingerprint: 'saved-history-fingerprint', candidate_count: body.scenario_count, sample_count: sampleCount,
     available_origin_count: 36, origin_count: Math.min(30, sampleCount),
-    generation: { method: 'training_quantiles_independent_streams', target_simulation_paths: 10000,
-      capital_min_eur: '1000.00', capital_max_eur: '100000.00', monthly_min_eur: '0.00', monthly_max_eur: '1000.00',
+    generation: { method: 'independent_goals_contribution_solver', version: 2, solver_simulation_paths: 10000,
+      capital_min_eur: '1000.00', capital_max_eur: '100000.00', goal_max_eur: '1000000.00', goal_rule: 'above_starting_capital',
       probability_min: 0.01, probability_max: 0.99 },
     skipped_counts: skipped ? { insufficient_training: skipped } : {},
     excluded_origins: Array.from({ length: skipped }, (_, index) => ({ scenario_id: `scenario-${sampleCount + index + 1}`, origin_date: '2022-12-01', reason: 'insufficient_training' })),
@@ -68,8 +68,8 @@ function generatedCalibration(body = expectedBody, sampleCount = body.scenario_c
   };
 }
 function summary(data) {
-  const { id, strategy_name, strategy, settings, seed, calculated_at, brier_score, calibration_error, sample_count, origin_count } = data;
-  return structuredClone({ id, strategy_name, strategy, settings, seed, calculated_at, brier_score, calibration_error, sample_count, origin_count });
+  const { id, strategy_name, strategy, settings, seed, calculated_at, brier_score, calibration_error, sample_count, origin_count, generation } = data;
+  return structuredClone({ id, strategy_name, strategy, settings, seed, calculated_at, brier_score, calibration_error, sample_count, origin_count, generation });
 }
 function deferred() {
   let resolve, reject;
@@ -323,6 +323,49 @@ describe('read-only saved reports and explicit editable clones', () => {
     await open({ route: reportRoute(original.id) }); expect(result()).toHaveTextContent(buyAndHold.name);
     await follow('Run again'); expect(screen.getByRole('option', { name: 'Renamed strategy' })).toBeInTheDocument();
     await submit(); expect(result()).toHaveTextContent('Renamed strategy'); expect(server.runs.get(original.id).strategy_name).toBe(buyAndHold.name);
+  });
+});
+
+describe('independent goals and contribution-solver policy', () => {
+  it('shows solved funding and method-independent tests in reports and history', async () => {
+    const server = mockServer(); const run = server.save();
+    await open({ route: reportRoute(run.id) });
+    expect(result()).toHaveTextContent('Random starting capital, a higher EUR goal, deadline and requested success rate');
+    expect(result()).toHaveTextContent('independent stream predicts its success');
+    openAudit();
+    expect(metric('Evaluation policy')).toHaveTextContent('Independent goals · solved monthly contribution');
+    expect(within(result()).getByRole('columnheader', { name: 'Solved EUR/month' })).toBeInTheDocument();
+    await navigate('#/calibration');
+    expect(within(historyTable()).getByText('Solved monthly contribution')).toBeInTheDocument();
+  });
+
+  it('preserves legacy reports, labels the old policy and warns that rerunning uses the new policy', async () => {
+    const server = mockServer(); const legacy = generatedCalibration();
+    legacy.generation = { method: 'training_quantiles_independent_streams', version: 1, target_simulation_paths: 10000,
+      capital_min_eur: '1000.00', capital_max_eur: '100000.00', monthly_min_eur: '0.00', monthly_max_eur: '1000.00',
+      probability_min: 0.01, probability_max: 0.99 };
+    delete legacy.settings.simulation_method; delete legacy.settings.block_size;
+    const run = server.save(legacy);
+    expect(validCalibrationResult(run)).toBe(true);
+    expect(validCalibrationResult(run, expectedBody, buyAndHold)).toBe(false);
+    await open({ route: reportRoute(run.id) });
+    expect(result()).toHaveTextContent('Legacy evaluation: targets were selected from simulated wealth');
+    await follow('Run again');
+    expect(screen.getByRole('note')).toHaveTextContent('its scenarios and scores will differ even with the same seed');
+    await submit();
+    expect(result()).toHaveTextContent('Random starting capital, a higher EUR goal');
+    expect(server.runs.get(run.id)).toEqual(run);
+  });
+
+  it('rejects goals below capital, unknown policy versions and accepts solved contributions above the former random-funding cap', () => {
+    const run = generatedCalibration();
+    run.forecasts[0].monthly_contribution_eur = '1001.00';
+    expect(validCalibrationResult(run)).toBe(true);
+    run.forecasts[0].goal_eur = run.forecasts[0].starting_capital_eur;
+    expect(validCalibrationResult(run)).toBe(false);
+    const unknown = generatedCalibration(); unknown.generation.version = 3;
+    expect(validCalibrationResult(unknown)).toBe(false);
+    expect(validCalibrationRunSummary(summary(unknown))).toBe(false);
   });
 });
 
@@ -670,7 +713,7 @@ describe('input and pure contract validation', () => {
       (data) => { data.forecasts[1].scenario_id = data.forecasts[0].scenario_id; },
       ...['0.00', '-1', 'NaN', 15000, null].map((value) => (data) => { data.forecasts[0].goal_eur = value; }),
       ...['999.99', '100000.01', 1000].map((value) => (data) => { data.forecasts[0].starting_capital_eur = value; }),
-      ...['-0.01', '1000.01', 0].map((value) => (data) => { data.forecasts[0].monthly_contribution_eur = value; }),
+      ...['-0.01', '1000000000000.01', 0].map((value) => (data) => { data.forecasts[0].monthly_contribution_eur = value; }),
       ...[2, 25, 3.5, '3'].map((value) => (data) => { data.forecasts[0].horizon_months = value; }),
       ...[0, 1, '0.5', NaN].map((value) => (data) => { data.forecasts[0].requested_probability = value; }),
       (data) => { data.forecasts[0].predicted_probability = 1.1; }, (data) => { data.forecasts[0].terminal_value_eur = 'NaN'; },
@@ -686,7 +729,7 @@ describe('input and pure contract validation', () => {
       ...[undefined, 'yesterday', '2026-02-30T00:00:00Z', '2026-01-01T25:00:00Z', '2026-01-01T01:00:00+01:00'].map((value) => (data) => { data.calculated_at = value; }),
     ];
     for (const mutate of mutations) { const data = structuredClone(valid); mutate(data); expect(validCalibrationResult(data, body, buyAndHold)).toBe(false); }
-    for (const key of Object.keys(summary(valid)).filter((key) => !['id', 'strategy_name'].includes(key))) {
+    for (const key of Object.keys(summary(valid)).filter((key) => !['id', 'strategy_name', 'generation'].includes(key))) {
       const data = summary(valid); delete data[key]; expect(validCalibrationSummary(data, buyAndHold)).toBe(false);
     }
     const perfect = generatedCalibration(body, 10, true); expect(validCalibrationResult(perfect, body)).toBe(true);
@@ -701,7 +744,9 @@ describe('input and pure contract validation', () => {
       expect(validCalibrationRunSummary({ ...valid, id })).toBe(false);
     }
     for (const strategy_name of [undefined, null, 1, '', ' \t ']) expect(validCalibrationRunSummary({ ...valid, strategy_name })).toBe(false);
-    for (const key of Object.keys(valid)) { const data = structuredClone(valid); delete data[key]; expect(validCalibrationRunSummary(data)).toBe(false); }
+    for (const key of Object.keys(valid).filter((key) => key !== 'generation')) { const data = structuredClone(valid); delete data[key]; expect(validCalibrationRunSummary(data)).toBe(false); }
+    const olderSummary = structuredClone(valid); delete olderSummary.generation;
+    expect(validCalibrationRunSummary(olderSummary)).toBe(true);
     for (const strategy of [null, [], { id: '', parameters: {} }, { id: 'retired', parameters: { instrument: null } }]) {
       expect(validCalibrationRunSummary({ ...valid, strategy })).toBe(false);
     }
@@ -763,12 +808,12 @@ describe('saved report chart, metrics and bounded audit', () => {
     for (const [label, value] of [['Mean predicted probability', '25%'], ['Observed success rate', '56%'],
       ['Monte Carlo paths per scenario', '10,000'], ['Available monthly origins', '36'],
       ['Saved history', '2021-01-01 – 2026-09-22'], ['Data snapshot (UTC)', saved.data_as_of],
-      ['Target-generation paths per scenario', '10,000'], ['History fingerprint', saved.history_fingerprint]]) {
+      ['Contribution-solver paths per scenario', '10,000'], ['History fingerprint', saved.history_fingerprint]]) {
       expect(metric(label)).toHaveTextContent(value);
     }
     const table = within(screen.getByRole('table', { name: 'Per-scenario audit' }));
     expect(table.getAllByRole('columnheader').map((item) => item.textContent)).toEqual(['Scenario ID', 'Target (EUR)', 'Starting capital (EUR)',
-      'Monthly contribution (EUR)', 'Horizon (months)', 'Requested probability', 'Forecast origin', 'Goal date', 'Training start', 'Training end',
+      'Solved EUR/month', 'Horizon (months)', 'Requested probability', 'Forecast origin', 'Goal date', 'Training start', 'Training end',
       'Training returns', 'Price basis', 'Actual predicted probability', 'Observed success', 'Terminal value (EUR)', 'Valuation date']);
     const row = table.getByRole('rowheader', { name: 'scenario-1' }).closest('tr');
     const cells = within(row).getAllByRole('cell').map((cell) => cell.textContent);

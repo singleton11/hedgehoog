@@ -1,4 +1,4 @@
-"""Seeded, probability-spanning scenarios from training data, never outcomes."""
+"""Independent seeded goals, training-only funding solves and held-out replay."""
 
 from bisect import bisect_left
 from collections import Counter, defaultdict
@@ -13,16 +13,16 @@ from goal_calibration import (
     calibration_metrics, calibration_warnings, is_eur_history, monthly_origins,
     reaches_goal, realized_value,
 )
-from goal_simulation import MAX_MONEY, PATHS, add_months, money_string, period_factors
+from goal_simulation import PATHS, add_months, money_string, period_factors, required_contribution
 from return_statistics import MIN_RETURNS, calculate_daily_statistics, calculate_statistics, positive_price
 
-# Disjoint domains: scheduling, scenario parameters, goal design and validation.
-SCHEDULE_STREAM, SCENARIO_STREAM, TARGET_STREAM, PREDICTION_STREAM = 149, 150, 151, 152
+# Disjoint domains: scheduling, scenario parameters, funding solver and validation.
+SCHEDULE_STREAM, SCENARIO_STREAM, SOLVER_STREAM, PREDICTION_STREAM = 149, 150, 151, 152
 MAX_GENERATED_PERIODS = 30_000  # Includes BOTH independent Monte Carlo streams.
 GENERATION = {
-    "method": "training_quantiles_independent_streams", "version": 1, "target_simulation_paths": PATHS,
+    "method": "independent_goals_contribution_solver", "version": 2, "solver_simulation_paths": PATHS,
     "capital_min_eur": "1000.00", "capital_max_eur": "100000.00",
-    "monthly_min_eur": "0.00", "monthly_max_eur": "1000.00",
+    "goal_max_eur": "1000000.00", "goal_rule": "above_starting_capital",
     "probability_min": 0.01, "probability_max": 0.99,
 }
 
@@ -31,7 +31,7 @@ GENERATION = {
 class GeneratedScenario:
     id: str
     capital: Decimal
-    monthly: Decimal
+    goal: Decimal
     horizon: int
     requested_probability: float
 
@@ -66,10 +66,11 @@ def plan_scenarios(dates, origins, body: RandomCalibrationInputs, seed):
         # Cycle across ten probability strata at each historical origin. These
         # are requested design rates, not fabricated forecast probabilities.
         bucket = (day.toordinal() + local_index) % 10
+        capital_cents = int(draws.integers(100_000, 10_000_001))
         groups[index].append(GeneratedScenario(
             id=f"{day.isoformat()}:{local_index + 1}",
-            capital=Decimal(int(draws.integers(100_000, 10_000_001))) / 100,
-            monthly=Decimal(int(draws.integers(0, 100_001))) / 100,
+            capital=Decimal(capital_cents) / 100,
+            goal=Decimal(int(draws.integers(capital_cents + 1, 100_000_001))) / 100,
             horizon=int(draws.integers(body.min_horizon_months, max_horizons[index] + 1)),
             requested_probability=float(draws.uniform(max(bucket / 10, 0.01), min((bucket + 1) / 10, 0.99))),
         ))
@@ -77,14 +78,6 @@ def plan_scenarios(dates, origins, body: RandomCalibrationInputs, seed):
     if periods > MAX_GENERATED_PERIODS:
         raise md.DataError(422, "Generated calibration exceeds 30,000 simulated monthly periods across both streams. Reduce the scenario count, maximum horizon or forecast date range.")
     return groups, len(available)
-
-
-def generated_goal(wealth, probability):
-    """Choose a cent-denominated goal from a training-only pilot distribution."""
-    goal = Decimal(money_string(float(np.quantile(wealth, 1 - probability, method="linear"))))
-    if goal <= 0 or goal > MAX_MONEY:
-        raise UnscorableOutcome("generated_goal_out_of_bounds")
-    return goal
 
 
 def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, override=None, paths=PATHS):
@@ -132,34 +125,33 @@ def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, overri
                                   np.random.SeedSequence([seed, origin.toordinal(), domain]),
                                   **({"return_runs": return_runs, "block_size": body.block_size}
                                      if body.simulation_method == "block_bootstrap" else {}))
-                   for domain in (TARGET_STREAM, PREDICTION_STREAM)]
-        target_growth, target_annuity = np.ones(paths), np.zeros(paths)
+                   for domain in (SOLVER_STREAM, PREDICTION_STREAM)]
+        solver_growth, solver_annuity = np.ones(paths), np.zeros(paths)
         prediction_growth, prediction_annuity = np.ones(paths), np.zeros(paths)
         try:
             with np.errstate(over="raise", invalid="raise", divide="raise"):
                 # Reuse the two date-local growth streams for every funding
                 # combination, with O(paths) working memory, not N full runs.
-                for month, (target_step, prediction_step) in enumerate(zip(*streams), 1):
-                    target_growth *= target_step[2]
-                    target_annuity = target_annuity * target_step[2] + 1
+                for month, (solver_step, prediction_step) in enumerate(zip(*streams), 1):
+                    solver_growth *= solver_step[2]
+                    solver_annuity = solver_annuity * solver_step[2] + 1
                     prediction_growth *= prediction_step[2]
                     prediction_annuity = prediction_annuity * prediction_step[2] + 1
                     for scenario in by_horizon[month]:
-                        target_wealth = float(scenario.capital) * target_growth + float(scenario.monthly) * target_annuity
-                        predicted_wealth = float(scenario.capital) * prediction_growth + float(scenario.monthly) * prediction_annuity
-                        if not np.all(np.isfinite(target_wealth)) or not np.all(np.isfinite(predicted_wealth)):
+                        goal = scenario.goal
+                        monthly, _ = required_contribution(
+                            solver_growth, solver_annuity, scenario.capital, goal, scenario.requested_probability)
+                        predicted_wealth = float(scenario.capital) * prediction_growth + float(monthly) * prediction_annuity
+                        if not np.all(np.isfinite(predicted_wealth)):
                             raise FloatingPointError
-                        try:
-                            goal = generated_goal(target_wealth, scenario.requested_probability)
-                        except UnscorableOutcome as error:
-                            exclude([scenario], str(error))
-                            continue
-                        probability = float(np.mean(reaches_goal(predicted_wealth, goal)))
+                        # Match the planner's strict simulated-wealth threshold;
+                        # never substitute the requested rate for this estimate.
+                        probability = float(np.mean(predicted_wealth >= float(goal)))
                         fixed = CalibrationInputs(goal_eur=goal, starting_capital_eur=scenario.capital,
-                                                  monthly_contribution_eur=scenario.monthly, horizon_months=month,
+                                                  monthly_contribution_eur=monthly, horizon_months=month,
                                                   lookback_months=body.lookback_months)
                         goal_date = add_months(origin, month)
-                        # Goal selection and validation probability are frozen
+                        # Goal, solved funding and validation probability are frozen
                         # before the first read of this case's held-out outcome.
                         try:
                             terminal, valuation_date = realized_value(rows, dates, index, goal_date, basis, fixed, override)
@@ -171,7 +163,7 @@ def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, overri
                             "training_start_date": training[0]["date"], "training_end_date": training[-1]["date"],
                             "training_return_count": estimates["return_count"], "price_basis": basis,
                             "goal_eur": money_string(goal), "starting_capital_eur": money_string(scenario.capital),
-                            "monthly_contribution_eur": money_string(scenario.monthly), "horizon_months": month,
+                            "monthly_contribution_eur": money_string(monthly), "horizon_months": month,
                             "requested_probability": scenario.requested_probability, "predicted_probability": probability,
                             "observed_success": reaches_goal(terminal, goal), "terminal_value_eur": money_string(terminal),
                             "valuation_date": valuation_date.isoformat(),
@@ -194,8 +186,8 @@ def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, overri
                                     quality_warning=quality_warning, override=override,
                                     simulation_method=body.simulation_method, block_size=body.block_size)
     warnings.extend([
-        "Generated scenarios are allocated evenly across calendar-eligible origins with a seeded random remainder. Capital and monthly funding are uniform in cents over the displayed ranges; horizons are uniform over the requested range that fits saved calendar coverage. No later price values or outcomes select scenarios, and unavailable cases are not replaced.",
-        "Requested success rates cycle across ten strata spanning 1%–99%. Targets come from training-only simulated wealth quantiles; probabilities are measured on a separate independent simulation stream using the selected method. Rounding and flat histories can prevent the actual probabilities from spanning all bins; requested rates are not reported as predictions.",
+        "Generated scenarios are allocated evenly across calendar-eligible origins with a seeded random remainder. Starting capital is uniform in cents from EUR 1,000 to EUR 100,000; goals are uniform in cents from starting capital plus EUR 0.01 to EUR 1,000,000. Horizons are uniform over the requested range that fits saved calendar coverage. Scenario inputs are independent of the simulation method and price values or outcomes; unavailable cases are not replaced.",
+        "Requested success rates cycle across ten strata spanning 1%–99%. The selected method solves EUR/month with the planner's contribution quantile and upward cent rounding on one training-only simulation stream. A second independent stream estimates success with that frozen funding before historical replay. Rounding and flat histories can prevent actual probabilities from spanning all bins; requested rates are not reported as predictions.",
         "Many scenarios reuse the same historical paths and date-local simulations. Scored scenarios are NOT independent market observations. More scenarios improve probability-range coverage, not the amount of historical evidence; inspect the distinct historical-origin count.",
         "Scores weight each scored generated scenario equally and describe this generator's mix of targets, funding and horizons; they are not directly comparable across different generation policies.",
     ])
@@ -209,7 +201,7 @@ def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, overri
         "settings": body.public_settings(), "seed": seed, "simulation_paths": paths, "method": "walk_forward",
         "history_first_date": rows[0]["date"], "history_last_date": rows[-1]["date"],
         "candidate_count": body.scenario_count, "available_origin_count": available_origins, "origin_count": origin_count,
-        "generation": {**GENERATION, "target_simulation_paths": paths},
+        "generation": {**GENERATION, "solver_simulation_paths": paths},
         "skipped_counts": counts, "excluded_origins": excluded, **metrics,
         "forecasts": forecasts, "warnings": warnings,
     }

@@ -40,7 +40,10 @@ def _run_document(user_id, strategy_id, result, order, run_id, strategy_name):
     full = {**result, "id": run_id, "strategy_name": strategy_name}
     return {
         "_id": run_id, "user_id": str(user_id), "strategy_id": strategy_id, "order": order,
-        "result": full, "summary": {field: full[field] for field in SUMMARY_FIELDS},
+        "result": full, "summary": {
+            **{field: full[field] for field in SUMMARY_FIELDS},
+            **({"generation": full["generation"]} if "generation" in full else {}),
+        },
     }
 
 

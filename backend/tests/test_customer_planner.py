@@ -229,7 +229,7 @@ def test_goal_money_horizon_and_fixed_only_fields_are_validated(api, db, change)
 
 @pytest.mark.parametrize("change", [
     {"starting_capital_eur": value} for value in ("-1", "NaN", "Infinity", "1000000000000.01", "1.001", True)
-] + [{"reliability": value} for value in (0.499, 1, "NaN", "Infinity")]
+] + [{"reliability": value} for value in (0.009, 1, "NaN", "Infinity")]
   + [{"goal_eur": "999"}, {"goal_date": "2040-01-01"}, {"name": "Another goal"}, {"result": {}}, {"paths": 1},
      {"strategy": {"id": "unknown", "parameters": {}}},
      {"strategy": {"id": STRATEGY, "parameters": {}}},
@@ -252,6 +252,21 @@ def test_simulation_requires_all_varying_inputs(planner, db, field):
     del body[field]
     assert client.post(url + "/simulate", json=body).status_code == 422
     assert db.planner_simulations.count_documents({}) == 0
+
+
+@pytest.mark.parametrize("reliability", [0.01, 0.25, 0.49, 0.99])
+def test_low_success_rates_match_standalone_and_survive_saved_plan(planner, reliability):
+    client, _, _, url = planner
+    standalone = client.post("/goals/simulate", json=request_body(reliability=reliability))
+    assert standalone.status_code == 200, standalone.text
+    preview = calculate(client, url, reliability=reliability)
+    assert preview["result"] == standalone.json()
+    saved = save(client, url, preview)
+    planned = client.post(f"{url}/simulations/{saved['id']}/plan")
+    assert planned.status_code == 200, planned.text
+    assert planned.json()["inputs"]["reliability"] == reliability
+    assert planned.json()["result"]["target_probability"] == reliability
+    assert client.get(f"{url}/simulations/{saved['id']}").json()["inputs"]["reliability"] == reliability
 
 
 def test_preview_exactly_matches_existing_simulation_and_save_is_not_recalculation(planner, db, clock, monkeypatch):
