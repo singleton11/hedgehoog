@@ -6,6 +6,13 @@ import pytest
 from etfs import ETF_SOURCE_URL
 
 
+@pytest.fixture(autouse=True)
+def automatic_refresh_producer(monkeypatch):
+    producer = Mock(return_value="test-refresh-task")
+    monkeypatch.setattr("main.enqueue_market_data_refresh", producer)
+    return producer
+
+
 @pytest.fixture
 def etf_records():
     return [

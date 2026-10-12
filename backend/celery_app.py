@@ -3,11 +3,13 @@
 import logging
 
 from celery import Celery
+from celery.schedules import crontab
 
 from config import TaskSettings
 
 ETF_IMPORT_TASK = "etfs.import_daily"
 ACQUISITION_TASK = "marketdata.acquire"
+MARKET_DATA_REFRESH_TASK = "marketdata.refresh_stale"
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +45,13 @@ def create_celery_app(settings: TaskSettings | None = None) -> Celery:
             "interval_step": 1,
             "interval_max": 1,
         },
+        beat_schedule={
+            "daily-market-data-refresh": {
+                "task": MARKET_DATA_REFRESH_TASK,
+                "schedule": crontab(hour=0, minute=0),
+                "options": {"queue": "etfs"},
+            },
+        },
         timezone="UTC",
         enable_utc=True,
     )
@@ -58,6 +67,13 @@ def enqueue_etf_import(settings: TaskSettings) -> str:
     with create_celery_app(settings) as producer:
         result = producer.send_task(ETF_IMPORT_TASK)
     logger.info("Queued ETF import task %s", result.id)
+    return result.id
+
+
+def enqueue_market_data_refresh(settings: TaskSettings) -> str:
+    with create_celery_app(settings) as producer:
+        result = producer.send_task(MARKET_DATA_REFRESH_TASK, queue="etfs")
+    logger.info("Queued market-data refresh sweep %s", result.id)
     return result.id
 
 
