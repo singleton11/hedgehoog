@@ -48,6 +48,36 @@ def login(client):
     assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
 
 
+def test_fresh_catalogue_matches_active_installation_indices(db):
+    catalogue = indices.list_indices(db)
+    assert {row["symbol"]: row["name"] for row in catalogue["items"]} == {
+        "^GSPC": "S&P 500",
+        "^990100-USD-STRD": "MSCI WORLD",
+        "DE000SLA1W63.SG": "Solactive European Overnight Money Market Index",
+        "DE000SL0H423.SG": "Solactive \u20acSTR Daily Total Return Index",
+    }
+    assert db.acquisition_jobs.count_documents({}) == 0
+    assert db.quotes.count_documents({}) == 0
+    assert db.instruments.count_documents({}) == 0
+
+
+def test_new_seed_preserves_existing_manual_record_and_removal(db):
+    identifier = "idx-" + str(uuid4())
+    record = {
+        "_id": identifier, "instrument_id": identifier, "symbol": "DE000SL0H423.SG",
+        "name": "User label", "currency": "EUR", "return_variant": "net_total_return",
+        "provenance": {"source": "manual", "added_by": "user"},
+    }
+    db.indices.insert_one(record)
+    indices.ensure_catalogue(db)
+    assert db.indices.find_one({"instrument_id": identifier}) == record
+    indices.remove_index(db, identifier, "user")
+    removed = db.indices.find_one({"instrument_id": identifier})
+    indices.ensure_catalogue(db)
+    assert db.indices.find_one({"instrument_id": identifier}) == removed
+    assert indices.list_indices(db)["total"] == 3
+
+
 def test_seed_is_idempotent_separate_and_stable(db):
     first = indices.list_indices(db)
     second = indices.list_indices(db)

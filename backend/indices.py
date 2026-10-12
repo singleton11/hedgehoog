@@ -17,8 +17,9 @@ SEED_NAMESPACE = UUID("da8a221b-8295-47f3-8293-cc89019dd179")
 # Labels are curated conveniences, not verified financial metadata. Return variants
 # must not be inferred from familiar display names.
 SEEDS = (("^GSPC", "S&P 500"),
-         ("^990100-USD-STRD", "MSCI World"),
-         ("DE000SLA1W63.SG", "Solactive European Overnight Money Market Index"))
+         ("^990100-USD-STRD", "MSCI WORLD"),
+         ("DE000SLA1W63.SG", "Solactive European Overnight Money Market Index"),
+         ("DE000SL0H423.SG", "Solactive \u20acSTR Daily Total Return Index"))
 
 
 def search_indices(settings, query, limit=15):

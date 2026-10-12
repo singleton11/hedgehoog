@@ -20,6 +20,8 @@ ISIN remains the application instrument ID, from the local ETF catalogue. An unc
 
 Yahoo also serves indices (for example `^990100-USD-STRD`). The separate **Indices** catalogue supports adding symbols and explicitly downloading history; indices remain excluded from ETF selectors.
 
+Fresh installations initialize four index catalogue entries: S&P 500 (`^GSPC`), MSCI WORLD (`^990100-USD-STRD`), Solactive European Overnight Money Market Index (`DE000SLA1W63.SG`), and Solactive €STR Daily Total Return Index (`DE000SL0H423.SG`). These offline defaults contain no downloaded history or verified currency/return metadata. Startup preserves existing records and does not restore removed entries; downloading prices still requires explicit confirmation.
+
 **Remove from catalogue** requires UI confirmation and removes an index from the shared catalogue for all users. The authenticated `DELETE /indices/{instrument_id}` endpoint is retry-safe (unknown IDs return 404). Removal retains a tombstone so curated seeds do not reappear on reads or restarts. Downloaded history, acquisition jobs and customer records are preserved; existing downloads are not cancelled. Removed indices cannot start new downloads or be read through index detail/quote endpoints. Explicitly adding the same Yahoo symbol restores the original identity, metadata and saved history.
 
 ## Full-history refresh and atomic visibility
