@@ -19,7 +19,7 @@ from auth import (
     set_session,
 )
 from calibration_results import ensure_indexes as ensure_calibration_indexes
-from celery_app import enqueue_etf_import
+from celery_app import enqueue_etf_import, enqueue_market_data_refresh
 from config import Settings
 from customer_planner import ensure_indexes as ensure_customer_planner_indexes, router as customer_planner_router
 from instrument_routes import router as instrument_router
@@ -50,6 +50,7 @@ def create_app(settings: Settings | None = None, client_factory=MongoClient) -> 
             await run_in_threadpool(ensure_manual_split_indexes, app.state.database)
             await run_in_threadpool(ensure_index_catalogue, app.state.database)
             await run_in_threadpool(enqueue_etf_import, config)
+            await run_in_threadpool(enqueue_market_data_refresh, config)
             yield
         finally:
             client.close()

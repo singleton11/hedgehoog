@@ -21,16 +21,16 @@ Passwords are stored as Argon2 hashes, never plaintext. The admin account is cre
 
 ```sh
 make setup          # Create .env only; edit it before first startup to change defaults
-make services-up    # Build/start MongoDB, RabbitMQ and Celery worker
+make services-up    # Build/start MongoDB, RabbitMQ, Celery worker and Beat scheduler
 make run-backend    # Start services and backend
 make run-frontend   # Start frontend only; backend must already be running
 make import-etfs    # Start services and enqueue an ETF import manually
-make services-down  # Stop worker, broker and MongoDB without deleting data
+make services-down  # Stop scheduler, worker, broker and MongoDB without deleting data
 make db-up          # Start MongoDB only (e.g. for database tests)
 make db-down        # Stop MongoDB only
 ```
 
-Ctrl+C stops the application servers, not the Docker services; queued imports can continue. Use `make services-down` to stop all three services. MongoDB listens only on `127.0.0.1:27017`, with authentication enabled. Changing MongoDB initialization credentials in `.env` does not change credentials in an existing volume; update the actual database user too. Keep `MONGODB_URI` in sync with those credentials (URL-encode special characters).
+Ctrl+C stops the application servers, not the Docker services; queued imports can continue. Use `make services-down` to stop all four services, including scheduled refreshes. MongoDB listens only on `127.0.0.1:27017`, with authentication enabled. Changing MongoDB initialization credentials in `.env` does not change credentials in an existing volume; update the actual database user too. Keep `MONGODB_URI` in sync with those credentials (URL-encode special characters).
 
 RabbitMQ's authenticated AMQP port (`5672`) and management UI (`15672`) also listen only on localhost. Broker state and persistent queued tasks live in `rabbitmq_data`; its stable hostname preserves the RabbitMQ node identity across container recreation. Changing `RABBITMQ_USER`/`RABBITMQ_PASSWORD` does not rotate users in an existing volume. Keep `CELERY_BROKER_URL` in sync with the broker credentials. Existing development `.env` files work with the new defaults without being rewritten.
 
@@ -79,7 +79,13 @@ docker compose exec celery-worker python -m celery -A celery_app:app call etfs.i
 docker compose logs -f celery-worker      # Watch imports/retries/failures
 ```
 
-Startup and explicit manual dispatch are the only catalogue-import triggers. There is no Celery Beat or scheduled refresh. A continuously running server will not automatically import at midnight.
+Startup and explicit manual dispatch remain the only ETF catalogue-import triggers. Celery Beat schedules market-data refreshes, not catalogue imports.
+
+### Automatic market-data refresh
+
+API startup queues a background freshness check for saved ETFs and every active index (including indices not yet acquired). Celery Beat runs the same check daily at **00:00 UTC**. Instruments whose selected-provider acquisition successfully finished less than **24 hours** ago are skipped; exactly 24 hours is stale. Failed refreshes do not reset freshness, removed indices are excluded, and the full ETF reference catalogue is not automatically downloaded.
+
+The sweep reuses existing acquisition jobs and their per-instrument active-job gate, so manual and automatic refreshes cannot duplicate an active download. Previous published history remains readable during refresh or failure. Provider errors are eligible again on the next sweep; database/queue failures receive bounded retries. Run exactly one Beat scheduler. It continues while Docker services are running, even after the development API stops. Use `docker compose logs celery-beat celery-worker` to inspect scheduling and results. See [the design contract](docs/on-demand-market-data.md) for details.
 
 ## On-demand instrument data
 
@@ -91,7 +97,7 @@ Choose **Add ETF** to open the dedicated search page (`#/add`), then search the 
 2. Explicitly authorize acquisition. An uncached listing is resolved using Yahoo Search and known exchange identifiers; the selected symbol/MIC and evidence are cached. This heuristic is not independent ISIN certification. A Yahoo symbol override is available before quotes exist, such as `SPYI.DE`; the worker detects the exchange from that exact symbol’s Yahoo metadata. Exchange MIC is an optional advanced override, not required knowledge. Once quotes are saved, the listing is fixed.
 3. **Request Data** queues `marketdata.acquire`. The worker saves metadata, daily chart evidence and split evidence from inception through the current UTC date; providers return only completed trading-day bars. Coverage is what Yahoo actually returns, not a promise of complete history.
 4. **Every Yahoo update refreshes full available history**, including older dates, because Yahoo can revise historical split/dividend adjustments. A completed generation is published as a whole; reads never splice its dates with another vintage. Failed/empty refreshes leave previous published data active.
-5. **Retry Older History** also performs a full refresh. If Yahoo lacks early history, it cannot invent it. Provider errors are sanitized and require an explicit retry; database interruptions resume persisted checkpoints.
+5. **Retry Older History** also performs a full refresh. If Yahoo lacks early history, it cannot invent it. Provider errors are sanitized and can be retried manually or by the next automatic sweep; database interruptions resume persisted checkpoints.
 
 `yfinance` is unofficial experimental access without an SLA. Free access does not grant commercial redistribution rights. Before onboarding customers, replace/license the provider (planned: EODHD) behind `backend/market_provider.py`. The legacy Marketstack adapter is retained only for explicit compatibility/testing; it is never an automatic paid fallback.
 

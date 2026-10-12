@@ -3,10 +3,11 @@
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
-from celery_app import ACQUISITION_TASK, ETF_IMPORT_TASK, app
+from celery_app import ACQUISITION_TASK, ETF_IMPORT_TASK, MARKET_DATA_REFRESH_TASK, app
 from config import TaskSettings
 from etfs import ETFImportError, import_etfs
-from market_data import JobBusy, run_acquisition
+from market_data import DataError, JobBusy, run_acquisition
+from market_data_refresh import refresh_stale_market_data
 
 
 @app.task(
@@ -25,6 +26,22 @@ def import_etfs_task() -> int:
         config.mongodb_uri.get_secret_value(), serverSelectionTimeoutMS=5000,
     ) as client:
         return import_etfs(client[config.mongodb_database])
+
+
+@app.task(
+    name=MARKET_DATA_REFRESH_TASK,
+    autoretry_for=(PyMongoError, DataError),
+    retry_backoff=30,
+    retry_backoff_max=600,
+    retry_jitter=True,
+    max_retries=5,
+)
+def refresh_market_data_task():
+    config = TaskSettings()
+    with MongoClient(
+        config.mongodb_uri.get_secret_value(), serverSelectionTimeoutMS=5000,
+    ) as client:
+        return refresh_stale_market_data(client[config.mongodb_database], config)
 
 
 @app.task(name=ACQUISITION_TASK, bind=True, max_retries=12, soft_time_limit=600, time_limit=660)

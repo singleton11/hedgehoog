@@ -136,17 +136,21 @@ def startup(monkeypatch):
     return settings, mongo, enqueue, seed, app
 
 
-def test_startup_only_enqueues_after_seed_and_serves_without_downloading(startup, etf_http_get):
+def test_startup_only_enqueues_after_seed_and_serves_without_downloading(
+    startup, etf_http_get, automatic_refresh_producer,
+):
     settings, mongo, enqueue, seed, app = startup
     events = Mock()
     events.attach_mock(mongo.admin.command, "ping")
     events.attach_mock(seed, "seed")
     events.attach_mock(enqueue, "enqueue")
+    events.attach_mock(automatic_refresh_producer, "refresh")
     etf_http_get.side_effect = httpx.ConnectError("offline")
 
     with TestClient(app) as client:
-        assert [call[0] for call in events.mock_calls] == ["ping", "seed", "enqueue"]
+        assert [call[0] for call in events.mock_calls] == ["ping", "seed", "enqueue", "refresh"]
         enqueue.assert_called_once_with(settings)
+        automatic_refresh_producer.assert_called_once_with(settings)
         assert client.get("/health").status_code == 200
         etf_http_get.assert_not_called()
         mongo.__getitem__.return_value.etfs.bulk_write.assert_not_called()
@@ -160,6 +164,16 @@ def test_broker_publish_failure_aborts_startup_and_closes_mongo(startup):
     with pytest.raises(OperationalError, match="broker unavailable"):
         with TestClient(app):
             pytest.fail("Startup must not silently lose the import request")
+    mongo.close.assert_called_once()
+
+
+def test_refresh_publish_failure_aborts_startup_and_closes_mongo(startup, automatic_refresh_producer):
+    _, mongo, enqueue, _, app = startup
+    automatic_refresh_producer.side_effect = OperationalError("refresh broker unavailable")
+    with pytest.raises(OperationalError, match="refresh broker unavailable"):
+        with TestClient(app):
+            pytest.fail("Startup must not silently lose the refresh request")
+    enqueue.assert_called_once()
     mongo.close.assert_called_once()
 
 

@@ -69,6 +69,19 @@ services:
       retries: 3
       start_period: 20s
 
+  celery-beat:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-hedgehoog}
+      MONGODB_URI: ${WORKER_MONGODB_URI:-mongodb://${MONGO_ROOT_USERNAME:-hedgehoog}:${MONGO_ROOT_PASSWORD:-hedgehoog-local}@mongodb:27017/?authSource=admin}
+      CELERY_BROKER_URL: ${WORKER_CELERY_BROKER_URL:-amqp://${RABBITMQ_USER:-hedgehoog}:${RABBITMQ_PASSWORD:-hedgehoog-local}@rabbitmq:5672//}
+    # Run exactly one scheduler; acquisition runs in the existing worker.
+    command: ["python", "-m", "celery", "-A", "celery_app:app", "beat", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
 volumes:
   mongodb_data:
   rabbitmq_data:
