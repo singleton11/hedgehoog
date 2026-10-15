@@ -10,6 +10,7 @@ from config import TaskSettings
 ETF_IMPORT_TASK = "etfs.import_daily"
 ACQUISITION_TASK = "marketdata.acquire"
 MARKET_DATA_REFRESH_TASK = "marketdata.refresh_stale"
+MARKET_DATA_REFRESH_HOUR = 2  # UTC; allow time for late-published daily closes.
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +49,7 @@ def create_celery_app(settings: TaskSettings | None = None) -> Celery:
         beat_schedule={
             "daily-market-data-refresh": {
                 "task": MARKET_DATA_REFRESH_TASK,
-                "schedule": crontab(hour=0, minute=0),
+                "schedule": crontab(hour=MARKET_DATA_REFRESH_HOUR, minute=0),
                 "options": {"queue": "etfs"},
             },
         },

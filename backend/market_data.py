@@ -433,7 +433,49 @@ def read_quotes(db, isin, limit=1000, offset=0, as_of=None, generation=None):
     return {"items": items, "total": result["count"][0]["total"] if result["count"] else 0, "limit": limit, "offset": offset, "as_of": snapshot, "generation": generation}
 
 
-def request_acquisition(db, settings, isin, listing, mode, requested_by, publish):
+def incremental_requires_full_history(db, job, page):
+    """Validate the shared boundary before combining Yahoo adjustment vintages."""
+    from split_adjustments import split_events
+    from yahoo_finance import splits_from_eod_page
+
+    if has_more_pages(page, len(page["data"])):
+        raise MarketDataError("incomplete_history", "The incremental Yahoo chart must contain the complete requested range.")
+    snapshot = db.split_snapshots.find_one({"_id": job["base_generation"]})
+    previous = db.quotes.find_one({"job_id": job["base_generation"], "date": job["date_from"]})
+    overlap = next((row for row in page["data"] if isinstance(row, dict) and quote_date(row.get("date")) == job["date_from"]), None)
+    if snapshot is None or previous is None:
+        return True
+    actions = splits_from_eod_page(page, job["listing"]["symbol"], job["date_from"], job["date_to"])
+    events = split_events([{"data": actions}], job["listing"], job["date_from"], job["date_to"])
+    expected = [event for event in snapshot["events"] if job["date_from"] <= event["date"] <= job["date_to"]]
+    if events != expected:
+        return True
+    if not page["data"]:
+        return False  # Successful empty check: retain history and record freshness.
+    if overlap is None:
+        return True
+    # Dividends may revise Adj Close even with unchanged OHLC. Quotes expose
+    # it too, so do not combine incompatible dividend-adjustment vintages.
+    for field in ("open", "high", "low", "close", "adj_close", "price_currency", "price_basis"):
+        old, new = previous["data"].get(field), overlap.get(field)
+        if field in ("price_currency", "price_basis"):
+            if old != new:
+                return True
+        else:
+            if old is None and new is None and field != "close":
+                continue
+            try:
+                if old is None or new is None or isinstance(old, bool) or isinstance(new, bool):
+                    return True
+                left, right = Decimal(str(old)), Decimal(str(new))
+                if not left.is_finite() or not right.is_finite() or left != right:
+                    return True
+            except (ArithmeticError, ValueError, TypeError):
+                return True
+    return False
+
+
+def request_acquisition(db, settings, isin, listing, mode, requested_by, publish, *, incremental=False):
     catalogue = require_market_catalogue(db, isin)
     is_index = isin.startswith("idx-")
     if is_index:
@@ -496,10 +538,13 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
     end = collection_date
     start = inception
     actual_mode = "initial"
+    base = published_history(db, isin, listing) if name == "yfinance" and incremental else None
     if name == "yfinance":
-        # Yahoo adjusts older prices after corporate actions. An append-only
-        # incremental merge would mix different adjustment vintages.
         actual_mode = "refresh"
+        usable_dates = [day for day in dates if day <= end.isoformat()]
+        if base and base.get("provider") == name and usable_dates:
+            actual_mode = "incremental"
+            start = date.fromisoformat(usable_dates[-1])  # Inclusive overlap detects changed adjustment vintages.
     elif mode == "backfill" and dates:
         actual_mode = "backfill"
         end = date.fromisoformat(dates[0]) - timedelta(days=1)
@@ -515,9 +560,11 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
         "provider": name, "price_basis": "provider_split_adjusted" if name == "yfinance" else "unadjusted",
         "requested_by": requested_by, "requested_at": utcnow(), "mode": actual_mode,
         "date_from": start.isoformat(), "date_to": end.isoformat(),
-        # Always refresh all actions, including on incremental/no-new-price
-        # updates and older-price backfills. Corrections may affect old quotes.
-        "splits_date_from": min(inception.isoformat(), dates[0]) if dates else inception.isoformat(),
+        **({"base_generation": base["_id"], "full_date_from": inception.isoformat()}
+           if actual_mode == "incremental" else {}),
+        # Manual Yahoo and legacy requests cover all actions. Automatic Yahoo
+        # diffs reuse earlier evidence and validate actions in the overlap.
+        "splits_date_from": start.isoformat() if actual_mode == "incremental" else min(inception.isoformat(), dates[0]) if dates else inception.isoformat(),
         "splits_date_to": max(inception.isoformat(), collection_date.isoformat()),
         "status": "queued", "active": True, "phase": "queued", "pages": 0, "rows": 0, "flagged_rows": 0, "unindexed_rows": 0, "calls": 0,
         "next_offset": 0, "expected_total": None, "started_at": None, "finished_at": None,
@@ -685,6 +732,33 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
                 profile = db.instruments.find_one({"job_id": job_id})
                 validate_index_identity(profile["data"], listing["symbol"])
             job = checkpoint({"phase": "quotes"})
+            if job.get("mode") == "incremental" and not job.get("incremental_checked"):
+                # Keep the probe even when its overlap requires a full refresh.
+                probe = db.raw_eod_pages.find_one({"job_id": job_id, "offset": -1})
+                if probe is None:
+                    page = provider.eod_page(listing["symbol"], listing["exchange"], job["date_from"], job["date_to"], offset=0)
+                    collected = utcnow()
+                    checkpoint()
+                    probe = db.raw_eod_pages.find_one_and_update(
+                        {"job_id": job_id, "offset": -1}, {"$setOnInsert": {
+                            "instrument_id": isin, **listing, "provider": name, "job_id": job_id,
+                            "offset": -1, "collected_at": collected,
+                            "collection_date": collected.date().isoformat(), "data": page,
+                        }}, upsert=True, return_document=ReturnDocument.AFTER,
+                    )
+                if job.get("instrument_kind") == "index":
+                    from yahoo_finance import validate_index_page
+                    validate_index_page(probe["data"], listing["symbol"])
+                if incremental_requires_full_history(db, job, probe["data"]):
+                    job = checkpoint({"mode": "refresh", "date_from": job["full_date_from"],
+                                      "splits_date_from": job["full_date_from"],
+                                      "incremental_checked": True, "full_refresh_reason": "Changed or missing overlap/corporate actions"})
+                else:
+                    checkpoint()
+                    db.raw_eod_pages.update_one({"job_id": job_id, "offset": 0}, {"$setOnInsert": {
+                        **{key: value for key, value in probe.items() if key != "_id"}, "offset": 0,
+                    }}, upsert=True)
+                    job = checkpoint({"incremental_checked": True})
             offset = job["next_offset"]
             latest_date = job.get("last_page_date")
             while job["date_from"] <= job["date_to"] and not job.get("download_complete"):
@@ -779,13 +853,33 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
             if db.split_snapshots.find_one({"_id": job_id}) is None:
                 events = split_events(db.raw_split_pages.find({"job_id": job_id}).sort("offset", ASCENDING), listing,
                                       job["splits_date_from"], job["splits_date_to"])
+                snapshot_start = job["splits_date_from"]
+                if job.get("mode") == "incremental":
+                    base_snapshot = db.split_snapshots.find_one({"_id": job["base_generation"]})
+                    if base_snapshot is None:
+                        raise MarketDataError("missing_action_evidence", "The previous history has no split snapshot. Request full history again.")
+                    events = [event for event in base_snapshot["events"] if event["date"] < snapshot_start] + events
+                    snapshot_start = base_snapshot["date_from"]
                 checkpoint()
                 db.split_snapshots.update_one({"_id": job_id}, {"$setOnInsert": {
                     "instrument_id": isin, **listing, "job_id": job_id, "provider": name,
                     "collected_at": utcnow(), "requested_at": job["requested_at"],
-                    "date_from": job["splits_date_from"], "date_to": job["splits_date_to"], "events": events,
+                    "date_from": snapshot_start, "date_to": job["splits_date_to"], "events": events,
                 }}, upsert=True)
         if name == "yfinance":
+            if job.get("mode") == "incremental":
+                # Materialize a complete immutable generation without changing
+                # previous observations or their original collection times.
+                for index, observation in enumerate(db.quotes.find({
+                    **listing_filter(isin, listing), "provider": name,
+                    "job_id": job["base_generation"],
+                })):
+                    if index % 100 == 0:
+                        checkpoint()
+                    db.quotes.update_one({"job_id": job_id, "date": observation["date"]}, {"$setOnInsert": {
+                        **{key: value for key, value in observation.items() if key != "_id"},
+                        "job_id": job_id, "source_job_id": observation.get("source_job_id", observation["job_id"]),
+                    }}, upsert=True)
             if not db.quotes.find_one({"job_id": job_id}):
                 raise MarketDataError("empty_history", "Yahoo returned no daily historical quotes for this symbol and requested dates. A searchable symbol does not guarantee downloadable history. Previous saved history remains active.")
             checkpoint({"phase": "publishing"})

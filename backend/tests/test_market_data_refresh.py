@@ -48,7 +48,7 @@ def index(db, identifier="idx-example", *, removed=False):
 def success(db, identifier, finished_at, **extra):
     db.acquisition_jobs.insert_one({"instrument_id": identifier, "status": "succeeded",
                                    "provider": "yfinance", "published": True,
-                                   "finished_at": finished_at, **extra})
+                                   "finished_at": finished_at, "date_to": finished_at.date().isoformat(), **extra})
 
 
 def sweep(db, publish=None):
@@ -72,14 +72,31 @@ def test_scope_includes_all_saved_etfs_and_unacquired_active_indices(db):
     assert all(job["mode"] == "refresh" for job in jobs)
 
 
-@pytest.mark.parametrize("age,fresh", [(23, True), (24, False), (25, False)])
-def test_successful_refresh_age_has_exact_24_hour_boundary(db, age, fresh):
+@pytest.mark.parametrize("age,fresh", [(0, True), (10, True), (11, False), (13, False), (23, False), (24, False)])
+def test_successful_refresh_checks_current_scheduled_window(db, age, fresh):
     identifier = saved_etf(db)
     # Deliberately naive: MongoDB normally returns UTC without a tzinfo.
     success(db, identifier, (NOW - timedelta(hours=age)).replace(tzinfo=None))
     result = sweep(db)
     assert result["fresh"] == int(fresh)
     assert result["requested"] == int(not fresh)
+
+
+@pytest.mark.parametrize("check_hour,run_hour,fresh", [(0, 1, True), (1, 1, True), (1, 2, False), (2, 2, True), (2, 12, True)])
+def test_early_restart_does_not_suppress_02_utc_refresh(db, check_hour, run_hour, fresh):
+    identifier = saved_etf(db)
+    checked = NOW.replace(hour=check_hour)
+    success(db, identifier, checked, requested_at=checked)
+    result = refresh_stale_market_data(db, TaskSettings(_env_file=None),
+                                      now=NOW.replace(hour=run_hour), publish=Mock())
+    assert result["fresh"] == int(fresh)
+    assert result["requested"] == int(not fresh)
+
+
+def test_job_started_before_02_but_finished_after_does_not_suppress_refresh(db):
+    identifier = saved_etf(db)
+    success(db, identifier, NOW.replace(hour=3), requested_at=NOW.replace(hour=1))
+    assert sweep(db)["requested"] == 1
 
 
 def test_failed_or_unpublished_jobs_do_not_make_data_fresh(db):
@@ -93,6 +110,33 @@ def test_failed_or_unpublished_jobs_do_not_make_data_fresh(db):
 def test_success_from_another_provider_does_not_make_data_fresh(db):
     identifier = saved_etf(db)
     success(db, identifier, NOW, provider="marketstack")
+    assert sweep(db)["requested"] == 1
+
+
+def test_recent_success_must_have_checked_through_today(db):
+    identifier = saved_etf(db)
+    success(db, identifier, NOW, date_to="2026-10-09")
+    assert sweep(db)["requested"] == 1
+
+
+@pytest.mark.parametrize("hour,fresh", [(1, False), (2, True)])
+def test_published_quote_must_also_belong_to_current_scheduled_window(db, hour, fresh):
+    identifier = saved_etf(db)
+    listing = db.instrument_state.find_one({"_id": identifier})["listing"]
+    success(db, identifier, NOW, _id="published", listing=listing, status="running",
+            requested_at=NOW.replace(hour=hour), published_at=NOW)
+    db.quotes.insert_one({"instrument_id": identifier, **listing, "provider": "yfinance",
+                          "job_id": "published", "date": NOW.date().isoformat()})
+    result = sweep(db)
+    assert result["fresh"] == int(fresh)
+    assert result["requested"] == int(not fresh)
+
+
+def test_unpublished_quote_for_today_does_not_skip_download(db):
+    identifier = saved_etf(db)
+    listing = db.instrument_state.find_one({"_id": identifier})["listing"]
+    db.quotes.insert_one({"instrument_id": identifier, **listing, "provider": "yfinance",
+                          "job_id": "failed", "date": NOW.date().isoformat()})
     assert sweep(db)["requested"] == 1
 
 
@@ -146,7 +190,7 @@ def test_daily_beat_configuration_and_startup_message(monkeypatch):
         entry = app.conf.beat_schedule["daily-market-data-refresh"]
         assert entry["task"] == MARKET_DATA_REFRESH_TASK
         assert entry["options"] == {"queue": "etfs"}
-        assert entry["schedule"].hour == {0}
+        assert entry["schedule"].hour == {2}
         assert entry["schedule"].minute == {0}
         assert app.conf.timezone == "UTC"
     producer = MagicMock()
