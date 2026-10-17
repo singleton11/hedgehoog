@@ -66,8 +66,10 @@ export function historicalReturnTitle(statistics) {
     ? 'Split-adjusted closes; cash distributions are not reinvested'
     : statistics.historical_year_price_basis === 'adj_close'
       ? 'Adjusted closes' : 'Unadjusted closes; splits and distributions may affect the return';
+  const stale = statistics.historical_year_carried_from_date
+    ? ` Stale last valid close from ${statistics.historical_year_carried_from_date}; trailing missing closes count as zero price returns.` : '';
   return percent(statistics.historical_year_return) !== 'Unavailable'
-    ? `${statistics.historical_year_start_date} – ${statistics.historical_year_end_date}. ${basis}.`
+    ? `${statistics.historical_year_start_date} – ${statistics.historical_year_end_date}. ${basis}.${stale}`
     : 'Requires comparable, positive endpoint prices covering a full year, with a start quote no more than 7 days before the anniversary.';
 }
 

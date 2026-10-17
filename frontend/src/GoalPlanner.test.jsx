@@ -816,6 +816,19 @@ describe('detail statistics refresh', () => {
       '2025-09-16 – 2026-09-16. Unadjusted closes; splits and distributions may affect the return.');
   });
 
+  it('shows the stale annual-return source date without hiding its warning', async () => {
+    const server = mockServer();
+    const warning = 'Historical annual return uses a stale last valid close from 2026-09-15 through 2026-09-16; trailing missing closes count as zero price returns.';
+    server.stats = async () => statistics(A, { historical_year_carried_from_date: '2026-09-15', warnings: [warning] });
+    render(<ReturnStatistics isin={A} />);
+    await flush();
+    const historical = within(screen.getByText('Historical annual return').closest('div')).getByText('+12%');
+    expect(historical).toHaveAttribute('title', expect.stringContaining('Stale last valid close from 2026-09-15'));
+    expect(screen.getByRole('list', { name: 'Statistics warnings' })).toHaveTextContent(warning);
+    expect(screen.getByText('+10.08%')).toBeInTheDocument();
+    expect(posts()).toHaveLength(0);
+  });
+
   it('does not substitute annualized statistics when historical annual return is unavailable', async () => {
     const server = mockServer();
     server.stats = async () => statistics(A, { historical_year_return: null });
