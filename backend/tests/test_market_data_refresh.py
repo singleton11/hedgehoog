@@ -72,6 +72,37 @@ def test_scope_includes_all_saved_etfs_and_unacquired_active_indices(db):
     assert all(job["mode"] == "refresh" for job in jobs)
 
 
+def test_startup_catalogue_sweep_includes_unacquired_failed_and_historical_entries_once(db):
+    saved = saved_etf(db)
+    failed = saved_etf(db, "IE9999999999", published=False)
+    for day in ("2026-10-09", "2026-10-10"):
+        db.etfs.insert_one({"isin": "IE8888888888", "ticker": "NEW",
+                            "inception_date": "2020-01-01", "import_date": day})
+    index(db)
+    index(db, "idx-removed", removed=True)
+    publish = Mock()
+    settings = TaskSettings(_env_file=None)
+    for _ in range(2):
+        result = refresh_stale_market_data(db, settings, now=NOW, publish=publish,
+                                          include_catalogue=True)
+        assert result == {"requested": 4, "fresh": 0, "skipped": 0, "errors": 0}
+    assert publish.call_count == 4
+    assert set(db.acquisition_jobs.distinct("instrument_id")) == {
+        saved, failed, "IE8888888888", "idx-example",
+    }
+
+
+def test_startup_catalogue_sweep_reuses_fresh_success_and_isolates_invalid_entries(db):
+    identifier = saved_etf(db)
+    success(db, identifier, NOW)
+    db.etfs.insert_one({"isin": "IE8888888888", "ticker": "INVALID"})
+    db.etfs.insert_one({"isin": "IE7777777777", "ticker": "NEW",
+                        "inception_date": "2020-01-01"})
+    result = refresh_stale_market_data(db, TaskSettings(_env_file=None), now=NOW,
+                                      publish=Mock(), include_catalogue=True)
+    assert result == {"requested": 1, "fresh": 1, "skipped": 1, "errors": 0}
+
+
 @pytest.mark.parametrize("age,fresh", [(0, True), (10, True), (11, False), (13, False), (23, False), (24, False)])
 def test_successful_refresh_checks_current_scheduled_window(db, age, fresh):
     identifier = saved_etf(db)
@@ -203,7 +234,20 @@ def test_daily_beat_configuration_and_startup_message(monkeypatch):
     producer.send_task.assert_called_once_with(MARKET_DATA_REFRESH_TASK, queue="etfs")
 
 
-def test_worker_owns_client_and_calls_sweep(monkeypatch):
+def test_catalogue_sweep_message_preserves_scope(monkeypatch):
+    settings = TaskSettings(_env_file=None)
+    producer = MagicMock()
+    producer.__enter__.return_value = producer
+    producer.send_task.return_value.id = "catalogue-refresh-id"
+    monkeypatch.setattr("celery_app.create_celery_app", Mock(return_value=producer))
+    assert enqueue_market_data_refresh(settings, include_catalogue=True) == "catalogue-refresh-id"
+    producer.send_task.assert_called_once_with(
+        MARKET_DATA_REFRESH_TASK, queue="etfs", kwargs={"include_catalogue": True},
+    )
+
+
+@pytest.mark.parametrize("include_catalogue", [False, True])
+def test_worker_owns_client_and_calls_sweep(monkeypatch, include_catalogue):
     settings = TaskSettings(_env_file=None)
     monkeypatch.setattr("tasks.TaskSettings", lambda: settings)
     mongo = MagicMock()
@@ -211,8 +255,9 @@ def test_worker_owns_client_and_calls_sweep(monkeypatch):
     monkeypatch.setattr("tasks.MongoClient", Mock(return_value=mongo))
     refresh = Mock(return_value={"requested": 2})
     monkeypatch.setattr("tasks.refresh_stale_market_data", refresh)
-    assert refresh_market_data_task() == {"requested": 2}
-    refresh.assert_called_once_with(mongo[settings.mongodb_database], settings)
+    assert refresh_market_data_task(include_catalogue=include_catalogue) == {"requested": 2}
+    options = {"include_catalogue": True} if include_catalogue else {}
+    refresh.assert_called_once_with(mongo[settings.mongodb_database], settings, **options)
     mongo.__exit__.assert_called_once_with(None, None, None)
     assert refresh_market_data_task.name == MARKET_DATA_REFRESH_TASK
     assert refresh_market_data_task.max_retries == 5

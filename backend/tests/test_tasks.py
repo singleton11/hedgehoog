@@ -63,12 +63,19 @@ def test_enqueue_uses_instance_settings_without_sending_database_or_credentials(
 
 
 @pytest.mark.parametrize("count", [2, 0])
-def test_task_owns_mongo_client_and_returns_import_or_skip_count(task_mongo, monkeypatch, count):
+def test_task_owns_mongo_client_and_returns_import_or_skip_count(
+    task_mongo, monkeypatch, count, automatic_refresh_producer,
+):
     settings, mongo, factory = task_mongo
-    importer = Mock(return_value=count)
+    def imported(database):
+        automatic_refresh_producer.assert_not_called()
+        return count
+
+    importer = Mock(side_effect=imported)
     monkeypatch.setattr("tasks.import_etfs", importer)
 
     assert import_etfs_task() == count
+    automatic_refresh_producer.assert_called_once_with(settings, include_catalogue=True)
     factory.assert_called_once_with("mongodb://worker-db:27017", serverSelectionTimeoutMS=5000)
     mongo.__getitem__.assert_called_once_with(settings.mongodb_database)
     importer.assert_called_once_with(mongo.__getitem__.return_value)
@@ -111,6 +118,33 @@ def test_task_stops_retrying_after_limit(task_mongo, monkeypatch):
     finally:
         import_etfs_task.pop_request()
     mongo.__exit__.assert_called_once()
+
+
+def test_catalogue_sweep_dispatch_failure_retries_completed_import(
+    task_mongo, monkeypatch, automatic_refresh_producer,
+):
+    settings, mongo, _ = task_mongo
+    importer = Mock(side_effect=[2, 0])
+    monkeypatch.setattr("tasks.import_etfs", importer)
+    error = OperationalError("broker unavailable")
+    automatic_refresh_producer.side_effect = [error, "queued"]
+    monkeypatch.setattr(import_etfs_task, "retry", Mock(side_effect=Retry(exc=error)))
+    with pytest.raises(Retry):
+        import_etfs_task()
+    mongo.__exit__.assert_called_once()
+    assert import_etfs_task() == 0
+    assert importer.call_count == 2
+    assert automatic_refresh_producer.call_count == 2
+    automatic_refresh_producer.assert_called_with(settings, include_catalogue=True)
+
+
+def test_failed_import_does_not_dispatch_catalogue_sweep(
+    task_mongo, monkeypatch, automatic_refresh_producer,
+):
+    monkeypatch.setattr("tasks.import_etfs", Mock(side_effect=TypeError("bug")))
+    with pytest.raises(TypeError):
+        import_etfs_task()
+    automatic_refresh_producer.assert_not_called()
 
 
 def test_unexpected_programming_error_is_not_retried(task_mongo, monkeypatch):
