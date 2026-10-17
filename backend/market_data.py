@@ -140,12 +140,14 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None):
 
     pipeline = [
         {"$match": {"instrument_id": {"$not": {"$regex": "^idx-"}}, "$or": [{"provider": {"$ne": "yfinance"}}, {"published": True}]}},
-        {"$project": {"instrument_id": 1, "symbol": 1, "exchange": 1, "collected_at": 1, "job_id": 1, "provider": 1}},
+        {"$project": {"instrument_id": 1, "symbol": 1, "exchange": 1, "collected_at": 1, "job_id": 1, "provider": 1, "asset_class": 1, "index": 1}},
         {"$sort": {"instrument_id": 1, "collected_at": -1, "_id": -1}},
         {"$group": {
             "_id": "$instrument_id",
             "listing": {"$first": {"symbol": "$symbol", "exchange": "$exchange"}},
             "collected_at": {"$first": "$collected_at"},
+            "asset_class": {"$first": "$asset_class"},
+            "index": {"$first": "$index"},
             "job_id": {"$first": "$job_id"}, "provider": {"$first": "$provider"},
         }},
         {"$sort": {"collected_at": -1, "_id": 1}},
@@ -190,6 +192,7 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None):
             "instrument_id": isin, "isin": isin,
             "name": catalogue.get("name"), "ticker": catalogue.get("ticker"),
             "listing": observation["listing"], "collected_at": observation["collected_at"],
+            "asset_class": observation.get("asset_class"), "index": observation.get("index"),
             "quote_count": len(dates), "first_date": dates[0] if dates else None,
             "last_date": dates[-1] if dates else None,
             "annualized_mean_log_return": statistics.get("annualized_mean_log_return"),
@@ -417,7 +420,7 @@ def instrument_detail(db, settings, isin, as_of=None):
             query["collected_at"] = {"$lte": as_of}
         observation = db.instruments.find_one(query, sort=[("collected_at", DESCENDING), ("_id", DESCENDING)])
         if observation:
-            profile = {key: observation[key] for key in ("collected_at", "collection_date", "data")}
+            profile = {key: observation.get(key) for key in ("collected_at", "collection_date", "data", "asset_class", "index")}
     job = db.acquisition_jobs.find_one({"instrument_id": isin}, sort=[("requested_at", DESCENDING), ("_id", DESCENDING)])
     summary = coverage(catalogue, quote_dates(db, isin, listing, cutoff, generation))
     if job is None:
@@ -743,9 +746,13 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
             if db.instruments.find_one({"job_id": job_id}) is None:
                 data = provider.tickerinfo(listing["symbol"])
                 collected = utcnow()
+                catalogue_metadata = {}
+                if job.get("instrument_kind") != "index":
+                    catalogue = require_catalogue(db, isin)
+                    catalogue_metadata = {key: catalogue.get(key) for key in ("asset_class", "index")}
                 checkpoint()
                 db.instruments.update_one({"job_id": job_id}, {"$setOnInsert": {
-                    "instrument_id": isin, **listing, "provider": name, "job_id": job_id,
+                    "instrument_id": isin, **listing, **catalogue_metadata, "provider": name, "job_id": job_id,
                     "published": name != "yfinance",
                     "collected_at": collected, "collection_date": collected.date().isoformat(), "data": data,
                 }}, upsert=True)

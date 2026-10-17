@@ -118,6 +118,29 @@ const acquiredItem = (isin = A, extra = {}) => ({ ...item(isin), listing: { symb
   historical_year_volatility_end_date: '2026-09-16', historical_year_volatility_price_basis: 'adj_close',
   historical_year_volatility_return_count: 250, ...extra });
 
+describe('saved instrument classification', () => {
+  it('shows saved asset class and index in the inventory', async () => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(A, { asset_class: 'equity', index: 'MSCI World' })];
+    await open();
+    const row = within(screen.getByRole('link', { name: 'iShares S&P ETF' }).closest('tr'));
+    expect(row.getByRole('cell', { name: 'equity' })).toBeInTheDocument();
+    expect(row.getByRole('cell', { name: 'MSCI World' })).toBeInTheDocument();
+  });
+
+  it.each([true, false])('shows saved metadata or missing values on the detail page (saved: %s)', async (saved) => {
+    const server = mockServer();
+    const data = withData();
+    data.profile = { ...data.profile, ...(saved ? { asset_class: 'equity', index: 'MSCI World' } : {}) };
+    server.details[A] = data;
+    await open(A);
+    for (const [label, value] of [['Asset class', 'equity'], ['Index', 'MSCI World']]) {
+      const term = screen.getByText(label, { selector: 'dt' });
+      expect(term.nextElementSibling).toHaveTextContent(saved ? value : 'Not available');
+    }
+  });
+});
+
 describe('instrument page layout', () => {
   it('shows return statistics, then price history, then the remaining sections', async () => {
     const server = mockServer();
@@ -267,7 +290,7 @@ describe('acquired ETF inventory', () => {
         historical_year_volatility: 0.2, historical_year_volatility_price_basis: 'close' })];
     await open();
     expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
-      'ETF', 'Saved listing', 'Historical', 'Statistical', 'Saved quotes', 'Profile collected', 'Market dataUpdate all',
+      'ETF', 'Asset class', 'Index', 'Saved listing', 'Historical', 'Statistical', 'Saved quotes', 'Profile collected', 'Market dataUpdate all',
       'Annual return', 'Annual volatility', 'Annual return', 'Annual volatility',
     ]);
     expect(screen.getByRole('columnheader', { name: 'Historical' })).toHaveAttribute('colspan', '2');
