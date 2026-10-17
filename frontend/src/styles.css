@@ -161,6 +161,36 @@ button.sign-out { min-height: 34px; padding: 0.4rem 0.65rem; font-size: 0.74rem;
 .acquired-pagination p { margin: 0; color: var(--muted); font-size: 0.72rem; }
 .acquired-pagination button { min-height: 32px; font-size: 0.72rem; padding: 0.4rem 0.75rem; }
 
+/* Background activity uses the same collection surface as instruments. */
+.jobs-live { display: flex; align-items: center; gap: 0.55rem; color: var(--muted); }
+.jobs-live > span { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px var(--mint); }
+.jobs-live-error > span { background: #a66b1d; box-shadow: 0 0 0 4px #faf1df; }
+.jobs-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0.8rem; margin: 1.4rem 0; }
+.jobs-summary > div { padding: 1.1rem; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.jobs-summary dt { color: var(--muted); font-size: 0.75rem; }
+.jobs-summary dd { margin: 0.4rem 0 0; font-family: 'Manrope', sans-serif; font-size: 1.8rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.jobs-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 1rem; margin: 1.5rem 0; }
+.jobs-filters label { min-width: 10rem; }
+.jobs-filters select { display: block; margin: 0.4rem 0 0; }
+.jobs-filters p { flex: 1 1 14rem; font-size: 0.75rem; }
+.jobs-scroll-hint { margin: 0; padding: 0 1.4rem 0.8rem; color: var(--muted); font-size: 0.73rem; }
+.jobs-table { min-width: 68rem; }
+.jobs-table th[scope='row'] { width: 20%; }
+.jobs-table td:nth-child(3), .jobs-table time { white-space: nowrap; }
+.jobs-table td:last-child { min-width: 13rem; max-width: 22rem; }
+.jobs-id { max-width: 16rem; overflow-wrap: anywhere; }
+.job-status-running, .job-status-retrying { background: #eaf0fa; color: #385f94; }
+.job-status-succeeded { background: var(--mint); color: var(--green); }
+.job-status-queued { background: #faf1df; color: #8d611f; }
+.job-status-failed { background: #fcecef; color: #a73442; }
+.jobs-empty { padding: 1rem 1.4rem 2rem; color: var(--muted); }
+.jobs-note { margin-top: 1.2rem; font-size: 0.75rem; }
+@media (max-width: 1100px) { .jobs-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 520px) {
+  .jobs-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .jobs-filters label { width: 100%; }
+}
+
 /* Search and intentional empty states. */
 .instrument-search { position: relative; margin-top: 0; }
 .instrument-search > label { display: block; margin-bottom: 0.7rem; }

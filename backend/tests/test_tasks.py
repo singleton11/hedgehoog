@@ -75,7 +75,9 @@ def test_task_owns_mongo_client_and_returns_import_or_skip_count(
     monkeypatch.setattr("tasks.import_etfs", importer)
 
     assert import_etfs_task() == count
-    automatic_refresh_producer.assert_called_once_with(settings, include_catalogue=True)
+    automatic_refresh_producer.assert_called_once_with(
+        settings, mongo.__getitem__.return_value, include_catalogue=True,
+    )
     factory.assert_called_once_with("mongodb://worker-db:27017", serverSelectionTimeoutMS=5000)
     mongo.__getitem__.assert_called_once_with(settings.mongodb_database)
     importer.assert_called_once_with(mongo.__getitem__.return_value)
@@ -135,7 +137,9 @@ def test_catalogue_sweep_dispatch_failure_retries_completed_import(
     assert import_etfs_task() == 0
     assert importer.call_count == 2
     assert automatic_refresh_producer.call_count == 2
-    automatic_refresh_producer.assert_called_with(settings, include_catalogue=True)
+    automatic_refresh_producer.assert_called_with(
+        settings, mongo.__getitem__.return_value, include_catalogue=True,
+    )
 
 
 def test_failed_import_does_not_dispatch_catalogue_sweep(
@@ -183,8 +187,8 @@ def test_startup_only_enqueues_after_seed_and_serves_without_downloading(
 
     with TestClient(app) as client:
         assert [call[0] for call in events.mock_calls] == ["ping", "seed", "enqueue", "refresh"]
-        enqueue.assert_called_once_with(settings)
-        automatic_refresh_producer.assert_called_once_with(settings)
+        enqueue.assert_called_once_with(settings, mongo.__getitem__.return_value)
+        automatic_refresh_producer.assert_called_once_with(settings, mongo.__getitem__.return_value)
         assert client.get("/health").status_code == 200
         etf_http_get.assert_not_called()
         mongo.__getitem__.return_value.etfs.bulk_write.assert_not_called()

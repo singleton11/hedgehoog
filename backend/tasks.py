@@ -12,45 +12,52 @@ from config import TaskSettings
 from etfs import ETFImportError, import_etfs
 from market_data import DataError, JobBusy, run_acquisition
 from market_data_refresh import refresh_stale_market_data
+from jobs import track_execution
 
 
 @app.task(
     name=ETF_IMPORT_TASK,
+    bind=True,
     autoretry_for=(ETFImportError, PyMongoError, OperationalError),
     retry_backoff=30,
     retry_backoff_max=600,
     retry_jitter=True,
     max_retries=5,
 )
-def import_etfs_task() -> int:
+def import_etfs_task(self) -> int:
     # Create after the worker forks, and close on success, skip, or failure.
     # Each attempt captures its own UTC date in import_etfs; no past-day backfill.
     config = TaskSettings()
     with MongoClient(
         config.mongodb_uri.get_secret_value(), serverSelectionTimeoutMS=5000,
     ) as client:
-        count = import_etfs(client[config.mongodb_database])
-    # Even a same-day skipped import must acquire missing catalogue history.
-    # Retrying a failed dispatch safely reuses the completed import marker.
-    enqueue_market_data_refresh(config, include_catalogue=True)
-    return count
+        db = client[config.mongodb_database]
+        with track_execution(db, self, "etf_import", (ETFImportError, PyMongoError, OperationalError)):
+            count = import_etfs(db)
+            # Even a same-day skipped import must acquire missing catalogue history.
+            # Retrying a failed dispatch safely reuses the completed import marker.
+            enqueue_market_data_refresh(config, db, include_catalogue=True)
+            return count
 
 
 @app.task(
     name=MARKET_DATA_REFRESH_TASK,
+    bind=True,
     autoretry_for=(PyMongoError, DataError),
     retry_backoff=30,
     retry_backoff_max=600,
     retry_jitter=True,
     max_retries=5,
 )
-def refresh_market_data_task(include_catalogue=False):
+def refresh_market_data_task(self, include_catalogue=False):
     config = TaskSettings()
     with MongoClient(
         config.mongodb_uri.get_secret_value(), serverSelectionTimeoutMS=5000,
     ) as client:
+        db = client[config.mongodb_database]
         options = {"include_catalogue": True} if include_catalogue else {}
-        return refresh_stale_market_data(client[config.mongodb_database], config, **options)
+        with track_execution(db, self, "market_data_refresh", (PyMongoError, DataError)):
+            return refresh_stale_market_data(db, config, **options)
 
 
 @app.task(name=ACQUISITION_TASK, bind=True, max_retries=12, soft_time_limit=600, time_limit=660)
