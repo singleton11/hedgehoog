@@ -1,5 +1,9 @@
 # Calibration runs
 
+## Missing-quote policy
+
+All calculation paths apply the [global derived missing-quote policy](missing-quotes.md) before the availability/gap rules described here. Arithmetic smoothing is the default; seeded normal log-return sampling is selectable in Settings. Raw saved evidence and existing reports remain unchanged. References below to missing/invalid prices mean prices still unavailable after this bounded policy.
+
 **Calibration** (`#/calibration`) is the signed-in user's history of successful
 calibration runs, newest-started first, in pages of 20. Each row shows the run
 date, saved strategy name, simulation method, evaluation policy and parameters, Brier score,

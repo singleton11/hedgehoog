@@ -596,9 +596,13 @@ def test_missing_quote_or_prior_close_keeps_unavailable_values_explicit(tracker,
         db.quotes.delete_many({"date": "2026-09-15"})
         quote(db, "2026-09-16", "110")  # Repeated observations are not two closing days.
     else:
-        quote(db, "2026-09-14", "99")  # Do not skip the invalid prior day to use this older price.
+        quote(db, "2026-09-14", "99")  # The explicit hole can now interpolate between real bounds.
         db.quotes.update_one({"date": "2026-09-15"}, {"$set": {"data.close": None, "data.adj_close": "100"}})
     result = detail(client, url)
+    if mode == "invalid-previous":
+        assert result["daily_unrealized_pnl_eur"] == "5.50"
+        assert result["positions"][0]["previous_price_date"] == "2026-09-15"
+        return
     assert result["daily_unrealized_pnl_eur"] is None
     assert result["daily_from_date"] is result["daily_to_date"] is None
     if mode in ("no-quotes", "missing-close"):

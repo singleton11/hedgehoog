@@ -1,5 +1,9 @@
 # On-demand market data (Yahoo Finance experiment)
 
+## Missing-quote policy
+
+All calculation paths apply the [global derived missing-quote policy](missing-quotes.md) before the availability/gap rules described here. Arithmetic smoothing is the default; seeded normal log-return sampling is selectable in Settings. Raw saved evidence and existing reports remain unchanged. References below to missing/invalid prices mean prices still unavailable after this bounded policy.
+
 ## Provider boundary and configuration
 
 The default is **Yahoo Finance through pinned `yfinance==1.7.0`**, with no API key or paid monthly allowance. This is experimental, unofficial access, without an availability or completeness guarantee. Yahoo and exchange data terms still apply: free technical access is not permission for commercial redistribution. Before onboarding customers, integrate and license an appropriate provider (planned: EODHD).

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from './Auth.jsx';
+import MarketDataSettings from './MarketDataSettings.jsx';
 
 export default function PerformanceSettings() {
   const { request, user } = useAuth();
   const [identity, setIdentity] = useState({ request, version: 0 });
   if (identity.request !== request) setIdentity({ request, version: identity.version + 1 });
-  return <Settings key={`${user.id}:${identity.version}`} request={request} admin={user.role === 'admin'} />;
+  return <Settings key={`${user.id}:${user.role}:${identity.version}`} request={request} admin={user.role === 'admin'} />;
 }
 
 function Settings({ request, admin }) {
@@ -58,7 +59,9 @@ function Settings({ request, admin }) {
     finally { if (lifetime.active) setBusy(false); }
   }
   return <article className="customer-planner" aria-label="Settings">
-    <h2>Settings</h2><h3>Portfolio risk-return proxy</h3>
+    <h2>Settings</h2>
+    <MarketDataSettings request={request} admin={admin} />
+    <h3>Portfolio risk-return proxy</h3>
     <p>This app-wide setting applies to all users and portfolios. Only administrators can change it.</p>
     <p>Choose an acquired EUR-denominated index whose saved level returns will serve as both Sharpe’s risk-free proxy and Sortino’s minimum-return target. Use an appropriate overnight-rate or money-market return index; an equity index is not risk-free. Inflation indices and annual yield quotes are not return proxies.</p>
     <p>For index proxies, missing currency metadata is assumed to be EUR, not converted to EUR. Explicit non-EUR currencies remain excluded. Check the index’s denomination before selecting it.</p>

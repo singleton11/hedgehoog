@@ -13,6 +13,7 @@ from goal_calibration import RandomCalibrationInputs, calibrate_instrument
 from random_calibration import evaluate_random_history
 import market_data as md
 from return_statistics import instrument_return_runs, instrument_statistics
+from quote_fill import read_policy
 
 
 AcquiredInstrument = Annotated[str, Field(
@@ -66,15 +67,16 @@ class StrategyDefinition(Generic[Parameters]):
 
 
 def buy_and_hold_single_instrument(parameters: BuyAndHoldParameters, goals: GoalInputs, db: Database, today: date, **simulation_options):
+    policy = read_policy(db)
     estimates = instrument_statistics(db, parameters.instrument, as_of=goals._effective_as_of,
-                                       point_in_time=goals._point_in_time)
+                                       point_in_time=goals._point_in_time, policy=policy)
     if not estimates["eligible"]:
         raise md.DataError(422, estimates["ineligible_reason"])
-    returns = (instrument_return_runs(db, parameters.instrument, as_of=goals._effective_as_of or md.utcnow())
+    returns = (instrument_return_runs(db, parameters.instrument, as_of=goals._effective_as_of or md.utcnow(), policy=policy)
                if goals.simulation_method == "block_bootstrap" else None)
     return {
         **simulate_buy_and_hold(estimates, goals, today, return_runs=returns, **simulation_options),
-        "parameter_statistics": {"instrument": estimates},
+        "parameter_statistics": {"instrument": estimates}, "quote_fill_policy": policy,
     }
 
 

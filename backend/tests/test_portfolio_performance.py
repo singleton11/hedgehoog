@@ -52,6 +52,7 @@ def test_empty_and_cash_only_are_not_profit_and_refunding_preserves_chain(tracke
                       "start_date": None, "end_date": None, "points": [], "benchmark": None,
                       "warnings": ["Sharpe and Sortino unavailable: select a saved EUR price-return proxy in Settings."],
                       "risk_proxy": None, "ratio_method": "since_inception_calendar_daily_log_excess_365",
+                      "quote_fill_policy": {"version": 1, "method": "smooth", "seed": 0},
                       "summary": {"twr_percent": None, "sharpe": None, "sortino": None}}
     record(client, url, cash(amount="100.01", day="2026-09-01"))
     record(client, url, cash("withdrawal", amount="100.01", day="2026-09-02"))
@@ -145,8 +146,12 @@ def test_latest_invalid_observation_is_not_replaced_by_older_valid_or_adjusted_p
     quote(db, "2026-09-17", "120")
     result = get(client, url)
     assert points(result)["2026-09-15"] == 0
-    assert points(result)["2026-09-16"] is None
-    assert points(result)["2026-09-17"] is None
+    if bad in (None, "NaN"):
+        assert points(result)["2026-09-16"] == 10
+        assert points(result)["2026-09-17"] == 20
+    else:
+        assert points(result)["2026-09-16"] is None
+        assert points(result)["2026-09-17"] is None
 
 
 @pytest.mark.parametrize("failure", ["missing", "USD", "unknown"])
@@ -262,12 +267,12 @@ def test_benchmark_uses_past_asof_close_not_future_baseline_and_can_have_unknown
     assert any("not silently rebased" in warning for warning in result["warnings"])
 
 
-def test_bad_benchmark_date_is_a_gap_not_an_old_valid_quote_and_can_recover(tracker, db):
+def test_missing_benchmark_date_is_smoothed_without_reusing_old_quote(tracker, db):
     client, _, _, url = tracker
     invest(client, url)
-    benchmark = index_history(db, [("2026-09-14", "100"), ("2026-09-15", None), ("2026-09-16", "110")])
+    benchmark = index_history(db, [("2026-09-14", "100"), ("2026-09-15", None), ("2026-09-16", "110")], currency="EUR")
     values = points(get(client, url, benchmark), "benchmark_percent")
-    assert values["2026-09-15"] is None
+    assert values["2026-09-15"] == 5
     assert values["2026-09-16"] == 10  # Normalization to a valid fixed baseline, not chaining an unknown return.
 
 

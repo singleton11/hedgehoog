@@ -9,6 +9,7 @@ const flush = async () => act(async () => {});
 beforeEach(() => {
   auth.user = { id: 'a', role: 'admin' }; delete auth.request;
   request.mockReset().mockImplementation(async (url, options) => {
+    if (url === '/settings/market-data') return { version: 1, method: 'smooth', seed: 0 };
     if (url === '/settings/performance') return { proxy: options?.body?.instrument_id ? instrument : null };
     return { items: [instrument], total: 1, offset: 0, limit: 100 };
   });
@@ -43,10 +44,10 @@ it('does not offer a partial list after pagination failure and can retry', async
     : url.includes('offset=1') ? { items: [instrument], total: 2, offset: 1, limit: 100 } : good(url, options));
   render(<PerformanceSettings />); await flush();
   expect(screen.getByRole('alert')).toHaveTextContent('Invalid saved instrument list');
-  expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('Saved EUR index')).not.toBeInTheDocument();
   request.mockImplementation(good);
   fireEvent.click(screen.getByRole('button', { name: 'Retry settings' })); await flush();
-  expect(screen.getByRole('combobox')).toBeInTheDocument();
+  expect(screen.getByLabelText('Saved EUR index')).toBeInTheDocument();
 });
 
 it('ignores a late settings response after auth changes', async () => {
@@ -58,5 +59,18 @@ it('ignores a late settings response after auth changes', async () => {
   auth.request = vi.fn(good); view.rerender(<PerformanceSettings />); await flush();
   expect(signal.aborted).toBe(true);
   await act(async () => resolve({ proxy: instrument }));
-  expect(screen.getByRole('combobox')).toHaveValue('');
+  expect(screen.getByLabelText('Saved EUR index')).toHaveValue('');
+});
+
+it('isolates missing-quote settings from proxy-list failures', async () => {
+  const good = request.getMockImplementation();
+  request.mockImplementation(async (url, options) => {
+    if (url.includes('/indices?')) throw new Error('Proxy list failed');
+    return good(url, options);
+  });
+  render(<PerformanceSettings />); await flush();
+  expect(screen.getByRole('alert')).toHaveTextContent('Proxy list failed');
+  expect(screen.getByLabelText('Missing quote method')).toHaveValue('smooth');
+  fireEvent.click(screen.getByRole('button', { name: 'Save missing-quote settings' })); await flush();
+  expect(screen.getByRole('status')).toHaveTextContent('Missing-quote policy saved');
 });

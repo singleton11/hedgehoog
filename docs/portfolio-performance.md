@@ -1,5 +1,9 @@
 # Portfolio performance
 
+## Missing-quote policy
+
+All calculation paths apply the [global derived missing-quote policy](missing-quotes.md) before the availability/gap rules described here. Arithmetic smoothing is the default; seeded normal log-return sampling is selectable in Settings. Raw saved evidence and existing reports remain unchanged. References below to missing/invalid prices mean prices still unavailable after this bounded policy.
+
 The portfolio detail summary shows cumulative TWR and the average of the available expanding Sharpe and Sortino ratio observations. The Performance tab contains a TWR/index comparison chart and a separate, unitless chart containing both ratios. All three tabs retain their state while hidden; refreshes and ledger edits invalidate performance and summary values together.
 
 ## App-wide proxy setting

@@ -15,6 +15,7 @@ from goal_calibration import (
 )
 from goal_simulation import PATHS, add_months, money_string, period_factors, required_contribution
 from return_statistics import MIN_RETURNS, calculate_daily_statistics, calculate_statistics, positive_price
+from quote_fill import fill_adjusted_rows
 
 # Disjoint domains: scheduling, scenario parameters, funding solver and validation.
 SCHEDULE_STREAM, SCENARIO_STREAM, SOLVER_STREAM, PREDICTION_STREAM = 149, 150, 151, 152
@@ -80,7 +81,8 @@ def plan_scenarios(dates, origins, body: RandomCalibrationInputs, seed):
     return groups, len(available)
 
 
-def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, override=None, paths=PATHS):
+def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, override=None, paths=PATHS,
+                            quote_fill_policy=None, instrument_id=""):
     rows, dates, origins = monthly_origins(rows, body)
     groups, available_origins = plan_scenarios(dates, origins, body, seed)
     forecasts, excluded = [], []
@@ -94,7 +96,8 @@ def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, overri
                             for scenario in scenarios)
 
         first_index = bisect_left(dates, add_months(origin, -body.lookback_months))
-        training = rows[first_index:index + 1]
+        training = fill_adjusted_rows(rows[first_index:index + 1], instrument_id, quote_fill_policy,
+                                      cutoff=origin.isoformat(), currency_override=override)
         if not is_eur_history(training, override):
             exclude(group, "training_currency")
             continue
@@ -103,7 +106,7 @@ def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, overri
         if estimates["return_count"] < MIN_RETURNS:
             exclude(group, "insufficient_training")
             continue
-        if positive_price(rows[index].get(basis)) is None or estimates["daily_log_return_variance"] is None:
+        if positive_price(training[-1].get(basis)) is None or estimates["daily_log_return_variance"] is None:
             exclude(group, "unusable_training")
             continue
         return_runs = None
@@ -116,6 +119,7 @@ def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, overri
                 continue
         raw_prices |= basis == "close"
         quality_warning |= bool(estimates["invalid_price_count"] or estimates["skipped_gap_count"])
+        outcomes = {}
         by_horizon = defaultdict(list)
         for scenario in group:
             by_horizon[scenario.horizon].append(scenario)
@@ -154,7 +158,13 @@ def evaluate_random_history(rows, body: RandomCalibrationInputs, *, seed, overri
                         # Goal, solved funding and validation probability are frozen
                         # before the first read of this case's held-out outcome.
                         try:
-                            terminal, valuation_date = realized_value(rows, dates, index, goal_date, basis, fixed, override)
+                            if month not in outcomes:
+                                outcome = fill_adjusted_rows(rows, instrument_id, quote_fill_policy,
+                                                             cutoff=goal_date.isoformat(), currency_override=override,
+                                                             pinned_rows={origin.isoformat(): training[-1]})
+                                outcomes[month] = outcome
+                            outcome = outcomes[month]
+                            terminal, valuation_date = realized_value(outcome, dates[:len(outcome)], index, goal_date, basis, fixed, override)
                         except UnscorableOutcome as error:
                             exclude([scenario], str(error))
                             continue

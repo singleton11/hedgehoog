@@ -1,5 +1,9 @@
 # Customers, goals and return statistics
 
+## Missing-quote policy
+
+All calculation paths apply the [global derived missing-quote policy](missing-quotes.md) before the availability/gap rules described here. Arithmetic smoothing is the default; seeded normal log-return sampling is selectable in Settings. Raw saved evidence and existing reports remain unchanged. References below to missing/invalid prices mean prices still unavailable after this bounded policy.
+
 Open **Customers** in the signed-in workspace (`#/goal`) to see your
 **customers** in a table with their **Goals** count, **Net worth (EUR)** and
 **Realized**, **Unrealized**, **Today** and **Total P&L (EUR)** across all portfolios.

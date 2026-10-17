@@ -18,6 +18,7 @@ from indices import require_index
 import market_data as md
 import portfolio_tracker as ledger
 from performance_settings import proxy_currency, read_settings
+from quote_fill import read_policy
 
 router = APIRouter(tags=["portfolios"])
 BenchmarkId = Annotated[str | None, Query(pattern=r"^idx-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")]
@@ -56,10 +57,10 @@ def percent(growth):
     return "0.00000000" if Decimal(result) == 0 else result
 
 
-def benchmark_history(db, identifier, now):
+def benchmark_history(db, identifier, now, policy=None):
     record = require_index(db, identifier)
     instrument = {"instrument_id": identifier, "symbol": record["symbol"], "exchange": "YAHOO"}
-    rows = ledger.quote_rows(db, instrument, now)
+    rows = ledger.quote_rows(db, instrument, now, policy=policy)
     # Read only: index_detail also expires jobs, which is inappropriate here.
     profile = db.instruments.find_one({**md.observation_filter(db, identifier, instrument, now),
                                       "collected_at": {"$lte": now}}, sort=[("collected_at", -1), ("_id", -1)])
@@ -112,7 +113,8 @@ def performance(db, document, benchmark_id=None, *, now=None):
     today = now.date().isoformat()
     events = sorted((event for event in ledger.active_events(document["transactions"]) if event["date"] <= today),
                     key=lambda item: (item["date"], item["sequence"]))
-    benchmark, benchmark_marks = benchmark_history(db, benchmark_id, now) if benchmark_id else (None, None)
+    policy = read_policy(db)
+    benchmark, benchmark_marks = benchmark_history(db, benchmark_id, now, policy) if benchmark_id else (None, None)
     proxy = read_settings(db)["proxy"]
     proxy_marks = None
     if proxy:
@@ -121,12 +123,13 @@ def performance(db, document, benchmark_id=None, *, now=None):
         # Pin the saved choice: a relisted or removed source is not silently substituted.
         active_index = db.indices.find_one({"instrument_id": proxy["instrument_id"],
                                             "symbol": proxy["symbol"], "removed_at": {"$exists": False}})
-        rows = ledger.quote_rows(db, proxy, now) if active_index and state.get("listing") == listing else []
+        rows = ledger.quote_rows(db, proxy, now, policy=policy) if active_index and state.get("listing") == listing else []
         proxy_marks = SavedMarks(rows, required_currency="EUR", currency_override=proxy_currency(db, proxy, now))
     ratios = RiskRatios()
     result = {"portfolio_id": document["_id"], "currency": "EUR", "method": "daily_twr",
               "cash_flow_timing": "deposits_start_withdrawals_end", "as_of": _timestamp(now),
               "start_date": None, "end_date": None, "points": [], "benchmark": benchmark, "warnings": [],
+              "quote_fill_policy": policy,
               "risk_proxy": proxy, "ratio_method": "since_inception_calendar_daily_log_excess_365",
               "summary": {"twr_percent": None, "sharpe": None, "sortino": None}}
     if proxy is None:
@@ -143,7 +146,7 @@ def performance(db, document, benchmark_id=None, *, now=None):
     if proxy_marks:
         dates.update(day for day in proxy_marks.dates if first <= day <= today)
     for isin, instrument in instruments.items():
-        rows = ledger.quote_rows(db, instrument, now)
+        rows = ledger.quote_rows(db, instrument, now, policy=policy)
         state = db.instrument_state.find_one({"_id": isin}) or {}
         listing = {key: instrument[key] for key in ("symbol", "exchange")}
         override = state.get("price_currency_override") if state.get("listing") == listing else None

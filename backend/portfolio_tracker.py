@@ -113,7 +113,7 @@ def require_portfolio(db, owner, customer_id, portfolio_id):
     return document
 
 
-def quote_rows(db, instrument, now):
+def quote_rows(db, instrument, now, *, policy=None):
     """Latest observation per distinct effective date, on the pinned listing only."""
     query = {**md.observation_filter(db, instrument["instrument_id"], instrument, now),
              "date": {"$lte": now.date().isoformat()}, "collected_at": {"$lte": now}}
@@ -124,7 +124,14 @@ def quote_rows(db, instrument, now):
             "price_currency": {"$ifNull": ["$data.price_currency", None]},
         }}}}, {"$sort": {"_id": 1}},
     ])
-    return [{**row["data"], "date": row["_id"]} for row in rows if md.quote_date(row["_id"]) == row["_id"]]
+    from quote_fill import fill_rows, read_policy
+
+    rows = [{**row["data"], "date": row["_id"]} for row in rows if md.quote_date(row["_id"]) == row["_id"]]
+    state = db.instrument_state.find_one({"_id": instrument["instrument_id"]}) or {}
+    listing = {key: instrument[key] for key in ("symbol", "exchange")}
+    override = state.get("price_currency_override") if state.get("listing") == listing else None
+    return fill_rows(rows, instrument["instrument_id"], policy or read_policy(db),
+                     cutoff=now.date().isoformat(), currency_override=override)
 
 
 def currency_supported(db, instrument, rows):
@@ -234,8 +241,11 @@ def replay(events, anchors=None):
 
 def _cached_quote_rows(db, instrument, now, cache):
     key = tuple(instrument[field] for field in ("instrument_id", "symbol", "exchange"))
+    if "quote_fill_policy" not in cache:
+        from quote_fill import read_policy
+        cache["quote_fill_policy"] = read_policy(db)
     if key not in cache:
-        cache[key] = quote_rows(db, instrument, now)
+        cache[key] = quote_rows(db, instrument, now, policy=cache["quote_fill_policy"])
     return cache[key]
 
 

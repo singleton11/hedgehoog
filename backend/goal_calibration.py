@@ -20,6 +20,7 @@ from goal_simulation import Money, PATHS, SimulationSettings, add_months, money_
 import market_data as md
 from return_statistics import MIN_RETURNS, calculate_statistics, positive_price
 from split_adjustments import adjusted_rows, load_split_snapshot
+from quote_fill import fill_adjusted_rows, read_policy
 
 MAX_SEED = 2**32 - 1
 MAX_HISTORY_ROWS = 20_000
@@ -214,7 +215,8 @@ def monthly_origins(rows, body):
     return rows, dates, origins
 
 
-def evaluate_history(rows, body: CalibrationInputs, *, seed, override=None, paths=PATHS):
+def evaluate_history(rows, body: CalibrationInputs, *, seed, override=None, paths=PATHS,
+                     quote_fill_policy=None, instrument_id=""):
     """Fit trailing prefixes, freeze predictions, then score held-out outcomes."""
     rows, dates, origins = monthly_origins(rows, body)
     if len(origins) > MAX_ORIGINS or len(origins) * body.horizon_months > MAX_FORECAST_PERIODS:
@@ -238,7 +240,8 @@ def evaluate_history(rows, body: CalibrationInputs, *, seed, override=None, path
         first_index = bisect_left(dates, add_months(origin, -body.lookback_months))
         # The ONLY rows the estimator sees. No full-history statistics cache,
         # future currency validation, global basis choice or outcome tuning.
-        training = rows[first_index:index + 1]
+        training = fill_adjusted_rows(rows[first_index:index + 1], instrument_id, quote_fill_policy,
+                                      cutoff=origin.isoformat(), currency_override=override)
         if not is_eur_history(training, override):
             exclude("training_currency")
             continue
@@ -247,13 +250,16 @@ def evaluate_history(rows, body: CalibrationInputs, *, seed, override=None, path
             exclude("insufficient_training")
             continue
         basis = estimates["price_basis"]
-        if positive_price(rows[index].get(basis)) is None or estimates["daily_log_return_variance"] is None:
+        if positive_price(training[-1].get(basis)) is None or estimates["daily_log_return_variance"] is None:
             exclude("unusable_training")
             continue
         probability = forecast_probability(estimates, body, origin, seed, paths=paths)
         # Outcomes become accessible only AFTER the probability is fixed.
         try:
-            terminal, valuation_date = realized_value(rows, dates, index, goal_date, basis, body, override)
+            outcome = fill_adjusted_rows(rows, instrument_id, quote_fill_policy,
+                                         cutoff=goal_date.isoformat(), currency_override=override,
+                                         pinned_rows={origin.isoformat(): training[-1]})
+            terminal, valuation_date = realized_value(outcome, dates[:len(outcome)], index, goal_date, basis, body, override)
         except UnscorableOutcome as error:
             exclude(str(error))
             continue
@@ -335,10 +341,13 @@ def calibrate_instrument(db, isin, body, *, evaluate):
         raise md.DataError(422, "Saved history exceeds the 20,000-date calculation limit; no history was silently truncated.")
     rows, split_warnings = adjusted_rows(rows, load_split_snapshot(db, isin, listing, cutoff, generation))
     seed = body.seed if body.seed is not None else secrets.randbits(32)
-    result = evaluate(rows, body, seed=seed, override=state.get("price_currency_override"))
+    policy = read_policy(db)
+    result = evaluate(rows, body, seed=seed, override=state.get("price_currency_override"),
+                      quote_fill_policy=policy, instrument_id=isin)
+    result["quote_fill_policy"] = policy
     result["warnings"].extend(split_warnings)
     publication = md.published_history(db, isin, listing, cutoff, generation)
     fingerprint = hashlib.sha256(json.dumps(md.public({"rows": rows, "listing": listing,
         "generation": publication["_id"] if publication else None,
-        "currency_override": state.get("price_currency_override")}), sort_keys=True).encode()).hexdigest()
+        "currency_override": state.get("price_currency_override"), "quote_fill_policy": policy}), sort_keys=True).encode()).hexdigest()
     return {**result, "data_as_of": md.public(cutoff), "history_fingerprint": fingerprint}

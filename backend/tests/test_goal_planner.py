@@ -742,7 +742,12 @@ def test_simulation_revalidates_cached_eligibility_after_operational_changes(api
     response = client.post("/goals/simulate", json=request_body())
     assert response.status_code == 422
     assert response.json()["detail"] == expected_reason
-    assert db.instrument_statistics.find_one({"_id": ISIN}) == cached
+    current_cache = db.instrument_statistics.find_one({"_id": ISIN})
+    if change == "active-job":
+        assert current_cache == cached
+    else:
+        assert current_cache["signature"]["currency_override"] == "USD"
+        assert current_cache["statistics"] == cached["statistics"]
     solver.assert_not_called()
     monkeypatch.setattr(gs, "simulate_buy_and_hold", original_solver)
     if change == "active-job":

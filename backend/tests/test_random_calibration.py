@@ -168,8 +168,8 @@ def test_bootstrap_excludes_origins_without_a_complete_training_block():
     # individual returns for fitting but no eligible 60-day bootstrap window.
     for index, row in enumerate(rows):
         if index % 45 == 0:
-            row["adj_close"] = None
-            row["close"] = None
+            row["adj_close"] = '0'
+            row["close"] = '0'
     with pytest.raises(md.DataError, match="insufficient block history"):
         evaluate(rows, simulation_method="block_bootstrap", block_size=60)
 

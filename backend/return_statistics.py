@@ -9,7 +9,9 @@ from bson import Decimal128
 import market_data as md
 from split_adjustments import BASIS, adjusted_rows, load_split_snapshot
 
-MODEL_VERSION = 8
+from quote_fill import fill_adjusted_rows, read_policy
+
+MODEL_VERSION = 9
 TRADING_DAYS = 252
 MIN_RETURNS = 60
 YEAR_START_MAX_GAP_DAYS = 7
@@ -225,7 +227,7 @@ def _latest_rows(db, listing, query):
     return [{**record["data"], "date": record["_id"]} for record in records]
 
 
-def instrument_return_runs(db, isin, *, as_of):
+def instrument_return_runs(db, isin, *, as_of, policy=None):
     """Same published vintage, split basis and weekday/gap rules as model estimates."""
     state = db.instrument_state.find_one({"_id": isin}) or {}
     listing = state.get("listing")
@@ -237,10 +239,12 @@ def instrument_return_runs(db, isin, *, as_of):
     rows = _latest_rows(db, listing, query)
     splits = load_split_snapshot(db, isin, listing, as_of, generation)
     adjusted, _ = adjusted_rows(rows, splits)
+    adjusted = fill_adjusted_rows(adjusted, isin, policy or read_policy(db),
+                                  cutoff=as_of.date().isoformat(), currency_override=state.get("price_currency_override"))
     return calculate_daily_statistics(adjusted, include_return_runs=True)["return_runs"]
 
 
-def refresh_statistics(db, isin, *, force=False, generation=None, as_of=None, point_in_time=False):
+def refresh_statistics(db, isin, *, force=False, generation=None, as_of=None, point_in_time=False, policy=None):
     """Persist estimates after acquisition; lazily cover pre-feature/partial data.
 
     Observations are append-only. Their count, listing, split snapshot, model
@@ -257,7 +261,9 @@ def refresh_statistics(db, isin, *, force=False, generation=None, as_of=None, po
     count = db.quotes.count_documents(query) if listing else 0
     splits = load_split_snapshot(db, isin, listing, cutoff, generation)
     publication = md.published_history(db, isin, listing, cutoff, generation)
+    policy = policy or read_policy(db)
     signature = {"version": MODEL_VERSION, "listing": listing, "observations": count,
+                 "quote_fill_policy": policy, "currency_override": state.get("price_currency_override"),
                  "generation": publication["_id"] if publication else None,
                  "splits": {"id": splits["_id"], "error": splits.get("error")} if splits else None,
                  "day": cutoff.date().isoformat()}
@@ -276,7 +282,10 @@ def refresh_statistics(db, isin, *, force=False, generation=None, as_of=None, po
         else:
             unknown_currency = True
     rows, split_warnings = adjusted_rows(rows, splits)
+    rows = fill_adjusted_rows(rows, isin, policy, cutoff=cutoff.date().isoformat(),
+                              currency_override=state.get("price_currency_override"))
     statistics = {
+        "quote_fill_policy": policy, "filled_quote_count": sum(bool(row.get("filled_fields")) for row in rows),
         **calculate_statistics(rows), "computed_at": cutoff, "as_of": cutoff,
         "provider_currencies": sorted(currencies), "unknown_currency": unknown_currency,
     }
@@ -288,12 +297,12 @@ def refresh_statistics(db, isin, *, force=False, generation=None, as_of=None, po
     return statistics, state
 
 
-def instrument_statistics(db, isin, generation=None, *, as_of=None, point_in_time=False):
+def instrument_statistics(db, isin, generation=None, *, as_of=None, point_in_time=False, policy=None):
     catalogue = md.require_catalogue(db, isin)
     if not point_in_time:
         md.expire_stalled_jobs(db, isin)
     estimates, state = refresh_statistics(db, isin, generation=generation, as_of=as_of,
-                                          point_in_time=point_in_time)
+                                          point_in_time=point_in_time, policy=policy)
     estimates = estimates.copy()
     currencies = set(estimates.pop("provider_currencies"))
     unknown = estimates.pop("unknown_currency")
