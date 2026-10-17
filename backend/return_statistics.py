@@ -9,9 +9,9 @@ from bson import Decimal128
 import market_data as md
 from split_adjustments import BASIS, adjusted_rows, load_split_snapshot
 
-from quote_fill import fill_adjusted_rows, read_policy
+from quote_fill import currency, fill_adjusted_rows, missing, read_policy
 
-MODEL_VERSION = 9
+MODEL_VERSION = 10
 TRADING_DAYS = 252
 MIN_RETURNS = 60
 YEAR_START_MAX_GAP_DAYS = 7
@@ -61,11 +61,39 @@ def historical_year_rows(rows):
     return rows[start_index:] if len(currencies) <= 1 else []
 
 
-def calculate_historical_year_return(rows):
-    """Observed simple return; interior gaps do not affect the endpoint ratio."""
+def historical_return_rows(rows, currency_override=None):
+    """Carry only trailing missing weekday endpoints, not model-fitting inputs."""
+    fields = (BASIS,) if any(BASIS in row for row in rows) else ("close", "adj_close")
+    result = [dict(row) for row in rows]
+    for field in fields:
+        start = len(rows)
+        while (start and missing(rows[start - 1].get(field))
+               and date.fromisoformat(rows[start - 1]["date"]).weekday() < 5
+               and missing(rows[start - 1].get("close"))):
+            start -= 1
+        if start == 0 or start == len(rows):
+            continue
+        source = rows[start - 1]
+        currencies = {currency(row, currency_override) for row in rows[start - 1:]}
+        if (positive_price(source.get(field)) is None
+                or date.fromisoformat(source["date"]).weekday() >= 5
+                or len(currencies) != 1 or not currencies <= {None, "EUR"}
+                or currency_override not in (None, "EUR")):
+            continue
+        for row in result[start:]:
+            row[field] = source[field]
+            row.setdefault("historical_carried_fields", {})[field] = source["date"]
+    return result
+
+
+def calculate_historical_year_return(rows, *, carry_trailing=False, currency_override=None):
+    """Simple endpoint return, optionally using explicitly stale trailing closes."""
+    if carry_trailing:
+        rows = historical_return_rows(rows, currency_override)
     unavailable = {
         "historical_year_return": None, "historical_year_start_date": None,
         "historical_year_end_date": None, "historical_year_price_basis": None,
+        "historical_year_carried_from_date": None,
     }
     window = historical_year_rows(rows)
     if not window:
@@ -83,6 +111,7 @@ def calculate_historical_year_return(rows):
     return {
         "historical_year_return": value, "historical_year_start_date": start["date"],
         "historical_year_end_date": end["date"], "historical_year_price_basis": basis,
+        "historical_year_carried_from_date": end.get("historical_carried_fields", {}).get(basis),
     }
 
 
@@ -207,10 +236,10 @@ def calculate_historical_year_volatility(rows):
     }
 
 
-def calculate_statistics(rows):
+def calculate_statistics(rows, *, carry_trailing=False, currency_override=None):
     return {
         **calculate_daily_statistics(rows),
-        **calculate_historical_year_return(rows),
+        **calculate_historical_year_return(rows, carry_trailing=carry_trailing, currency_override=currency_override),
         **calculate_historical_year_volatility(rows),
     }
 
@@ -286,9 +315,16 @@ def refresh_statistics(db, isin, *, force=False, generation=None, as_of=None, po
                               currency_override=state.get("price_currency_override"))
     statistics = {
         "quote_fill_policy": policy, "filled_quote_count": sum(bool(row.get("filled_fields")) for row in rows),
-        **calculate_statistics(rows), "computed_at": cutoff, "as_of": cutoff,
+        **calculate_statistics(rows, carry_trailing=policy["method"] == "smooth",
+                               currency_override=state.get("price_currency_override")),
+        "computed_at": cutoff, "as_of": cutoff,
         "provider_currencies": sorted(currencies), "unknown_currency": unknown_currency,
     }
+    source_date = statistics["historical_year_carried_from_date"]
+    if source_date:
+        statistics["warnings"].append(
+            f"Historical annual return uses a stale last valid close from {source_date} "
+            f"through {statistics['historical_year_end_date']}; trailing missing closes count as zero price returns.")
     statistics["warnings"].extend(split_warnings)
     if not historical:
         db.instrument_statistics.replace_one({"_id": isin}, {

@@ -309,6 +309,18 @@ describe('acquired ETF inventory', () => {
     expect(server.posts()).toHaveLength(0);
   });
 
+  it('discloses the carried endpoint of a historical annual return', async () => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(A, { historical_year_carried_from_date: '2026-09-15' })];
+    await open();
+    const cell = screen.getByRole('cell', { name: '+12%' });
+    expect(cell).toHaveAttribute('title', expect.stringContaining('2025-09-16 – 2026-09-16'));
+    expect(cell).toHaveAttribute('title', expect.stringContaining('Stale last valid close from 2026-09-15'));
+    expect(cell).toHaveAttribute('title', expect.stringContaining('zero price returns'));
+    expect(cell).toHaveClass('return-positive');
+    expect(server.posts()).toHaveLength(0);
+  });
+
   it.each([null, undefined, NaN, Infinity, -Infinity, '0.1'])('shows unavailable annual estimates rather than zero or invalid percentages: %s', async (value) => {
     const server = mockServer();
     server.acquiredItems = [acquiredItem(A, { quote_count: 0, first_date: null, last_date: null,

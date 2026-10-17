@@ -198,6 +198,7 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None):
             "historical_year_start_date": statistics.get("historical_year_start_date"),
             "historical_year_end_date": statistics.get("historical_year_end_date"),
             "historical_year_price_basis": statistics.get("historical_year_price_basis"),
+            "historical_year_carried_from_date": statistics.get("historical_year_carried_from_date"),
             "historical_year_volatility": statistics.get("historical_year_volatility"),
             "historical_year_volatility_start_date": statistics.get("historical_year_volatility_start_date"),
             "historical_year_volatility_end_date": statistics.get("historical_year_volatility_end_date"),
