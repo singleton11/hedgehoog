@@ -13,13 +13,21 @@ BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
 
 
-@pytest.mark.parametrize("launcher", ["compose", "dockerfile"])
+@pytest.mark.parametrize("launcher", ["compose", "compose-marketdata", "dockerfile"])
 def test_worker_launcher_keeps_local_modules_importable_during_tasks(tmp_path, launcher):
-    path, prefix = ((ROOT / "compose.yaml", "command: ") if launcher == "compose"
+    path, prefix = ((ROOT / "compose.yaml", "command: ") if launcher.startswith("compose")
                     else (BACKEND / "Dockerfile", "CMD "))
-    line = next(line.strip() for line in path.read_text().splitlines() if line.strip().startswith(prefix))
+    lines = [line.strip() for line in path.read_text().splitlines() if line.strip().startswith(prefix)]
+    line = lines[1 if launcher == "compose-marketdata" else 0]
     command = json.loads(line[len(prefix):])
-    assert "--queues=etfs,marketdata" in command
+    if launcher == "compose":
+        assert "--queues=etfs" in command
+        assert "--concurrency=1" in command
+    elif launcher == "compose-marketdata":
+        assert "--queues=marketdata" in command
+        assert "--concurrency=${MARKET_DATA_WORKER_CONCURRENCY:-16}" in command
+    else:
+        assert "--queues=etfs,marketdata" in command
     # Use the real launcher prefix, but an isolated memory broker and probe app.
     # Reverting either launcher to the celery console script must fail this test.
     launch = command[:command.index("-A")]

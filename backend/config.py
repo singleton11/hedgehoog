@@ -25,6 +25,8 @@ class TaskSettings(BaseSettings):
     market_data_provider: Literal["yfinance", "marketstack"] = "yfinance"
     market_data_max_calls_per_job: int = Field(default=40, ge=1, le=200)
     market_data_timeout_seconds: int = Field(default=15, ge=1, le=60)
+    # Shared across acquisition processes, not a per-task sleep.
+    yahoo_request_interval_seconds: float = Field(default=0.05, ge=0, le=60, allow_inf_nan=False)
     marketstack_api_key: SecretStr = SecretStr("")
     # Local conservative cap, independent of provider usage outside this app.
     # Disabled by default: explicitly configure a budget before spending quota.
