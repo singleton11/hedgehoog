@@ -101,14 +101,11 @@ function mockServer() {
   };
   server.calibrate = async (body) => server.save({ ...generatedCalibration(body),
     strategy_name: server.definitions.find((item) => item.id === body.strategy.id)?.name || body.strategy.id });
-  server.acquired = async (query) => {
-    const offset = Number(query.get('offset')), limit = Number(query.get('limit'));
-    return { items: structuredClone(server.acquiredItems.slice(offset, offset + limit)), total: server.acquiredItems.length, offset, limit };
-  };
+  server.acquired = async () => ({ items: structuredClone(server.acquiredItems), total: server.acquiredItems.length });
   request.mockImplementation(async (path, options = {}) => {
     if (path === '/customers?limit=20&offset=0') return { items: [], total: 0, limit: 20, offset: 0 };
     if (path === '/goals/strategies') return server.strategies(options);
-    if (path.startsWith('/instruments/acquired?')) return server.acquired(new URL(path, 'http://localhost').searchParams, options);
+    if (path === '/instruments/acquired/universe') return server.acquired(options);
     if (path === '/goals/calibrate') return server.calibrate(options.body, options);
     if (path.startsWith('/goals/calibrations?')) return server.history(new URL(path, 'http://localhost').searchParams, options);
     if (path.startsWith('/goals/calibrations/')) return server.report(decodeURIComponent(path.split('/')[3]), options);
@@ -245,7 +242,7 @@ describe('immutable calibration history and routes', () => {
     expect(screen.getByLabelText('Strategy')).toHaveValue('');
     change('Strategy', BUY_AND_HOLD_ID); change('Instrument', A); await flush();
     expect(button()).toBeEnabled(); expect(posts()).toHaveLength(0);
-    expect(request.mock.calls.map(([path]) => path)).toEqual(['/goals/strategies', '/instruments/acquired?limit=100&offset=0']);
+    expect(request.mock.calls.map(([path]) => path)).toEqual(['/goals/strategies', '/instruments/acquired/universe']);
   });
 });
 
@@ -419,7 +416,7 @@ describe('new-run readiness, parameters, seeds and failures', () => {
     expect(screen.getByText('Settings', { selector: 'summary' }).closest('details')).not.toHaveAttribute('open');
     change('Instrument', A); await flush(); expect(button()).toBeEnabled(); expect(posts()).toHaveLength(0);
     expect(screen.getByRole('option', { name: `World & Europe ETF · ${A}` })).toBeInTheDocument();
-    expect(request.mock.calls.map(([path]) => path)).toEqual(['/goals/strategies', '/instruments/acquired?limit=100&offset=0']);
+    expect(request.mock.calls.map(([path]) => path)).toEqual(['/goals/strategies', '/instruments/acquired/universe']);
     await submit(); expect(posts()[0]).toEqual(['/goals/calibrate', expect.objectContaining({ method: 'POST', body: expectedBody, signal: expect.any(AbortSignal) })]);
     expect(window.location.hash).toBe(reportRoute()); expect(result()).toHaveTextContent('Seed 42');
     await follow('Run again'); expect(screen.getByLabelText('Seed (optional)')).toHaveValue('42');
@@ -486,10 +483,10 @@ describe('new-run readiness, parameters, seeds and failures', () => {
     expect(screen.getByLabelText('Instrument')).toHaveValue(''); expect(server.runs.get(original.id)).toEqual(original); expect(posts()).toHaveLength(0);
   });
 
-  it('loads every acquired instrument page without requesting full-history statistics', async () => {
+  it('loads the full acquired universe once without requesting full-history statistics', async () => {
     const server = mockServer(); server.acquiredItems = Array.from({ length: 101 }, (_, index) => ({ instrument_id: `IE${String(index).padStart(10, '0')}`, name: `Fund ${index}` }));
     await open(); expect(within(screen.getByLabelText('Instrument')).getAllByRole('option')).toHaveLength(102);
-    expect(reads('/instruments/acquired?limit=100&offset=100')).toHaveLength(1);
+    expect(reads('/instruments/acquired/universe')).toHaveLength(1);
     change('Instrument', server.acquiredItems[100].instrument_id); await flush(); await submit();
     expect(posts()[0][1].body.strategy.parameters.instrument).toBe(server.acquiredItems[100].instrument_id); expect(result()).toBeInTheDocument();
     expect(request.mock.calls.some(([path]) => path.endsWith('/statistics'))).toBe(false);
@@ -924,7 +921,7 @@ describe('route, auth and request race protection', () => {
   it.each(['catalogue', 'acquired'])('aborts a pending %s load on navigation without leaking errors onto a report', async (resource) => {
     const server = mockServer(), pending = deferred(); const saved = server.save();
     const method = resource === 'catalogue' ? 'strategies' : 'acquired'; server[method] = () => pending.promise;
-    await open(); const signal = reads(resource === 'catalogue' ? '/goals/strategies' : '/instruments/acquired?limit=100&offset=0')[0][1].signal;
+    await open(); const signal = reads(resource === 'catalogue' ? '/goals/strategies' : '/instruments/acquired/universe')[0][1].signal;
     await navigate(reportRoute(saved.id)); expect(signal.aborted).toBe(true); expect(result()).toBeInTheDocument();
     await act(async () => pending.reject(new Error('obsolete form data')));
     expect(result()).toBeInTheDocument(); expect(screen.queryByRole('alert')).not.toBeInTheDocument(); expect(posts()).toHaveLength(0);

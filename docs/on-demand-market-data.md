@@ -97,7 +97,7 @@ The experimental transition resets acquired data and experimental customers, goa
 
 ## UI and verification
 
-The header identifies Yahoo Finance as experimental. Request forms require explicit consent to fetch Yahoo data, explain full-history refresh, allow a manual Yahoo symbol with optional advanced MIC entry, explain invalid inputs, and do not estimate paid quota. Bulk updates still capture all acquired pages before submission and skip profiles collected less than 24 hours ago. No POST is retried automatically after uncertainty.
+The header identifies Yahoo Finance as experimental. Request forms require explicit consent to fetch Yahoo data, explain full-history refresh, allow a manual Yahoo symbol with optional advanced MIC entry, explain invalid inputs, and do not estimate paid quota. Bulk updates capture the complete lightweight `/instruments/acquired/universe` response before submission and skip profiles collected less than 24 hours ago. The single-response capture avoids membership and ordering races with concurrent downloads; it does not read quote history or compute statistics. No POST is retried automatically after uncertainty.
 
 While refresh is running or fails, previous published charts/statistics remain saved. Errors remain actionable. Provider/basis and collection metadata are available in expandable details. Yahoo's split handling is explained instead of offering a manual split form.
 

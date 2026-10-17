@@ -60,11 +60,7 @@ function mockServer() {
   server.simulate = async (body) => simulation(body);
   server.strategies = async () => ({ items: [buyAndHold] });
   server.acquiredItems = [A, B].map((instrument_id) => ({ instrument_id, name: statistics(instrument_id).name, ticker: 'ETF' }));
-  server.acquired = async (query) => {
-    const offset = Number(query.get('offset'));
-    const limit = Number(query.get('limit'));
-    return { items: server.acquiredItems.slice(offset, offset + limit), total: server.acquiredItems.length, offset, limit };
-  };
+  server.acquired = async () => ({ items: structuredClone(server.acquiredItems), total: server.acquiredItems.length });
   server.detail = {
     instrument_id: A, catalogue: { name: 'World &amp; Europe ETF', currency: 'USD', ticker: 'ETF', inception_date: '2020-01-01' },
     listing: { symbol: 'ETF.DE', exchange: 'XETR' }, profile: null, acquisition: null, price_currency_override: null,
@@ -73,7 +69,7 @@ function mockServer() {
   };
   request.mockImplementation(async (path, options = {}) => {
     if (path.startsWith('/instruments/search?')) return { items: [{ instrument_id: A, isin: A, name: 'World &amp; Europe ETF', ticker: 'ETF' }] };
-    if (path.startsWith('/instruments/acquired?')) return server.acquired(new URL(path, 'http://localhost').searchParams, options);
+    if (path === '/instruments/acquired/universe') return server.acquired(options);
     if (path === '/goals/strategies') return server.strategies(options);
     if (path === '/goals/simulate') return server.simulate(options.body, options);
     if (path.startsWith('/customers?')) return { items: [{ ...customer, net_worth_eur: '0.00', goal_count: 1,
@@ -179,7 +175,7 @@ describe('planner routes and eligibility', () => {
     expect(screen.getByRole('heading', { name: 'World & Europe ETF' })).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('EUR · 299 daily returns');
     expect(calculate()).toBeEnabled();
-    expect(request.mock.calls.map(([path]) => path)).toEqual(['/goals/strategies', '/instruments/acquired?limit=100&offset=0', `/instruments/${A}/statistics`]);
+    expect(request.mock.calls.map(([path]) => path)).toEqual(['/goals/strategies', '/instruments/acquired/universe', `/instruments/${A}/statistics`]);
     expect(posts()).toHaveLength(0);
   });
 
@@ -213,17 +209,25 @@ describe('planner routes and eligibility', () => {
     expect(posts()[0][1].body.strategy).toEqual(selection(B));
   });
 
-  it('loads all acquired pages so an instrument beyond the first 100 can be selected', async () => {
+  it('captures the full universe once while downloads change the paginated inventory', async () => {
     const server = mockServer();
     server.acquiredItems = Array.from({ length: 101 }, (_, index) => ({ instrument_id: `IE${String(index).padStart(10, '0')}`, name: `Fund ${index}` }));
+    const lastId = server.acquiredItems[100].instrument_id;
+    server.acquired = async () => {
+      const items = structuredClone(server.acquiredItems);
+      server.acquiredItems.reverse();
+      server.acquiredItems.unshift({ instrument_id: 'IE9999999999', name: 'New download' });
+      return { items, total: items.length };
+    };
     await openGoal(null);
     const instrument = screen.getByLabelText('Instrument');
     expect(within(instrument).getAllByRole('option')).toHaveLength(102);
-    expect(request.mock.calls.map(([path]) => path)).toContain('/instruments/acquired?limit=100&offset=100');
-    fireEvent.change(instrument, { target: { value: server.acquiredItems[100].instrument_id } });
+    expect(request.mock.calls.filter(([path]) => path.startsWith('/instruments/acquired')))
+      .toEqual([['/instruments/acquired/universe', expect.objectContaining({ signal: expect.any(AbortSignal) })]]);
+    fireEvent.change(instrument, { target: { value: lastId } });
     await flush();
     await submit();
-    expect(posts()[0][1].body.strategy.parameters.instrument).toBe(server.acquiredItems[100].instrument_id);
+    expect(posts()[0][1].body.strategy.parameters.instrument).toBe(lastId);
     expect(result()).toBeInTheDocument();
   });
 
@@ -243,15 +247,14 @@ describe('planner routes and eligibility', () => {
     expect(posts()).toHaveLength(0);
   });
 
-  it.each(['empty', 'duplicate', 'changed total', 'network'])('rejects an incomplete acquired universe (%s) and allows an explicit retry', async (failure) => {
+  it.each(['empty', 'duplicate', 'wrong total', 'network'])('rejects an incomplete acquired universe (%s) and allows an explicit retry', async (failure) => {
     const server = mockServer();
     const acquired = server.acquired;
-    server.acquired = async (query) => {
+    server.acquired = async () => {
       if (failure === 'network') throw new Error('offline');
-      const offset = Number(query.get('offset'));
-      if (failure === 'duplicate') return { items: [server.acquiredItems[0], server.acquiredItems[0]], total: 2, limit: 100, offset };
-      if (failure === 'changed total') return { items: [server.acquiredItems[0]], total: offset === 0 ? 2 : 3, limit: 100, offset };
-      return { items: [], total: 1, limit: 100, offset };
+      if (failure === 'duplicate') return { items: [server.acquiredItems[0], server.acquiredItems[0]], total: 2 };
+      if (failure === 'wrong total') return { items: [server.acquiredItems[0]], total: 2 };
+      return { items: [], total: 1 };
     };
     await openGoal();
     expect(screen.getByRole('alert')).toHaveTextContent(failure === 'network' ? 'offline' : 'list changed or was incomplete');
@@ -635,7 +638,7 @@ describe('stale reads and results', () => {
     const pending = deferred();
     server.acquired = () => pending.promise;
     const view = await openGoal();
-    const options = request.mock.calls.find(([path]) => path.includes('/acquired?'))[1];
+    const options = request.mock.calls.find(([path]) => path === '/instruments/acquired/universe')[1];
     view.unmount();
     expect(options.signal.aborted).toBe(true);
     await act(async () => pending.resolve({ items: server.acquiredItems, total: 2, limit: 100, offset: 0 }));

@@ -103,10 +103,15 @@ An acquired instrument has a saved provider profile in `instruments`, the same
 membership rule as the Acquired ETFs inventory. Profile-only or partially failed
 acquisitions belong to this universe, but may lack eligible history. Catalogue
 entries, cached listings, queued requests and quotes without a saved profile do
-not qualify. The UI reads every acquired-inventory page, rejects incomplete or
-changed pagination, and never automatically acquires anything. The backend
-rechecks membership and current data eligibility on every simulation, even if a
-client supplies a forged parameter or an old shortcut.
+not qualify. The UI captures the complete lightweight list from authenticated
+`GET /instruments/acquired/universe` in one response, checking its total and unique
+IDs. This endpoint groups saved profiles before loading catalogue labels and does
+not read quote history or compute statistics. Downloads completing during a load
+appear on the next load, without shifting offsets or invalidating the planner.
+Calibration selectors and bulk updates share this capture; the ETF table retains
+its paginated inventory endpoint and history filters. Loading never automatically
+acquires anything. The backend rechecks membership and current data eligibility
+on every simulation, even if a client supplies a forged parameter or an old shortcut.
 
 Extension points:
 
