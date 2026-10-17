@@ -35,7 +35,7 @@ function UpdateConfirmation({ selection, onConfirm, onCancel }) {
     event.preventDefault();
     if (confirmed) onConfirm();
   }}>
-    <h3 ref={heading} tabIndex={-1}>Update {selection.isin ? selection.name : `all ${selection.total} acquired ETFs`}?</h3>
+    <h3 ref={heading} tabIndex={-1}>Update {selection.isin ? selection.name : `all ${selection.total == null ? '' : `${selection.total} `}acquired ETFs`}?</h3>
     <p>{selection.isin ? 'Refresh the saved Yahoo Finance profile and full price history.' : 'Update acquired ETFs across all pages, skipping those collected 0 days ago (less than 24 hours). Keep this page open until all requests are submitted.'} Saved listings are reused; each submitted refresh fetches full history through the latest available trading day.</p>
     <label className="checkbox-label"><input type="checkbox" required checked={confirmed}
       onChange={(event) => setConfirmed(event.target.checked)} />Allow {selection.isin ? 'this update' : 'these updates'} to fetch Yahoo Finance data.</label>
@@ -75,6 +75,7 @@ function UpdateStatus({ update }) {
 export default function AcquiredEtfs() {
   const { request } = useAuth();
   const [offset, setOffset] = useState(0);
+  const [minHistoryYears, setMinHistoryYears] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [page, setPage] = useState(null);
   const [error, setError] = useState(null);
@@ -136,11 +137,12 @@ export default function AcquiredEtfs() {
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setPage((previous) => previous?.offset === offset ? previous : null);
+    setPage((previous) => previous?.offset === offset && previous.minHistoryYears === minHistoryYears ? previous : null);
     setError(null);
     async function load() {
       try {
-        const data = await request(`/instruments/acquired?limit=${ACQUIRED_PAGE_SIZE}&offset=${offset}`, { signal: controller.signal });
+        const historyQuery = minHistoryYears ? `&min_history_years=${minHistoryYears}` : '';
+        const data = await request(`/instruments/acquired?limit=${ACQUIRED_PAGE_SIZE}&offset=${offset}${historyQuery}`, { signal: controller.signal });
         if (controller.signal.aborted) return;
         if (!Array.isArray(data?.items) || !Number.isInteger(data.total) || data.total < 0
             || data.offset !== offset || data.limit !== ACQUIRED_PAGE_SIZE) {
@@ -150,7 +152,7 @@ export default function AcquiredEtfs() {
           setOffset(Math.max(0, Math.floor((data.total - 1) / ACQUIRED_PAGE_SIZE) * ACQUIRED_PAGE_SIZE));
           return;
         }
-        setPage(data);
+        setPage({ ...data, minHistoryYears });
       } catch (error) {
         if (!controller.signal.aborted) setError(error.message);
       } finally {
@@ -159,7 +161,7 @@ export default function AcquiredEtfs() {
     }
     load();
     return () => controller.abort();
-  }, [request, offset, attempt]);
+  }, [request, offset, attempt, minHistoryYears]);
 
   return <section aria-labelledby="acquired-etfs-heading" className="acquired-page">
     <div className="section-heading page-heading">
@@ -168,6 +170,20 @@ export default function AcquiredEtfs() {
         <p className="muted">A clearer view of the funds you follow.</p>
       </div>
       <a className="button-link" href="#/add"><Icon name="plus" />Add ETF</a>
+    </div>
+    <div className="section-heading history-filter">
+      <label htmlFor="minimum-history">Saved history
+        <select id="minimum-history" value={minHistoryYears} disabled={Boolean(selection)} onChange={(event) => {
+          setMinHistoryYears(event.target.value);
+          setOffset(0);
+        }}>
+          <option value="">All</option>
+          <option value="5">5y+</option>
+          <option value="15">15y+</option>
+          <option value="30">30y+</option>
+        </select>
+      </label>
+      <p className="muted">Minimum span between first and last saved quotes.</p>
     </div>
     {notice && <p role="status">{notice}</p>}
     {selection?.remove && <RemoveConfirmation selection={selection} removing={removing} error={removeError}
@@ -184,7 +200,7 @@ export default function AcquiredEtfs() {
     {loading && <p role="status">Loading acquired ETFs…</p>}
     {error && <><p role="alert">{error}</p><button className="secondary" onClick={() => setAttempt((value) => value + 1)}>Retry list</button></>}
     {page && (page.total === 0
-      ? <div className="empty-state collection-empty"><span className="empty-icon"><Icon name="layers" /></span><h3>No acquired ETFs yet</h3><p>Choose Add ETF to find a fund and request its data.</p></div>
+      ? <div className="empty-state collection-empty"><span className="empty-icon"><Icon name="layers" /></span><h3>{minHistoryYears ? 'No ETFs match this history filter' : 'No acquired ETFs yet'}</h3><p>{minHistoryYears ? 'Try a shorter history or select All.' : 'Choose Add ETF to find a fund and request its data.'}</p></div>
       : <>
         <div className="collection-table-card">
         <div className="table-heading"><h3>Fund overview</h3><span className="table-hint">Returns &amp; market data</span><span className="table-scroll-hint">Scroll for more →</span></div>
@@ -200,8 +216,8 @@ export default function AcquiredEtfs() {
                 <th scope="col" rowSpan={2}>Saved quotes</th><th scope="col" rowSpan={2}>Profile collected</th>
                 <th scope="col" rowSpan={2} className="market-data-actions"><span>Market data</span>
                   <button className="secondary" disabled={busy || loading || Boolean(selection)}
-                    title="Update market data across all pages, skipping ETFs collected 0 days ago"
-                    onClick={(event) => review(event, { isin: null, total: page.total })}>Update all</button>
+                    title="Update all acquired ETFs, including those hidden by the history filter, skipping ETFs collected 0 days ago"
+                    onClick={(event) => review(event, { isin: null, total: minHistoryYears ? null : page.total })}>Update all</button>
                 </th>
               </tr>
               <tr>
