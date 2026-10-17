@@ -223,7 +223,8 @@ def performance(db, document, benchmark_id=None, *, now=None):
                         stale_instruments.add(isin)
                         result["warnings"].append(
                             f"{isin}: TWR uses a stale last valid close from {source_date}, starting on {day}. "
-                            "This is a carried valuation, not an observed return; risk ratios are unavailable.")
+                            "Sharpe and Sortino treat the carried price as a zero price return; "
+                            "trades, fees and proxy returns still apply.")
             if missing:
                 equity = None
                 if growth is not None:
@@ -252,7 +253,7 @@ def performance(db, document, benchmark_id=None, *, now=None):
                 opening = proxy_marks.at(prior_day) if proxy_marks and prior_day < day else None
                 closing = proxy_marks.at(day) if proxy_marks else None
                 target = closing / opening if opening is not None and closing is not None else None
-                ratios.add(factor if not stale_instruments else None, target)
+                ratios.add(factor, target)
             previous_equity = equity
             benchmark_growth = None
             if benchmark_base is not None:
@@ -270,7 +271,7 @@ def performance(db, document, benchmark_id=None, *, now=None):
     result["summary"] = {"twr_percent": result["points"][-1]["twr_percent"]}
     for key in ("sharpe", "sortino"):
         values = [Decimal(item[key]) for item in ratio_summaries if item[key] is not None]
-        result["summary"][key] = format(sum(values, Decimal(0)) / len(values), ".8f") if values and not stale_instruments else None
+        result["summary"][key] = format(sum(values, Decimal(0)) / len(values), ".8f") if values else None
     if proxy and not ratios.valid:
         result["warnings"].append("Sharpe and Sortino unavailable: a funded daily return or matching EUR proxy history is missing, invalid or non-positive. Repair history; no partial sample is used.")
     return result

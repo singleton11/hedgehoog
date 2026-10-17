@@ -1,6 +1,8 @@
 """Last-known-close fallback is portfolio-only, explicit and read-only."""
 from copy import deepcopy
 from decimal import Decimal
+import math
+import statistics
 
 import pytest
 
@@ -99,25 +101,56 @@ def test_no_future_or_weekend_anchor_or_leading_fill(tracker, db):
     assert detail(client, url)['positions'][0]['market_price_eur'] == '100'
 
 
-def test_stale_returns_do_not_enter_risk_ratios_or_replace_benchmark_prices(tracker, db):
-    from test_performance_settings import second_instrument, configure
+@pytest.mark.parametrize('proxy_close', ['30', '30.3'])
+def test_stale_returns_count_as_zero_price_returns_with_proxy_excess(tracker, db, proxy_close):
+    from test_performance_settings import SECOND_ISIN, SECOND_LISTING, second_instrument, configure
+    from test_portfolio_performance import index_history
 
     client, _, _, url = tracker
     invest(client, url)
-    second_instrument(db)
+    second_instrument(db, days=('2026-09-14', '2026-09-16'))
+    quote(db, '2026-09-17', proxy_close, isin=SECOND_ISIN, listing=SECOND_LISTING)
     configure(client)
     quote(db, '2026-09-17', None)
+    original = list(db.quotes.find())
     result = get(client, url)
     assert result['summary']['twr_percent'] == '10.00000000'
-    assert result['summary']['sharpe'] is result['summary']['sortino'] is None
-    assert result['points'][-1]['sharpe'] is result['points'][-1]['sortino'] is None
+    excess = [0, math.log(1.1) - math.log(1.5), -math.log(float(proxy_close) / 30)]
+    expected = {'sharpe': [], 'sortino': []}
+    for size in (2, 3):
+        sample = excess[:size]
+        numerator = statistics.mean(sample) * math.sqrt(365)
+        expected['sharpe'].append(numerator / statistics.stdev(sample))
+        expected['sortino'].append(numerator / math.sqrt(sum(min(x, 0) ** 2 for x in sample) / size))
+    for key, values in expected.items():
+        assert float(result['points'][-1][key]) == pytest.approx(values[-1], abs=1e-8)
+        assert float(result['summary'][key]) == pytest.approx(statistics.mean(values), abs=1e-8)
+    assert any('zero price return' in warning for warning in result['warnings'])
+    assert not any('unavailable' in warning for warning in result['warnings'])
+    assert list(db.quotes.find()) == original
+    # Replacing the missing close by the same observed price gives identical ratios.
+    quote(db, '2026-09-17', '110')
+    assert get(client, url)['summary'] == result['summary']
+    quote(db, '2026-09-17', None)
+    benchmark = index_history(db, [('2026-09-14', '100'), ('2026-09-16', '101'), ('2026-09-17', None)])
+    compared = get(client, url, benchmark)
+    assert compared['summary'] == result['summary']
+    assert compared['points'][-1]['benchmark_percent'] is None
+    # Portfolio fallback must not silently carry missing proxy prices as well.
+    quote(db, '2026-09-17', None, isin=SECOND_ISIN, listing=SECOND_LISTING)
+    broken = get(client, url)
+    assert broken['points'][-1]['sharpe'] is broken['points'][-1]['sortino'] is None
+    assert any('matching EUR proxy history' in warning for warning in broken['warnings'])
 
 
 def test_stale_twr_preserves_trade_fees_and_external_cash_flows(tracker, db):
     from test_portfolio_tracker import cash, trade, record
+    from test_performance_settings import second_instrument, configure
 
     client, _, _, url = tracker
     invest(client, url, quantity='5')
+    second_instrument(db, days=('2026-09-14', '2026-09-16'))
+    configure(client)
     quote(db, '2026-09-16', None)
     quote(db, '2026-09-17', None)
     record(client, url, cash(amount='100', day='2026-09-16'))
@@ -129,3 +162,7 @@ def test_stale_twr_preserves_trade_fees_and_external_cash_flows(tracker, db):
     perf = get(client, url)
     assert Decimal(perf['summary']['twr_percent']) == pytest.approx(Decimal('-0.54545455'))
     assert any('stale' in warning for warning in perf['warnings'])
+    assert perf['points'][-1]['sharpe'] is not None
+    assert perf['points'][-1]['sortino'] is not None
+    assert perf['summary']['sharpe'] is not None
+    assert perf['summary']['sortino'] is not None
