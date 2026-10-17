@@ -323,10 +323,14 @@ Valuation is read-only: opening or refreshing a portfolio never requests provide
 data or consumes quota. Update prices explicitly on instrument pages. It uses the
 latest observation for each distinct date on the **recorded listing**, bounded by
 the current UTC date and collection time. The last two saved dates are selected
-before validating their prices: a bad latest close is not silently replaced by an
-older valid close, and adjusted closes are never substituted for raw closes.
+before validating their prices. In smoothing mode, an explicit trailing run of
+missing weekday closes uses the last valid confirmed EUR close with a stale-price
+warning. `price_date` is the actual source date, `latest_quote_date` is the latest
+saved date, and `price_is_stale` identifies this fallback. Daily PnL stays
+unavailable. Invalid prices are never skipped, and adjusted closes are never
+substituted for raw closes.
 
-A missing, invalid or unconfirmed/non-EUR price yields **Unavailable**, not zero.
+An unresolved missing, invalid or unconfirmed/non-EUR price yields **Unavailable**, not zero.
 A missing prior close leaves total valuation available but daily PnL unavailable.
 If any open position lacks a valuation, portfolio position value, equity and total
 unrealized PnL are also unavailable; cash and realized PnL remain known. Quote

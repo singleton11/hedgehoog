@@ -28,14 +28,15 @@ MAX_GROWTH = Decimal("1e300")
 
 
 class SavedMarks:
-    """Last saved raw close on/before a date, including an invalid latest row.
+    """Last derived portfolio close on/before a date, retaining invalid rows.
 
-    Never backfill from the future or skip an invalid endpoint. quote_rows pins
-    the published generation and listing and bounds effective/knowledge times.
+    Never backfill from the future. Portfolio-only trailing stale marks are
+    explicit; quote_rows pins listing and bounds effective/knowledge times.
     """
 
     def __init__(self, rows, *, required_currency=None, currency_override=None):
         self.dates = [row["date"] for row in rows]
+        self.carried = [row.get("carried_from_date") for row in rows]
         self.values = []
         for row in rows:
             currency = row.get("price_currency")
@@ -48,6 +49,10 @@ class SavedMarks:
     def at(self, day):
         index = bisect_right(self.dates, day) - 1
         return self.values[index] if index >= 0 else None
+
+    def carried_at(self, day):
+        index = bisect_right(self.dates, day) - 1
+        return self.carried[index] if index >= 0 else None
 
 
 def percent(growth):
@@ -146,7 +151,7 @@ def performance(db, document, benchmark_id=None, *, now=None):
     if proxy_marks:
         dates.update(day for day in proxy_marks.dates if first <= day <= today)
     for isin, instrument in instruments.items():
-        rows = ledger.quote_rows(db, instrument, now, policy=policy)
+        rows = ledger.quote_rows(db, instrument, now, policy=policy, carry_trailing=True)
         state = db.instrument_state.find_one({"_id": isin}) or {}
         listing = {key: instrument[key] for key in ("symbol", "exchange")}
         override = state.get("price_currency_override") if state.get("listing") == listing else None
@@ -175,6 +180,7 @@ def performance(db, document, benchmark_id=None, *, now=None):
         holdings = {}
         event_index = 0
         benchmark_gap = False
+        stale_instruments = set()
         previous_day = None
         for day in sorted(dates):
             if previous_day is not None and previous_equity is not None and previous_equity > 0:
@@ -212,6 +218,12 @@ def performance(db, document, benchmark_id=None, *, now=None):
                     missing.append(isin)
                 else:
                     equity += quantity * close
+                    source_date = marks[isin].carried_at(day)
+                    if source_date and isin not in stale_instruments:
+                        stale_instruments.add(isin)
+                        result["warnings"].append(
+                            f"{isin}: TWR uses a stale last valid close from {source_date}, starting on {day}. "
+                            "This is a carried valuation, not an observed return; risk ratios are unavailable.")
             if missing:
                 equity = None
                 if growth is not None:
@@ -240,7 +252,7 @@ def performance(db, document, benchmark_id=None, *, now=None):
                 opening = proxy_marks.at(prior_day) if proxy_marks and prior_day < day else None
                 closing = proxy_marks.at(day) if proxy_marks else None
                 target = closing / opening if opening is not None and closing is not None else None
-                ratios.add(factor, target)
+                ratios.add(factor if not stale_instruments else None, target)
             previous_equity = equity
             benchmark_growth = None
             if benchmark_base is not None:
@@ -258,7 +270,7 @@ def performance(db, document, benchmark_id=None, *, now=None):
     result["summary"] = {"twr_percent": result["points"][-1]["twr_percent"]}
     for key in ("sharpe", "sortino"):
         values = [Decimal(item[key]) for item in ratio_summaries if item[key] is not None]
-        result["summary"][key] = format(sum(values, Decimal(0)) / len(values), ".8f") if values else None
+        result["summary"][key] = format(sum(values, Decimal(0)) / len(values), ".8f") if values and not stale_instruments else None
     if proxy and not ratios.valid:
         result["warnings"].append("Sharpe and Sortino unavailable: a funded daily return or matching EUR proxy history is missing, invalid or non-positive. Repair history; no partial sample is used.")
     return result

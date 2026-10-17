@@ -113,7 +113,7 @@ def require_portfolio(db, owner, customer_id, portfolio_id):
     return document
 
 
-def quote_rows(db, instrument, now, *, policy=None):
+def quote_rows(db, instrument, now, *, policy=None, carry_trailing=False):
     """Latest observation per distinct effective date, on the pinned listing only."""
     query = {**md.observation_filter(db, instrument["instrument_id"], instrument, now),
              "date": {"$lte": now.date().isoformat()}, "collected_at": {"$lte": now}}
@@ -130,8 +130,29 @@ def quote_rows(db, instrument, now, *, policy=None):
     state = db.instrument_state.find_one({"_id": instrument["instrument_id"]}) or {}
     listing = {key: instrument[key] for key in ("symbol", "exchange")}
     override = state.get("price_currency_override") if state.get("listing") == listing else None
-    return fill_rows(rows, instrument["instrument_id"], policy or read_policy(db),
+    policy = policy or read_policy(db)
+    rows = fill_rows(rows, instrument["instrument_id"], policy,
                      cutoff=now.date().isoformat(), currency_override=override)
+    if carry_trailing and policy["method"] == "smooth":
+        rows = carry_trailing_closes(db, instrument, rows)
+    return rows
+
+
+def carry_trailing_closes(db, instrument, rows):
+    """Portfolio-only stale marks; do not feed carried prices to return fitting."""
+    from quote_fill import missing
+
+    start = len(rows)
+    while start and missing(rows[start - 1].get("close")) and Date.fromisoformat(rows[start - 1]["date"]).weekday() < 5:
+        start -= 1
+    if start == 0 or start == len(rows):
+        return rows
+    source = rows[start - 1]
+    if (price(source.get("close")) is None or Date.fromisoformat(source["date"]).weekday() >= 5
+            or not currency_supported(db, instrument, rows[start - 1:])):
+        return rows
+    return [*rows[:start], *[{**row, "close": source["close"], "carried_from_date": source["date"]}
+                            for row in rows[start:]]]
 
 
 def currency_supported(db, instrument, rows):
@@ -245,7 +266,7 @@ def _cached_quote_rows(db, instrument, now, cache):
         from quote_fill import read_policy
         cache["quote_fill_policy"] = read_policy(db)
     if key not in cache:
-        cache[key] = quote_rows(db, instrument, now, policy=cache["quote_fill_policy"])
+        cache[key] = quote_rows(db, instrument, now, policy=cache["quote_fill_policy"], carry_trailing=True)
     return cache[key]
 
 
@@ -261,7 +282,8 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
                 continue
             rows = _cached_quote_rows(db, position["instrument"], now, quote_cache)
             quotes[isin] = rows if currency_supported(db, position["instrument"], rows) else []
-            if len(quotes[isin]) >= 2 and (previous := price(quotes[isin][-2].get("close"))) is not None:
+            if (len(quotes[isin]) >= 2 and not any(row.get("carried_from_date") for row in quotes[isin][-2:])
+                    and (previous := price(quotes[isin][-2].get("close"))) is not None):
                 anchors[isin] = (quotes[isin][-2]["date"], previous)
         _, _, marked = replay(document["transactions"], anchors)
         items, warnings = [], []
@@ -278,6 +300,9 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
             warning = None
             if market is None:
                 warning = "EUR valuation unavailable: latest saved raw close is missing, invalid, or currency is unconfirmed/conflicting."
+            elif latest.get("carried_from_date"):
+                warning = (f"Stale valuation: using last valid close from {latest['carried_from_date']}; "
+                           f"saved close missing through {latest['date']}. Daily unrealized PnL unavailable.")
             elif isin not in anchors:
                 warning = "Daily unrealized PnL unavailable: two distinct valid EUR closing dates are required."
             elif not daily_interval(anchors[isin][0], latest["date"]):
@@ -291,7 +316,9 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
             items.append({"instrument": position["instrument"], "quantity": decimal_string(quantity),
                           "average_price_eur": format(position["cost"] / quantity, ".8f"),
                           "cost_basis_eur": euros(position["cost"]), "market_price_eur": decimal_string(market) if market is not None else None,
-                          "price_date": latest.get("date"), "previous_price_date": anchors.get(isin, (None,))[0],
+                          "price_date": latest.get("carried_from_date", latest.get("date")),
+                          "price_is_stale": bool(latest.get("carried_from_date")),
+                          "latest_quote_date": latest.get("date"), "previous_price_date": anchors.get(isin, (None,))[0],
                           "position_value_eur": euros(value), "unrealized_pnl_eur": euros(unrealized),
                           "daily_unrealized_pnl_eur": euros(daily), "warning": warning,
                           "_value": value, "_unrealized": unrealized, "_daily": daily, "_cost_basis": position["cost"]})
@@ -370,6 +397,7 @@ def _daily_pnl(db, documents, now, quote_cache):
             key = tuple(instrument[field] for field in ("instrument_id", "symbol", "exchange"))
             marks = rows[key]
             if (len(marks) < 2 or (marks[-2]["date"], marks[-1]["date"]) != (start, end)
+                    or any(row.get("carried_from_date") for row in marks[-2:])
                     or not currency_supported(db, instrument, marks)):
                 return unavailable
             previous, latest = price(marks[-2].get("close")), price(marks[-1].get("close"))

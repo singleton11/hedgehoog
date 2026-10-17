@@ -18,9 +18,11 @@ Split-normalized statistics are filled **after** split adjustment. A deliberatel
 
 ## Arithmetic smoothing (default)
 
-An isolated missing close is the arithmetic mean of the previous and next valid real close. Consecutive holes linearly interpolate by saved-row position between those bounds: for example `100, null, null, 160` becomes `100, 120, 140, 160`. Both bounds must be inside the calculation cutoff and same-currency segment. Leading/trailing holes remain missing. Arithmetic uses fixed Decimal precision, independent of the caller's rounding context.
+An isolated missing close is the arithmetic mean of the previous and next valid real close. Consecutive holes linearly interpolate by saved-row position between those bounds: for example `100, null, null, 160` becomes `100, 120, 140, 160`. Both bounds must be inside the calculation cutoff and same-currency segment. Leading/trailing holes remain missing for instrument statistics, simulation fitting, calibration, risk proxies and comparison indices. Arithmetic uses fixed Decimal precision, independent of the caller's rounding context.
 
-Historical portfolio curves can therefore change when a later saved close supplies the right bound. These are retrospective derived marks, not claimed historical observations. Unrepaired required marks still make cumulative TWR unavailable; no partial portfolio total or silent chain restart is introduced.
+In smoothing mode only, portfolio valuation and TWR use the last valid confirmed EUR close for an explicit trailing run of missing weekday closes. The fallback cannot cross invalid prices, unsupported/unknown currencies or weekend endpoints. No dates or raw quotes are created. Positions expose `price_is_stale`, the source `price_date`, and `latest_quote_date`, with a visible warning including both dates. Equity, total PnL, customer/portfolio net worth and plan progress use this explicitly stale valuation. Daily PnL stays unavailable, and stale returns are excluded from expanding risk ratios (summary ratios are unavailable), rather than being treated as observed zero returns. The normal-sampling policy does not silently fall back to carrying. Carried marks never reach instrument statistics, simulation fitting or calibration.
+
+Historical portfolio curves can therefore change when a later saved close supplies the right bound, replacing a stale mark with interpolation. These are retrospective derived marks, not claimed historical observations. Unrepaired required marks still make cumulative TWR unavailable; no partial portfolio total or silent chain restart is introduced.
 
 ## Normally sampled instrument log returns
 

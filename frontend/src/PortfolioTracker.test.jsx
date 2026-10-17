@@ -813,6 +813,26 @@ describe('valuation, transaction pagination and read failures', () => {
     expect(within(table).queryByText(/Date unavailable/)).not.toBeInTheDocument();
   });
 
+  it('shows stale valuation warnings and the actual source price date without hiding equity', async () => {
+    const server = mockServer();
+    const warning = 'Stale valuation: using last valid close from 2026-09-23; saved close missing through 2026-09-24. Daily unrealized PnL unavailable.';
+    server.details.set(pid, snapshot(metadata(), {
+      daily_unrealized_pnl_eur: null, daily_from_date: null, daily_to_date: null,
+      warnings: [`${A}: ${warning}`], positions: [position({
+        price_is_stale: true, latest_quote_date: '2026-09-24', price_date: '2026-09-23',
+        daily_unrealized_pnl_eur: null, previous_price_date: null, warning,
+      })],
+    }));
+    await open();
+    expect(summaryValue('Equity')).toHaveTextContent('€1,137.50');
+    expect(summaryValue('Daily unrealized P&L')).toHaveTextContent('Unavailable');
+    expect(screen.getByRole('list', { name: 'Valuation warnings' })).toHaveTextContent(warning);
+    const table = screen.getByRole('table', { name: 'Current holdings · EUR' });
+    expect(within(table).getByText(warning)).toBeInTheDocument();
+    expect(within(table).getAllByTitle('Price date: 2026-09-23')).toHaveLength(2);
+    expect(writes()).toHaveLength(0);
+  });
+
   it('keeps Positions price dates only in market-price and daily-P&L tooltips', async () => {
     const server = mockServer();
     server.details.set(pid, snapshot(metadata(), { positions: [position({

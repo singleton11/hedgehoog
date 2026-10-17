@@ -87,6 +87,27 @@ def test_missing_plan_and_owner_scope(planner, db):
     assert client.get(path + '/plan-tracking').status_code == 401
 
 
+def test_stale_portfolio_valuation_restores_plan_progress_without_changing_saved_plan(planner, db):
+    from test_market_data import ISIN
+    from test_portfolio_tracker import cash, trade, record, quote
+
+    client, path, saved = linked(planner)
+    record(client, path, cash(amount='1000', day='2026-09-15'))
+    record(client, path, trade(quantity='1', price='100', day='2026-09-15'))
+    quote(db, '2026-09-16', None)
+    quote(db, '2026-09-17', None)
+    # Ensure the latest collection wins over the seeded price on that date.
+    db.quotes.update_many({'instrument_id': ISIN, 'date': {'$gte': '2026-09-16'}},
+                          {'$set': {'data.close': None}})
+    before = deepcopy(db.planner_simulations.find_one({'_id': saved['id']}))
+    response = client.get(path + '/plan-tracking')
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert Decimal(result['equity_eur']) > 0
+    assert any('Stale valuation' in warning and '2026-09-15' in warning for warning in result['warnings'])
+    assert db.planner_simulations.find_one({'_id': saved['id']}) == before
+
+
 def test_missing_valuation_and_expired_deadline(planner, db):
     import market_data as md
     from plan_tracking import track_plan

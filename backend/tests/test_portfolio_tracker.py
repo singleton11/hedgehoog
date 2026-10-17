@@ -565,7 +565,7 @@ def test_latest_two_distinct_raw_closes_not_adjusted_revisions_or_future_evidenc
     provider.assert_not_called()
 
 
-@pytest.mark.parametrize("invalid", [None, True, "bad", "NaN", "Infinity", "0", "-1", "1e-1000", "1e1000", {}, []])
+@pytest.mark.parametrize("invalid", [True, "bad", "Infinity", "0", "-1", "1e-1000", "1e1000", {}, []])
 def test_invalid_latest_raw_close_never_falls_back_to_adjusted_or_older_close(tracker, db, invalid):
     client, _, _, url = tracker
     record(client, url, cash())
@@ -605,8 +605,14 @@ def test_missing_quote_or_prior_close_keeps_unavailable_values_explicit(tracker,
         return
     assert result["daily_unrealized_pnl_eur"] is None
     assert result["daily_from_date"] is result["daily_to_date"] is None
-    if mode in ("no-quotes", "missing-close"):
+    if mode == "no-quotes":
         assert result["positions_value_eur"] is result["equity_eur"] is None
+    elif mode == "missing-close":
+        assert result["positions_value_eur"] == "100.00"
+        assert result["equity_eur"] == "1000.00"
+        assert result["positions"][0]["price_date"] == "2026-09-15"
+        assert result["positions"][0]["price_is_stale"] is True
+        assert "Stale valuation" in result["positions"][0]["warning"]
     else:
         assert result["positions_value_eur"] == "110.00"
         assert result["unrealized_pnl_eur"] == "10.00"
@@ -691,8 +697,8 @@ def test_mixed_quote_periods_preserve_position_daily_pnl_but_not_portfolio_total
     assert result["daily_unrealized_pnl_eur"] is None
     assert result["daily_from_date"] is result["daily_to_date"] is None
     assert any("different closing-date intervals" in warning for warning in result["warnings"])
-    # One unavailable position makes value/unrealized totals unavailable, not a misleading partial sum.
-    db.quotes.update_one({"instrument_id": SECOND_ISIN, "date": "2026-09-15"}, {"$set": {"data.close": None}})
+    # Invalid evidence still blocks totals; a missing trailing close now uses an explicit stale mark.
+    db.quotes.update_one({"instrument_id": SECOND_ISIN, "date": "2026-09-15"}, {"$set": {"data.close": "0"}})
     result = detail(client, url)
     assert result["positions_value_eur"] is result["equity_eur"] is result["unrealized_pnl_eur"] is None
     first = next(item for item in result["positions"] if item["instrument"]["instrument_id"] == ISIN)

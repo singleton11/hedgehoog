@@ -16,7 +16,7 @@ Changing the setting affects historical ratios on the next portfolio read/refres
 
 ## Calculation contract
 
-`GET /customers/{customer}/portfolios/{portfolio}/performance` retains the existing daily TWR cash-flow timing: deposits at period start, withdrawals at period end, trades/fees internal. Each point additionally contains nullable eight-decimal `sharpe` and `sortino` strings. The response adds `risk_proxy`, `ratio_method` and `summary: { twr_percent, sharpe, sortino }`. Summary Sharpe and Sortino are arithmetic averages of the non-null ratio values shown across the response points; TWR remains the latest cumulative value.
+`GET /customers/{customer}/portfolios/{portfolio}/performance` retains the existing daily TWR cash-flow timing: deposits at period start, withdrawals at period end, trades/fees internal. Each point additionally contains nullable eight-decimal `sharpe` and `sortino` strings. The response adds `risk_proxy`, `ratio_method` and `summary: { twr_percent, sharpe, sortino }`. Summary Sharpe and Sortino are arithmetic averages of the non-null ratio values shown across the response points; TWR remains the latest cumulative value. In smoothing mode, trailing missing portfolio closes use explicitly stale last-known EUR marks, with source-date warnings. These marks do not enter risk-ratio samples: affected ratio points and summary averages are unavailable until history is repaired. Benchmark and risk-proxy prices do not use this trailing fallback.
 
 Ratios are expanding **since-inception daily log excess-return ratios**, not rolling-year or conventional simple-return ratios:
 
