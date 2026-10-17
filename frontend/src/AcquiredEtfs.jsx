@@ -210,7 +210,7 @@ export default function AcquiredEtfs() {
             <colgroup span={2} /><colgroup span={2} /><colgroup span={2} /><colgroup span={2} /><colgroup span={1} />
             <thead>
               <tr>
-                <th scope="col" rowSpan={2}>ETF</th><th scope="col" rowSpan={2}>Saved listing</th>
+                <th scope="col" rowSpan={2}>ETF</th><th scope="col" rowSpan={2}>Asset class</th><th scope="col" rowSpan={2}>Index</th><th scope="col" rowSpan={2}>Saved listing</th>
                 <th id="acquired-historical" scope="colgroup" colSpan={2} className="statistic-group">Historical</th>
                 <th id="acquired-statistical" scope="colgroup" colSpan={2} className="statistic-group">Statistical</th>
                 <th scope="col" rowSpan={2}>Saved quotes</th><th scope="col" rowSpan={2}>Profile collected</th>
@@ -232,6 +232,8 @@ export default function AcquiredEtfs() {
                 <div><a href={`#/instruments/${encodeURIComponent(item.instrument_id)}`}>{displayText(item.name) || item.isin}</a>
                   <span className="muted">{[displayText(item.ticker), item.isin].filter(Boolean).join(' · ')}</span></div>
               </div></th>
+              <td>{displayText(item.asset_class) || 'Not available'}</td>
+              <td>{displayText(item.index) || 'Not available'}</td>
               <td className="saved-listing">{item.listing?.symbol || 'Unknown'}<span className="muted">{item.listing?.exchange || 'Unknown MIC'}</span></td>
               <HistoricalYearReturn item={item} />
               <td className="annual-statistic" headers="acquired-historical acquired-historical-volatility" title={historicalVolatilityTitle(item)}>{percent(item.historical_year_volatility)}</td>

@@ -133,6 +133,11 @@ def test_acquisition_snapshots_latest_catalogue_metadata(db, config, metadata):
     assert snapshot["asset_class"] == metadata.get("asset_class")
     assert snapshot["index"] == metadata.get("index")
     assert snapshot["data"] == source.profile
+    row = md.acquired_instruments(db)["items"][0]
+    profile = md.instrument_detail(db, config, ISIN)["profile"]
+    for key in ("asset_class", "index"):
+        assert row[key] == metadata.get(key)
+        assert profile[key] == metadata.get(key)
 
     db.etfs.update_one({"isin": ISIN, "import_date": "2026-09-17"}, {"$set": {"index": "Changed index"}})
     md.run_acquisition(db, config, result["id"], source.factory)
@@ -234,6 +239,7 @@ def test_acquired_list_includes_profile_only_after_failed_download(db, config):
     assert page["items"] == [{
         "instrument_id": ISIN, "isin": ISIN, "name": "iShares Core S&P 500 UCITS ETF",
         "ticker": "SXR8", "listing": LISTING, "collected_at": "2026-09-17T12:00:00Z",
+        "asset_class": None, "index": None,
         "quote_count": 0, "first_date": None, "last_date": None,
         "annualized_mean_log_return": None, "annualized_volatility": None,
         "historical_year_return": None, "historical_year_start_date": None,
@@ -264,6 +270,7 @@ def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config
     assert next_page == {"total": 2, "limit": 1, "offset": 1, "items": [{
         "instrument_id": ISIN, "isin": ISIN, "name": "Updated catalogue name", "ticker": "NEW",
         "listing": LISTING, "collected_at": "2026-09-17T13:00:00Z", "quote_count": 2,
+        "asset_class": None, "index": None,
         "first_date": "2026-09-15", "last_date": "2026-09-16",
         "annualized_mean_log_return": 0.0, "annualized_volatility": None,
         "historical_year_return": None, "historical_year_start_date": None,

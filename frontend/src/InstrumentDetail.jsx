@@ -137,6 +137,10 @@ export default function InstrumentDetail({ isin }) {
       <h2 className="instrument-name" ref={heading} tabIndex={-1}>{displayText(catalogue.name) || isin}</h2>
       <p className="muted">{[displayText(catalogue.ticker), displayText(catalogue.asset_class) || 'ETF', `Fund currency: ${catalogue.currency || 'unknown'}`].filter(Boolean).join(' · ')}
         {listing && <> · {listing.symbol} / {listing.exchange}</>}</p>
+      <dl className="facts">
+        <div><dt>Asset class</dt><dd>{displayText(profile?.asset_class) || 'Not available'}</dd></div>
+        <div><dt>Index</dt><dd>{displayText(profile?.index) || 'Not available'}</dd></div>
+      </dl>
       <p><a href={`#/goal/${encodeURIComponent(isin)}`}>Plan a goal with this ETF</a></p>
     </section>
     <ReturnStatistics isin={isin} generation={detail.generation} refreshKey={JSON.stringify([acquisition?.id, acquisition?.status, detail.price_currency_override, splitRevision])} />
