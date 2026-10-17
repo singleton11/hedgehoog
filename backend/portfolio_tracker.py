@@ -210,6 +210,15 @@ def daily_interval(start, end):
     ) == 1
 
 
+def daily_marks(rows):
+    """Newest usable daily intervals, never treating carried marks as observations."""
+    for previous, latest in reversed(list(zip(rows, rows[1:]))):
+        if (daily_interval(previous["date"], latest["date"])
+                and not previous.get("carried_from_date") and not latest.get("carried_from_date")
+                and price(previous.get("close")) is not None and price(latest.get("close")) is not None):
+            yield previous, latest
+
+
 def replay(events, anchors=None):
     """Average cost; optional prior-close reference basis for remaining shares.
 
@@ -275,16 +284,28 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
     with localcontext() as context:
         context.prec = 80
         cash, realized, positions = replay(document["transactions"])
-        now, quotes, anchors = now or md.utcnow(), {}, {}
+        now, quotes, anchors, daily_quotes = now or md.utcnow(), {}, {}, {}
         quote_cache = {} if quote_cache is None else quote_cache
         for isin, position in positions.items():
             if not position["quantity"]:
                 continue
             rows = _cached_quote_rows(db, position["instrument"], now, quote_cache)
             quotes[isin] = rows if currency_supported(db, position["instrument"], rows) else []
-            if (len(quotes[isin]) >= 2 and not any(row.get("carried_from_date") for row in quotes[isin][-2:])
-                    and (previous := price(quotes[isin][-2].get("close"))) is not None):
-                anchors[isin] = (quotes[isin][-2]["date"], previous)
+            pair = next(daily_marks(quotes[isin]), None)
+            if pair:
+                previous, latest = pair
+                anchors[isin] = (previous["date"], price(previous["close"]))
+                daily_quotes[isin] = latest
+        if len(quotes) > 1:
+            intervals = [{(previous["date"], latest["date"]): (previous, latest)
+                          for previous, latest in daily_marks(rows)} for rows in quotes.values()]
+            common = set.intersection(*(set(values) for values in intervals))
+            if common:
+                interval = max(common)
+                for isin, values in zip(quotes, intervals):
+                    previous, latest = values[interval]
+                    anchors[isin] = (previous["date"], price(previous["close"]))
+                    daily_quotes[isin] = latest
         _, _, marked = replay(document["transactions"], anchors)
         items, warnings = [], []
         for isin, position in marked.items():
@@ -302,15 +323,14 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
                 warning = "EUR valuation unavailable: latest saved raw close is missing, invalid, or currency is unconfirmed/conflicting."
             elif latest.get("carried_from_date"):
                 warning = (f"Stale valuation: using last valid close from {latest['carried_from_date']}; "
-                           f"saved close missing through {latest['date']}. Daily unrealized PnL unavailable.")
+                           f"saved close missing through {latest['date']}.")
             elif isin not in anchors:
-                warning = "Daily unrealized PnL unavailable: two distinct valid EUR closing dates are required."
-            elif not daily_interval(anchors[isin][0], latest["date"]):
-                warning = "Daily unrealized PnL unavailable: saved closes span missing weekdays or non-trading dates."
-            else:
-                # Mark current holdings even when trades postdate the saved close.
-                # Replay retains actual purchase cost for buys after the anchor.
-                daily = value - position["reference"]
+                warning = ("Daily unrealized PnL unavailable: saved closes span missing weekdays or non-trading dates."
+                           if len(rows) >= 2 and not daily_interval(rows[-2]["date"], rows[-1]["date"])
+                           else "Daily unrealized PnL unavailable: two distinct valid EUR closing dates are required.")
+            if isin in daily_quotes:
+                # Keep the current-ledger accounting, but use the selected historical close.
+                daily = quantity * price(daily_quotes[isin]["close"]) - position["reference"]
             if warning:
                 warnings.append(f"{isin}: {warning}")
             items.append({"instrument": position["instrument"], "quantity": decimal_string(quantity),
@@ -318,16 +338,19 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
                           "cost_basis_eur": euros(position["cost"]), "market_price_eur": decimal_string(market) if market is not None else None,
                           "price_date": latest.get("carried_from_date", latest.get("date")),
                           "price_is_stale": bool(latest.get("carried_from_date")),
-                          "latest_quote_date": latest.get("date"), "previous_price_date": anchors.get(isin, (None,))[0],
+                          "latest_quote_date": latest.get("date"), "previous_price_date": anchors.get(isin, (rows[-2]["date"] if len(rows) >= 2 else None,))[0],
+                          "daily_price_date": daily_quotes.get(isin, {}).get("date"),
                           "position_value_eur": euros(value), "unrealized_pnl_eur": euros(unrealized),
                           "daily_unrealized_pnl_eur": euros(daily), "warning": warning,
+                          "daily_previous_value_eur": euros(quantity * price(daily_quotes[isin]["close"]) - daily) if daily is not None else None,
+                          "_daily_value": quantity * price(daily_quotes[isin]["close"]) if daily is not None else None,
                           "_value": value, "_unrealized": unrealized, "_daily": daily, "_cost_basis": position["cost"]})
         items.sort(key=lambda item: (item["instrument"]["name"], item["instrument"]["instrument_id"]))
         def total(key):
             return sum((item[key] for item in items), ZERO) if all(item[key] is not None for item in items) else None
         value, unrealized, daily = total("_value"), total("_unrealized"), total("_daily")
         cost_basis = total("_cost_basis")
-        periods = {(item["previous_price_date"], item["price_date"]) for item in items}
+        periods = {(item["previous_price_date"], item["daily_price_date"]) for item in items}
         if len(periods) > 1:
             daily = None
             warnings.append("Portfolio daily unrealized PnL unavailable: positions have different closing-date intervals. Update their market data.")
@@ -337,7 +360,7 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
                 "equity_eur": amount(cash + value) if value is not None else None, "realized_pnl_eur": amount(realized),
                 "unrealized_pnl_eur": amount(unrealized), "daily_unrealized_pnl_eur": amount(daily),
                 "cost_basis_eur": amount(cost_basis),
-                "previous_value_eur": amount(value - daily) if value is not None and daily is not None else None,
+                "previous_value_eur": amount(total("_daily_value") - daily) if daily is not None else None,
                 "daily_from_date": period[0], "daily_to_date": period[1],
                 "positions": [event_public(item) for item in items], "warnings": warnings}
 
@@ -347,7 +370,7 @@ def _daily_pnl(db, documents, now, quote_cache):
 
     Include all trades after the prior close, even newer than the latest mark,
     with sales, round trips and fees, but without external cash flows. Select dates
-    before validating prices; never fall back to older valid closes. Instruments
+    by searching backward for a usable common daily interval. Instruments
     liquidated before the interval need no marks and cannot poison the total.
     The caller supplies an 80-digit Decimal context and a request-local cache.
     """
@@ -374,9 +397,18 @@ def _daily_pnl(db, documents, now, quote_cache):
     dates = sorted({row["date"] for key in candidates for row in rows[key]})
     if len(dates) < 2:
         return unavailable
-    start, end = dates[-2:]
-    if not daily_interval(start, end):
-        return unavailable
+    pairs = {key: {(previous["date"], latest["date"]): (previous, latest)
+                   for previous, latest in daily_marks(marks)} for key, marks in rows.items()}
+    for start, end in reversed(list(zip(dates, dates[1:]))):
+        if not daily_interval(start, end):
+            continue
+        result = _daily_pnl_interval(db, documents, rows, pairs, start, end)
+        if result is not None:
+            return result
+    return unavailable
+
+
+def _daily_pnl_interval(db, documents, rows, pairs, start, end):
     total, exposed = ZERO, False
     for document in documents:
         events = active_events(document["transactions"])
@@ -396,13 +428,10 @@ def _daily_pnl(db, documents, now, quote_cache):
             instrument = position["instrument"]
             key = tuple(instrument[field] for field in ("instrument_id", "symbol", "exchange"))
             marks = rows[key]
-            if (len(marks) < 2 or (marks[-2]["date"], marks[-1]["date"]) != (start, end)
-                    or any(row.get("carried_from_date") for row in marks[-2:])
-                    or not currency_supported(db, instrument, marks)):
-                return unavailable
-            previous, latest = price(marks[-2].get("close")), price(marks[-1].get("close"))
-            if previous is None or latest is None:
-                return unavailable
+            pair = pairs[key].get((start, end))
+            if pair is None or not currency_supported(db, instrument, marks):
+                return None
+            previous, latest = (price(row["close"]) for row in pair)
             total += closing * latest - opening * previous
         for event in period_trades:
             gross = (Decimal(event["quantity"]) * Decimal(event["price_eur"])).quantize(CENT, rounding=ROUND_HALF_UP)

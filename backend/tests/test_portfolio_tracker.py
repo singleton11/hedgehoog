@@ -213,7 +213,8 @@ def test_customer_net_worth_is_unavailable_rather_than_partial_when_any_holding_
     else:
         quote(db, "2026-09-17", "110", currency="USD")
     summary = client.get("/customers").json()["items"][0]
-    assert all(summary[key] is None for key in ("net_worth_eur", "unrealized_pnl_eur", "today_pnl_eur", "total_pnl_eur"))
+    assert all(summary[key] is None for key in ("net_worth_eur", "unrealized_pnl_eur", "total_pnl_eur"))
+    assert summary["today_pnl_eur"] == ("10.00" if failure == "invalid" else None)
     assert summary["realized_pnl_eur"] == "0.00"
     # Once liquidated, there is no missing holding value to conceal the cash.
     record(client, url, trade("sell", day="2026-09-17"))

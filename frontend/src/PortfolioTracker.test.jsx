@@ -833,6 +833,20 @@ describe('valuation, transaction pagination and read failures', () => {
     expect(writes()).toHaveLength(0);
   });
 
+  it('uses the historical daily date and reference value when valuation is newer', async () => {
+    const server = mockServer();
+    server.details.set(pid, snapshot(metadata(), {
+      daily_unrealized_pnl_eur: '10.00', previous_value_eur: '100.00',
+      positions: [position({ price_date: '2026-09-24', daily_price_date: '2026-09-22',
+        position_value_eur: '150.00', daily_unrealized_pnl_eur: '10.00', daily_previous_value_eur: '100.00' })],
+    }));
+    await open();
+    expect(summaryValue('Daily unrealized P&L')).toHaveTextContent('10.00%');
+    const table = screen.getByRole('table', { name: 'Current holdings · EUR' });
+    expect(within(table).getByTitle('Price date: 2026-09-22')).toHaveTextContent('10.00%');
+    expect(within(table).getByTitle('Price date: 2026-09-24')).toBeInTheDocument();
+  });
+
   it('keeps Positions price dates only in market-price and daily-P&L tooltips', async () => {
     const server = mockServer();
     server.details.set(pid, snapshot(metadata(), { positions: [position({

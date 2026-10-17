@@ -326,9 +326,18 @@ the current UTC date and collection time. The last two saved dates are selected
 before validating their prices. In smoothing mode, an explicit trailing run of
 missing weekday closes uses the last valid confirmed EUR close with a stale-price
 warning. `price_date` is the actual source date, `latest_quote_date` is the latest
-saved date, and `price_is_stale` identifies this fallback. Daily PnL stays
-unavailable. Invalid prices are never skipped, and adjusted closes are never
-substituted for raw closes.
+saved date, and `price_is_stale` identifies this fallback. Valuation never skips
+invalid prices, and adjusted closes are never substituted for raw closes.
+
+Daily PnL searches backward for the newest available valid daily interval,
+including across missing quotes and weekends. It never turns a multi-weekday
+gap into a daily return or uses carried prices as observed daily marks. Portfolio
+and customer totals require a shared interval across exposed instruments. The
+selected dates are returned in `daily_from_date`/`daily_to_date` or
+`today_from_date`/`today_to_date`; positions expose `daily_price_date` separately
+from their valuation date. Daily percentages use that interval's reference value.
+Current-ledger trade accounting (including newer trades and fees where applicable)
+is unchanged. Raw quotes, valuation, statistics and simulation fitting are unchanged.
 
 An unresolved missing, invalid or unconfirmed/non-EUR price yields **Unavailable**, not zero.
 A missing prior close leaves total valuation available but daily PnL unavailable.
