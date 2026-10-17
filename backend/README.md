@@ -101,6 +101,54 @@ Try it in another terminal:
 curl http://127.0.0.1:8000/
 ```
 
+## Standalone ETF history coverage CSV
+
+Survey the entire ETF reference catalogue without MongoDB, Celery, API keys, or
+changes to application data. From the repository root, try ten instruments first:
+
+```sh
+cd backend
+uv run python etf_history_coverage.py --output ../etf-coverage-sample.csv --limit 10
+```
+
+Run the full catalogue (currently about 4,500 ETFs) into a separate CSV:
+
+```sh
+uv run python etf_history_coverage.py --output ../etf-coverage.csv
+# Continue an interrupted run, using the SAME inclusive end date as the original:
+uv run python etf_history_coverage.py --output ../etf-coverage.csv --resume --end YYYY-MM-DD
+```
+
+The CSV starts with `ticker,day_closes` and includes ISIN, resolved Yahoo symbol,
+status/error code, first/last valid close dates, requested dates and UTC check time.
+`day_closes` counts distinct trading dates with finite positive **Close**, not
+Adj Close or calendar days. Full history starts at 1970-01-01 and ends yesterday
+UTC by default (avoiding the current partial daily candle); `--start` / `--end`
+change the inclusive range. Failed requests have a blank count, not a misleading
+zero; a successful empty response has `status=no_history` and count zero.
+
+Catalogue tickers are not necessarily Yahoo symbols. The script reuses the
+project's conservative ticker/ISIN listing resolver; ambiguous or unsupported
+listings are recorded as errors rather than guessing exchange suffixes. Use
+`--catalogue /path/to/etfs.json` for a local etfdb JSON snapshot. For reproducible
+multi-day runs, keep that snapshot and specify a fixed `--end` from the first run.
+
+Each row is flushed immediately. `--resume` skips all recorded ISINs, including
+errors; use a new output file (optionally a catalogue subset) to retry them.
+Existing files are never overwritten. Downloads use **four isolated worker
+processes** by default; `--workers 8` changes concurrency and `--workers 1`
+restores sequential execution. Only the parent writes CSV rows, in completion
+order. Per-instrument START/DONE logs may appear out of catalogue order.
+At least one second separates actual Yahoo HTTP calls **across all workers**;
+`--delay 2` slows them further and `--timeout 30` changes the per-request timeout.
+Parallel workers overlap network latency and processing, not the global rate
+limit. Each instrument can require multiple HTTP calls, so a full run may take
+many hours. Rate limits/access denials stop new requests after saving the error
+row; in-flight responses may finish and unsaved instruments are retried on resume.
+Shutdown can wait for an in-flight request's timeout. Yahoo is unofficial
+and may throttle or deny bulk access; this does not guarantee full coverage.
+Only counts and metadata are saved, not the downloaded price history.
+
 ## Instrument acquisition
 
 The acquired ETF list offers a confirmed **Remove → Delete saved data** action.
