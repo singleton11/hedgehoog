@@ -217,6 +217,48 @@ describe('read-only price currency', () => {
 });
 
 describe('acquired ETF inventory', () => {
+  it('requests each minimum-history preset and resets pagination when it changes', async () => {
+    const server = mockServer();
+    const calls = [];
+    server.acquired = async (params) => {
+      calls.push(params.toString());
+      const offset = Number(params.get('offset'));
+      const limit = Number(params.get('limit'));
+      const filtered = params.has('min_history_years');
+      return { items: filtered ? [] : [acquiredItem(offset ? B : A)], total: filtered ? 0 : 21, offset, limit };
+    };
+    await open();
+    fireEvent.click(screen.getByRole('button', { name: 'Next ETFs' }));
+    await flush();
+    expect(calls.at(-1)).toBe('limit=20&offset=20');
+    const filter = screen.getByRole('combobox', { name: 'Saved history' });
+    for (const years of ['5', '15', '30']) {
+      fireEvent.change(filter, { target: { value: years } });
+      await flush();
+      expect(calls.at(-1)).toBe(`limit=20&offset=0&min_history_years=${years}`);
+      expect(screen.getByText('No ETFs match this history filter')).toBeInTheDocument();
+      expect(screen.queryByText('No acquired ETFs yet')).not.toBeInTheDocument();
+    }
+    fireEvent.change(filter, { target: { value: '' } });
+    await flush();
+    expect(calls.at(-1)).toBe('limit=20&offset=0');
+    expect(screen.getByRole('table')).toBeInTheDocument();
+  });
+
+  it('ignores a stale list response after changing the history filter', async () => {
+    const server = mockServer();
+    const stale = deferred();
+    server.acquired = async (params) => params.has('min_history_years')
+      ? { items: [], total: 0, limit: 20, offset: 0 } : stale.promise;
+    await open();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Saved history' }), { target: { value: '30' } });
+    await flush();
+    stale.resolve({ items: [acquiredItem()], total: 1, limit: 20, offset: 0 });
+    await flush();
+    expect(screen.getByText('No ETFs match this history filter')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  });
+
   it('shows historical price change separately from annual log statistics in one inventory read', async () => {
     const server = mockServer();
     server.acquiredItems = [acquiredItem(A, { name: 'Growing ETF' }),

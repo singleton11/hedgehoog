@@ -121,6 +121,10 @@ button.sign-out { min-height: 34px; padding: 0.4rem 0.65rem; font-size: 0.74rem;
 .skip-link:focus { top: 1rem; }
 
 /* Collection data table. */
+.history-filter { flex-wrap: wrap; margin-bottom: 1.2rem; }
+.history-filter label { display: flex; align-items: center; gap: 0.75rem; }
+.history-filter select { width: auto; min-width: 7rem; }
+.history-filter .muted { margin: 0; font-size: 0.8rem; }
 .collection-table-card { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: white; box-shadow: var(--shadow); }
 .table-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1.2rem 1.4rem; }
 .table-heading h3 { margin: 0; font-size: 0.9rem; font-weight: 700; }

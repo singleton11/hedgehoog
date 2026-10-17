@@ -92,8 +92,9 @@ def search(request: Request, user: CurrentUser, q: Annotated[str, Query(min_leng
 
 
 @router.get("/acquired")
-def acquired(request: Request, user: CurrentUser, limit: Annotated[int, Query(ge=1, le=100)] = 20, offset: Annotated[int, Query(ge=0)] = 0):
-    return acquired_instruments(request.app.state.database, limit, offset)
+def acquired(request: Request, user: CurrentUser, limit: Annotated[int, Query(ge=1, le=100)] = 20, offset: Annotated[int, Query(ge=0)] = 0,
+             min_history_years: Literal["5", "15", "30"] | None = None):
+    return acquired_instruments(request.app.state.database, limit, offset, int(min_history_years) if min_history_years is not None else None)
 
 
 @router.get("/budget")

@@ -128,17 +128,17 @@ def search_catalogue(db, query, limit):
     return [{**record, "instrument_id": record["isin"]} for record in records]
 
 
-def acquired_instruments(db, limit=20, offset=0):
+def acquired_instruments(db, limit=20, offset=0, min_history_years=None):
     """One row per saved ETF profile, including partial/failed acquisitions.
 
     The worker saves tickerinfo before any EOD pages, so profiles are the
     acquisition inventory. A queued job or cached listing alone is not data.
-    Paginate lightweight observations before fetching catalogue/quote summaries
-    and refreshing cached return statistics from saved prices only.
+    Filter saved quote spans before pagination when a minimum is requested.
+    Refresh cached return statistics only for the resulting page.
     """
     from return_statistics import refresh_statistics
 
-    result = list(db.instruments.aggregate([
+    pipeline = [
         {"$match": {"instrument_id": {"$not": {"$regex": "^idx-"}}, "$or": [{"provider": {"$ne": "yfinance"}}, {"published": True}]}},
         {"$project": {"instrument_id": 1, "symbol": 1, "exchange": 1, "collected_at": 1, "job_id": 1, "provider": 1}},
         {"$sort": {"instrument_id": 1, "collected_at": -1, "_id": -1}},
@@ -149,8 +149,30 @@ def acquired_instruments(db, limit=20, offset=0):
             "job_id": {"$first": "$job_id"}, "provider": {"$first": "$provider"},
         }},
         {"$sort": {"collected_at": -1, "_id": 1}},
-        {"$facet": {"count": [{"$count": "total"}], "items": [{"$skip": offset}, {"$limit": limit}]}},
-    ]))[0]
+    ]
+    coverage = {}
+    if min_history_years is None:
+        pipeline.append({"$facet": {"count": [{"$count": "total"}], "items": [{"$skip": offset}, {"$limit": limit}]}})
+        result = list(db.instruments.aggregate(pipeline))[0]
+    else:
+        matching = []
+        for observation in db.instruments.aggregate(pipeline):
+            isin = observation["_id"]
+            generation = observation.get("job_id") if observation.get("provider") == "yfinance" else "legacy"
+            dates = quote_dates(db, isin, observation["listing"], generation=generation)
+            if not dates:
+                continue
+            start, end = date.fromisoformat(dates[0]), date.fromisoformat(dates[-1])
+            # Calendar anniversaries, clamping leap day to February 28.
+            anniversary_year = start.year + min_history_years
+            try:
+                anniversary = start.replace(year=anniversary_year)
+            except ValueError:
+                anniversary = date(anniversary_year, 2, 28)
+            if end >= anniversary:
+                matching.append(observation)
+                coverage[isin] = dates
+        result = {"items": matching[offset:offset + limit], "count": [{"total": len(matching)}]}
     items = []
     for observation in result["items"]:
         isin = observation["_id"]
@@ -159,7 +181,7 @@ def acquired_instruments(db, limit=20, offset=0):
             sort=[("import_date", DESCENDING)],
         ) or {}
         generation = observation.get("job_id") if observation.get("provider") == "yfinance" else "legacy"
-        dates = quote_dates(db, isin, observation["listing"], generation=generation)
+        dates = coverage[isin] if isin in coverage else quote_dates(db, isin, observation["listing"], generation=generation)
         statistics, state = refresh_statistics(db, isin, generation=generation)
         # Never attach another listing's returns to the displayed profile.
         if state.get("listing") != observation["listing"]:

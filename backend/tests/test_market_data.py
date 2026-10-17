@@ -253,6 +253,47 @@ def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config
     assert md.acquired_instruments(db)["items"][0]["instrument_id"] == ISIN
 
 
+@pytest.mark.parametrize("years", [5, 15, 30])
+def test_acquired_history_filter_precedes_pagination(db, monkeypatch, years):
+    import return_statistics
+
+    refresh = Mock(return_value=({}, {"listing": LISTING}))
+    monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
+    ids = ["IE0000000001", "IE0000000002", "IE0000000003", "IE0000000004"]
+    for index, isin in enumerate(ids):
+        db.instruments.insert_one({"instrument_id": isin, **LISTING, "collected_at": NOW, "job_id": isin})
+        # First row is just short; second and third match exactly; last is profile-only.
+        if index == 3:
+            continue
+        end = f"{1990 + years}-01-01" if index else f"{1989 + years}-12-31"
+        for day in ["1990-01-01", end]:
+            db.quotes.insert_one({"instrument_id": isin, **LISTING, "date": day, "collected_at": NOW, "job_id": isin})
+    # Neither other listings nor unpublished Yahoo history may extend coverage.
+    db.quotes.insert_one({"instrument_id": ids[0], **LISTING, "symbol": "OTHER", "date": "1900-01-01", "collected_at": NOW})
+    db.instruments.insert_one({"instrument_id": "IE0000000005", **LISTING, "collected_at": NOW, "provider": "yfinance", "published": False})
+    result = md.acquired_instruments(db, limit=1, offset=1, min_history_years=years)
+    assert result["total"] == 2
+    assert result["items"][0]["instrument_id"] == ids[2]
+    assert result["offset"] == 1
+    assert result["items"][0]["quote_count"] == 2
+    assert refresh.call_count == 1
+    assert md.acquired_instruments(db, offset=2, min_history_years=years)["items"] == []
+
+
+def test_acquired_history_filter_uses_published_yahoo_generation(db, monkeypatch):
+    import return_statistics
+
+    monkeypatch.setattr(return_statistics, "refresh_statistics", Mock(return_value=({}, {"listing": LISTING})))
+    db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "collected_at": NOW, "job_id": "current", "provider": "yfinance", "published": True})
+    db.acquisition_jobs.insert_one({"_id": "current", "instrument_id": ISIN, "listing": LISTING,
+                                     "published": True, "published_at": NOW, "provider": "yfinance"})
+    for generation, days in [("current", ["2020-01-01", "2026-01-01"]), ("old", ["1990-01-01"])]:
+        for day in days:
+            db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "date": day, "collected_at": NOW, "job_id": generation, "provider": "yfinance"})
+    assert md.acquired_instruments(db, min_history_years=5)["total"] == 1
+    assert md.acquired_instruments(db, min_history_years=15)["total"] == 0
+
+
 def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(db, config, clock, monkeypatch):
     import return_statistics
 
@@ -570,8 +611,10 @@ def test_routes_auth_validation_and_db_only_reads(api, db, config):
     acquired = client.get("/instruments/acquired")
     assert acquired.status_code == 200  # Static route must precede /{isin}.
     assert acquired.json() == {"items": [], "total": 0, "limit": 20, "offset": 0}
-    for query in ("limit=0", "limit=101", "offset=-1", "offset=abc"):
+    for query in ("limit=0", "limit=101", "offset=-1", "offset=abc", "min_history_years=0", "min_history_years=10", "min_history_years=abc"):
         assert client.get("/instruments/acquired?" + query).status_code == 422
+    for years in (5, 15, 30):
+        assert client.get(f"/instruments/acquired?min_history_years={years}").status_code == 200
     assert client.get(base + "?as_of=2026-09-17T00:00:00").status_code == 422
     assert client.get("/instruments/search?q=.*").json()["items"] == []
     assert client.get("/instruments/search?q=%20%20").status_code == 422
