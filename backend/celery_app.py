@@ -1,6 +1,7 @@
 """Celery configuration shared by the API producer and ETF worker."""
 
 import logging
+from uuid import uuid4
 
 from celery import Celery
 from celery.schedules import crontab
@@ -62,20 +63,31 @@ def create_celery_app(settings: TaskSettings | None = None) -> Celery:
 app = create_celery_app()
 
 
-def enqueue_etf_import(settings: TaskSettings) -> str:
-    # Use this API instance's settings, not process-global defaults. No database
-    # client or credentials are sent in the message; the worker owns its client.
-    with create_celery_app(settings) as producer:
-        result = producer.send_task(ETF_IMPORT_TASK)
-    logger.info("Queued ETF import task %s", result.id)
+def _enqueue_background(settings, task_name, job_type, db=None, **options):
+    from jobs import finish_job, queue_job
+
+    job_id = str(uuid4()) if db is not None else None
+    if job_id is not None:
+        queue_job(db, job_id, job_type)
+        options["task_id"] = job_id
+    try:
+        with create_celery_app(settings) as producer:
+            result = producer.send_task(task_name, **options)
+    except Exception:
+        if job_id is not None:
+            finish_job(db, job_id, "failed")
+        raise
+    logger.info("Queued %s task %s", job_type, result.id)
     return result.id
 
 
-def enqueue_market_data_refresh(settings: TaskSettings) -> str:
-    with create_celery_app(settings) as producer:
-        result = producer.send_task(MARKET_DATA_REFRESH_TASK, queue="etfs")
-    logger.info("Queued market-data refresh sweep %s", result.id)
-    return result.id
+def enqueue_etf_import(settings: TaskSettings, db=None) -> str:
+    # Existing callers without a database are tracked when the worker starts.
+    return _enqueue_background(settings, ETF_IMPORT_TASK, "etf_import", db)
+
+
+def enqueue_market_data_refresh(settings: TaskSettings, db=None) -> str:
+    return _enqueue_background(settings, MARKET_DATA_REFRESH_TASK, "market_data_refresh", db, queue="etfs")
 
 
 def enqueue_acquisition(settings: TaskSettings, job_id: str) -> str:

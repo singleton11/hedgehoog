@@ -149,8 +149,8 @@ def test_startup_only_enqueues_after_seed_and_serves_without_downloading(
 
     with TestClient(app) as client:
         assert [call[0] for call in events.mock_calls] == ["ping", "seed", "enqueue", "refresh"]
-        enqueue.assert_called_once_with(settings)
-        automatic_refresh_producer.assert_called_once_with(settings)
+        enqueue.assert_called_once_with(settings, mongo.__getitem__.return_value)
+        automatic_refresh_producer.assert_called_once_with(settings, mongo.__getitem__.return_value)
         assert client.get("/health").status_code == 200
         etf_http_get.assert_not_called()
         mongo.__getitem__.return_value.etfs.bulk_write.assert_not_called()

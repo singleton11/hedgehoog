@@ -38,6 +38,17 @@ The host API uses localhost URLs. Compose overrides the worker's URLs to use `mo
 
 MongoDB 7.0 is used because MongoDB 8's allocator is [incompatible with Linux kernels 6.19–7.0.13](https://www.mongodb.com/docs/v8.0/release-notes/8.0/), including the current local Docker Desktop kernel.
 
+## Jobs dashboard
+
+Open **Jobs** in the workspace navigation to monitor market-data downloads,
+ETF catalogue imports, and automatic refresh sweeps. The dashboard shows global
+counts (total, queued, in progress, finished, succeeded, failed), status/type
+filters, paginated history, timestamps, and safe error summaries. It updates
+automatically every three seconds without triggering provider requests.
+Historical download records are included; catalogue-import and refresh-sweep tracking begins
+when the updated worker is deployed. See [Jobs dashboard](docs/jobs.md) for
+history and worker-health limitations.
+
 ## ETF catalogue
 
 On **backend startup** (including development reloads), after database health checks
