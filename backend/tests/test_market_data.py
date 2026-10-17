@@ -231,6 +231,61 @@ def test_acquired_list_excludes_catalogue_only_cached_and_unsaved_jobs(db, confi
     assert md.budget_status(db, config)["used"] == 0
 
 
+def test_acquired_universe_is_complete_lightweight_and_uses_saved_profiles(db, monkeypatch):
+    import return_statistics
+
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("Universe loading must not read quotes or compute statistics")
+
+    monkeypatch.setattr(md, "quote_dates", unexpected_read)
+    monkeypatch.setattr(return_statistics, "refresh_statistics", unexpected_read)
+    assert md.acquired_universe(db) == {"items": [], "total": 0}
+    ids = [f"IE{index:010d}" for index in range(105)]
+    for isin in reversed(ids):
+        # Profiles without quotes remain selectable, including legacy partial data.
+        db.instruments.insert_one({"instrument_id": isin, "collected_at": NOW})
+    db.instruments.insert_many([
+        {"instrument_id": ids[0], "collected_at": NOW + timedelta(hours=1)},
+        {"instrument_id": ids[0], "collected_at": NOW + timedelta(hours=2), "provider": "yfinance", "published": False},
+        {"instrument_id": "IE9999999999", "provider": "yfinance", "published": False},
+        {"instrument_id": "idx-test", "collected_at": NOW},
+        {"instrument_id": ISIN, "collected_at": NOW, "provider": "yfinance", "published": True},
+    ])
+    db.etfs.insert_one({"isin": ISIN, "name": "Latest name", "ticker": "NEW", "import_date": "2026-09-18"})
+    universe = md.acquired_universe(db)
+    assert universe["total"] == len(ids) + 1 == len(universe["items"])
+    assert [item["instrument_id"] for item in universe["items"]] == sorted(ids + [ISIN])
+    assert universe["items"][0] == {
+        "instrument_id": ids[0], "name": None, "ticker": None, "collected_at": "2026-09-17T13:00:00Z",
+    }
+    assert universe["items"][-1] == {
+        "instrument_id": ISIN, "name": "Latest name", "ticker": "NEW", "collected_at": "2026-09-17T12:00:00Z",
+    }
+    # A later publication changes only a subsequent capture, never a paginated read.
+    db.instruments.insert_one({"instrument_id": "IE9999999999", "provider": "yfinance", "published": True, "collected_at": NOW})
+    assert md.acquired_universe(db)["total"] == universe["total"] + 1
+    assert len(universe["items"]) == len(ids) + 1
+
+
+def test_acquired_universe_route_is_authenticated_and_db_only(api, db, config):
+    client, publish = api
+    assert client.get("/instruments/acquired/universe").status_code == 401
+    client.post("/auth/login", json={"login": "admin", "password": "admin"})
+    response = client.get("/instruments/acquired/universe")
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "total": 0}
+    collect(db, config)
+    publish.reset_mock()
+    used = md.budget_status(db, config)["used"]
+    response = client.get("/instruments/acquired/universe")
+    assert response.status_code == 200
+    assert response.json() == {"items": [{
+        "instrument_id": ISIN, "name": "iShares Core S&P 500 UCITS ETF", "ticker": "SXR8", "collected_at": "2026-09-17T12:00:00Z",
+    }], "total": 1}
+    publish.assert_not_called()
+    assert md.budget_status(db, config)["used"] == used
+
+
 def test_acquired_list_includes_profile_only_after_failed_download(db, config):
     result, _ = collect(db, config, Provider([MarketstackError("quota", "Quota exhausted")]))
     assert result["status"] == "failed"

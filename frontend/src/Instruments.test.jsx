@@ -32,6 +32,7 @@ function deferred() {
 function mockServer() {
   const server = { details: { [A]: detail(), [B]: detail(B) }, quotes: { [A]: [], [B]: [] } };
   server.acquiredItems = [];
+  server.universe = async () => ({ items: structuredClone(server.acquiredItems), total: server.acquiredItems.length });
   server.acquired = async (params) => {
     const offset = Number(params.get('offset'));
     const limit = Number(params.get('limit'));
@@ -59,6 +60,7 @@ function mockServer() {
     if (url === '/api/auth/logout') return response(204);
     if (url === '/api/instruments/budget') return response(200, { provider: 'yfinance', metered: false, month: '2026-09', used: 0, limit: null, remaining: null });
     const parsed = new URL(url, 'http://localhost');
+    if (parsed.pathname === '/api/instruments/acquired/universe') return response(200, await server.universe(options));
     if (parsed.pathname === '/api/instruments/acquired') return response(200, await server.acquired(parsed.searchParams, options));
     if (parsed.pathname === '/api/instruments/search') return response(200, { items: await server.search(parsed.searchParams.get('q'), options) });
     const match = parsed.pathname.match(/^\/api\/instruments\/([^/]+)(?:\/(quotes|acquisitions|price-currency))?$/);
@@ -606,7 +608,8 @@ describe('acquired ETF market-data updates', () => {
     await confirmUpdate(true);
     expect(server.posts().map(([url]) => url)).toEqual(eligible.map((item) => `/api/instruments/${item.instrument_id}/acquisitions`));
     const urls = server.fetch.mock.calls.map(([url]) => url);
-    expect(urls.indexOf('/api/instruments/acquired?limit=100&offset=100')).toBeLessThan(urls.indexOf(server.posts()[0][0]));
+    expect(urls).toContain('/api/instruments/acquired/universe');
+    expect(urls.indexOf('/api/instruments/acquired/universe')).toBeLessThan(urls.indexOf(server.posts()[0][0]));
     expect(screen.getByText('67 market-data updates in progress.')).toBeInTheDocument();
     expect(screen.getByText('Skipped 34 ETFs collected 0 days ago.')).toBeInTheDocument();
     for (const item of eligible) server.details[item.instrument_id].acquisition = job('succeeded', { instrument_id: item.instrument_id });
@@ -702,7 +705,7 @@ describe('acquired ETF market-data updates', () => {
     await review('Update all');
     const pending = deferred();
     let signal;
-    server.acquired = (_, options) => { signal = options.signal; return pending.promise; };
+    server.universe = (options) => { signal = options.signal; return pending.promise; };
     await confirmUpdate(true);
     view.unmount();
     expect(signal.aborted).toBe(true);
@@ -728,16 +731,15 @@ describe('acquired ETF market-data updates', () => {
     expect(row('Second ETF').getByRole('button', { name: /Update market data/ })).toBeDisabled();
   });
 
-  it.each(['empty', 'duplicate', 'changed total'])('does not POST if the complete inventory cannot be captured (%s)', async (failure) => {
+  it.each(['empty', 'duplicate', 'wrong total'])('does not POST if the complete inventory cannot be captured (%s)', async (failure) => {
     const server = mockServer();
     server.acquiredItems = [acquiredItem()];
     await open();
     await review('Update all');
-    server.acquired = async (params) => {
-      const offset = Number(params.get('offset'));
-      if (failure === 'duplicate') return { items: [acquiredItem(), acquiredItem()], total: 2, limit: 100, offset };
-      if (failure === 'changed total') return { items: [acquiredItem()], total: offset === 0 ? 2 : 3, limit: 100, offset };
-      return { items: [], total: 3, limit: 100, offset };
+    server.universe = async () => {
+      if (failure === 'duplicate') return { items: [acquiredItem(), acquiredItem()], total: 2 };
+      if (failure === 'wrong total') return { items: [acquiredItem()], total: 2 };
+      return { items: [], total: 3 };
     };
     await confirmUpdate(true);
     expect(screen.getByRole('alert')).toHaveTextContent('list changed or was incomplete');

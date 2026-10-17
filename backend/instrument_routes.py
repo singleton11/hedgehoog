@@ -11,7 +11,7 @@ from auth import CurrentUser
 from return_statistics import instrument_statistics
 from celery_app import enqueue_acquisition
 from manual_splits import ManualSplitRequest, add_split, read_splits, remove_split
-from market_data import acquired_instruments, budget_status, instrument_detail, read_quotes, request_acquisition, search_catalogue, set_price_currency, remove_acquired_instrument
+from market_data import acquired_instruments, acquired_universe, budget_status, instrument_detail, read_quotes, request_acquisition, search_catalogue, set_price_currency, remove_acquired_instrument
 
 router = APIRouter(prefix="/instruments", tags=["instruments"])
 InstrumentId = Annotated[str, Path(pattern=r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")]
@@ -95,6 +95,11 @@ def search(request: Request, user: CurrentUser, q: Annotated[str, Query(min_leng
 def acquired(request: Request, user: CurrentUser, limit: Annotated[int, Query(ge=1, le=100)] = 20, offset: Annotated[int, Query(ge=0)] = 0,
              min_history_years: Literal["5", "15", "30"] | None = None):
     return acquired_instruments(request.app.state.database, limit, offset, int(min_history_years) if min_history_years is not None else None)
+
+
+@router.get("/acquired/universe")
+def universe(request: Request, user: CurrentUser):
+    return acquired_universe(request.app.state.database)
 
 
 @router.get("/budget")

@@ -59,33 +59,23 @@ export function acquisitionEstimate(detail, mode, manualOverride = false) {
     range: `${from} ${olderEnd ? `to before ${olderEnd}` : 'to latest available'}` };
 }
 
-// Read every page before using the acquired universe. Never silently truncate it
-// or accept a changed/duplicated inventory while pagination is in flight.
+// Capture the lightweight universe in one response: background acquisitions can
+// change membership and collection-time ordering between ordinary inventory pages.
 export async function loadAcquiredInstruments(request, signal) {
-  const items = [];
+  if (signal.aborted) return null;
+  const data = await request('/instruments/acquired/universe', { signal });
+  if (signal.aborted) return null;
+  if (!Array.isArray(data?.items) || !Number.isInteger(data.total) || data.total !== data.items.length) {
+    throw new Error('The acquired ETF list changed or was incomplete. Please retry.');
+  }
   const ids = new Set();
-  const limit = 100;
-  let total = null;
-  do {
-    if (signal.aborted) return null;
-    const page = await request(`/instruments/acquired?limit=${limit}&offset=${items.length}`, { signal });
-    if (signal.aborted) return null;
-    if (!Array.isArray(page?.items) || !Number.isInteger(page.total) || page.total < 0
-        || page.limit !== limit || page.offset !== items.length || (total !== null && total !== page.total)
-        || page.items.length > limit || items.length + page.items.length > page.total
-        || (!page.items.length && items.length < page.total)) {
+  for (const item of data.items) {
+    if (typeof item?.instrument_id !== 'string' || !item.instrument_id || ids.has(item.instrument_id)) {
       throw new Error('The acquired ETF list changed or was incomplete. Please retry.');
     }
-    total = page.total;
-    for (const item of page.items) {
-      if (typeof item?.instrument_id !== 'string' || !item.instrument_id || ids.has(item.instrument_id)) {
-        throw new Error('The acquired ETF list changed or was incomplete. Please retry.');
-      }
-      ids.add(item.instrument_id);
-      items.push(item);
-    }
-  } while (items.length < total);
-  return items;
+    ids.add(item.instrument_id);
+  }
+  return data.items;
 }
 
 export async function loadAllQuotes(request, isin, signal, snapshot = {}, resource = 'instruments') {

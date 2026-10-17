@@ -125,14 +125,14 @@ function mockServer({ seed = true } = {}) {
     return run;
   };
   server.strategies = async () => ({ items: server.definitions });
-  server.acquired = async (query) => page(server.acquiredItems, query);
+  server.acquired = async () => ({ items: structuredClone(server.acquiredItems), total: server.acquiredItems.length });
   server.stats = async (isin) => statistics(isin);
   async function dispatch(path, options) {
     const url = new URL(path, 'http://localhost'), post = options.method === 'POST';
     if (url.pathname === '/customers') return post ? server.createCustomer(options.body, options) : server.customerList(url.searchParams, options);
     if (/^\/customers\/[^/]+\/(portfolios|plans)$/.test(url.pathname)) return page([], url.searchParams);
     if (path === '/goals/strategies') return server.strategies(options);
-    if (url.pathname === '/instruments/acquired') return server.acquired(url.searchParams, options);
+    if (url.pathname === '/instruments/acquired/universe') return server.acquired(options);
     const stats = url.pathname.match(/^\/instruments\/([^/]+)\/statistics$/);
     if (stats) return server.stats(stats[1], options);
     const match = url.pathname.match(/^\/customers\/([^/]+)(?:\/goals(?:\/([^/]+)(?:\/(simulate|simulations)(?:\/([^/]+)(?:\/(save|plan))?)?)?)?)?$/);

@@ -128,6 +128,32 @@ def search_catalogue(db, query, limit):
     return [{**record, "instrument_id": record["isin"]} for record in records]
 
 
+def acquired_universe(db):
+    """Capture selector/bulk-update membership without paginating a changing list.
+
+    Only read saved profiles and catalogue labels, never quote histories or
+    return statistics. Later acquisitions appear on the next explicit load.
+    """
+    profiles = list(db.instruments.aggregate([
+        {"$match": {"instrument_id": {"$not": {"$regex": "^idx-"}}, "$or": [{"provider": {"$ne": "yfinance"}}, {"published": True}]}},
+        {"$group": {"_id": "$instrument_id", "collected_at": {"$max": "$collected_at"}}},
+        {"$sort": {"_id": 1}},
+    ]))
+    labels = {}
+    for record in db.etfs.find(
+        {"isin": {"$in": [profile["_id"] for profile in profiles]}},
+        {"_id": 0, "isin": 1, "name": 1, "ticker": 1, "import_date": 1},
+    ).sort("import_date", DESCENDING):
+        labels.setdefault(record["isin"], record)
+    items = [{
+        "instrument_id": profile["_id"],
+        "name": labels.get(profile["_id"], {}).get("name"),
+        "ticker": labels.get(profile["_id"], {}).get("ticker"),
+        "collected_at": profile.get("collected_at"),
+    } for profile in profiles]
+    return public({"items": items, "total": len(items)})
+
+
 def acquired_instruments(db, limit=20, offset=0, min_history_years=None):
     """One row per saved ETF profile, including partial/failed acquisitions.
 
