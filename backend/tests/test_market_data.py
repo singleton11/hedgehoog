@@ -117,6 +117,33 @@ def collect(db, config, provider=None):
     return result, source
 
 
+@pytest.mark.parametrize("metadata", [
+    {"asset_class": "equity", "index": "S&P 500"},
+    {"asset_class": "commodities", "index": "Bloomberg Commodity"},
+    {},
+])
+def test_acquisition_snapshots_latest_catalogue_metadata(db, config, metadata):
+    db.etfs.update_one(
+        {"isin": ISIN, "import_date": {"$exists": False}},
+        {"$set": {"asset_class": "obsolete", "index": "Obsolete index"}},
+    )
+    db.etfs.update_one({"isin": ISIN, "import_date": "2026-09-17"}, {"$set": metadata or {"currency": "USD"}})
+    result, source = collect(db, config)
+    snapshot = db.instruments.find_one({"job_id": result["id"]})
+    assert snapshot["asset_class"] == metadata.get("asset_class")
+    assert snapshot["index"] == metadata.get("index")
+    assert snapshot["data"] == source.profile
+
+    db.etfs.update_one({"isin": ISIN, "import_date": "2026-09-17"}, {"$set": {"index": "Changed index"}})
+    md.run_acquisition(db, config, result["id"], source.factory)
+    assert db.instruments.find_one({"job_id": result["id"]}) == snapshot
+
+    refresh = enqueue(db, config, mode="refresh")
+    md.run_acquisition(db, config, refresh["id"], Provider().factory)
+    assert db.instruments.find_one({"job_id": refresh["id"]})["index"] == "Changed index"
+    assert db.instruments.find_one({"job_id": result["id"]}) == snapshot
+
+
 def test_removal_deletes_market_data_only_and_allows_reacquisition(db, config):
     job, _ = collect(db, config)
     collections = ("instruments", "quotes", "raw_eod_pages", "raw_split_pages",

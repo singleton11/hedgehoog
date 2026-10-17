@@ -742,9 +742,13 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
             if db.instruments.find_one({"job_id": job_id}) is None:
                 data = provider.tickerinfo(listing["symbol"])
                 collected = utcnow()
+                catalogue_metadata = {}
+                if job.get("instrument_kind") != "index":
+                    catalogue = require_catalogue(db, isin)
+                    catalogue_metadata = {key: catalogue.get(key) for key in ("asset_class", "index")}
                 checkpoint()
                 db.instruments.update_one({"job_id": job_id}, {"$setOnInsert": {
-                    "instrument_id": isin, **listing, "provider": name, "job_id": job_id,
+                    "instrument_id": isin, **listing, **catalogue_metadata, "provider": name, "job_id": job_id,
                     "published": name != "yfinance",
                     "collected_at": collected, "collection_date": collected.date().isoformat(), "data": data,
                 }}, upsert=True)
