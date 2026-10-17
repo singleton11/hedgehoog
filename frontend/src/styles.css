@@ -161,6 +161,32 @@ button.sign-out { min-height: 34px; padding: 0.4rem 0.65rem; font-size: 0.74rem;
 .acquired-pagination p { margin: 0; color: var(--muted); font-size: 0.72rem; }
 .acquired-pagination button { min-height: 32px; font-size: 0.72rem; padding: 0.4rem 0.75rem; }
 
+/* Keep the eleven-column ETF inventory readable instead of squeezing metadata. */
+.collection-scroll-hint { color: var(--muted); font-size: 0.73rem; text-align: right; }
+.etf-inventory-table { min-width: 103rem; table-layout: fixed; }
+.etf-inventory-table .inventory-fund { width: 19rem; }
+.etf-inventory-table .inventory-asset { width: 7rem; }
+.etf-inventory-table .inventory-index { width: 11rem; }
+.etf-inventory-table .inventory-listing { width: 7rem; }
+.etf-inventory-table .inventory-statistics { width: 7.5rem; }
+.etf-inventory-table .inventory-quotes { width: 11rem; }
+.etf-inventory-table .inventory-collected { width: 8rem; }
+.etf-inventory-table .inventory-actions { width: 10rem; }
+.etf-inventory-table th, .etf-inventory-table td { overflow-wrap: normal; word-break: normal; }
+.etf-inventory-table thead th { white-space: nowrap; }
+.etf-inventory-table th[scope='row'] { width: auto; }
+.etf-inventory-table .fund-identity { align-items: flex-start; }
+.etf-inventory-table .fund-identity a, .etf-inventory-table tbody td:nth-child(2), .etf-inventory-table tbody td:nth-child(3) { overflow-wrap: anywhere; }
+.etf-inventory-table .fund-identity .muted, .etf-inventory-table .saved-quotes, .etf-inventory-table time, .etf-inventory-table .profile-collected { white-space: nowrap; }
+.etf-inventory-table .saved-quotes .muted { white-space: normal; }
+.etf-inventory-table .market-data-actions button { display: flex; margin-block: 0.3rem; }
+.etf-inventory-table .market-data-actions .update-error { overflow-wrap: anywhere; white-space: normal; }
+@media (min-width: 601px) {
+  .etf-inventory-table tr > :first-child:not(.annual-statistic) { position: sticky; left: 0; z-index: 1; background: white; box-shadow: 1px 0 var(--line); }
+  .etf-inventory-table thead tr > :first-child:not(.annual-statistic) { z-index: 2; background: #f8faf8; }
+  .etf-inventory-table tbody tr:hover > :first-child { background: #fbfdfb; }
+}
+
 /* Background activity uses the same collection surface as instruments. */
 .jobs-live { display: flex; align-items: center; gap: 0.55rem; color: var(--muted); }
 .jobs-live > span { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px var(--mint); }

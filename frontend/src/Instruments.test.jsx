@@ -332,6 +332,23 @@ describe('acquired ETF inventory', () => {
     expect(server.posts()).toHaveLength(0);
   });
 
+  it('keeps inventory column groups aligned and exposes intact quote dates in a scrollable region', async () => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem()];
+    await open();
+    const region = screen.getByRole('region', { name: 'Acquired ETF data' });
+    expect(region).toHaveAttribute('tabindex', '0');
+    const table = within(region).getByRole('table');
+    expect(table).toHaveClass('etf-inventory-table');
+    const groups = [...table.querySelectorAll('colgroup')];
+    expect(groups.map((group) => Number(group.getAttribute('span')) || group.children.length)).toEqual([4, 2, 2, 3]);
+    expect(screen.getByText('Scroll horizontally for all columns →')).toBeVisible();
+    const dates = [...table.querySelectorAll('.saved-quotes time')];
+    expect(dates.map((date) => [date.dateTime, date.textContent])).toEqual([
+      ['2020-01-01', '2020-01-01'], ['2026-09-16', '2026-09-16'],
+    ]);
+  });
+
   it('discloses the carried endpoint of a historical annual return', async () => {
     const server = mockServer();
     server.acquiredItems = [acquiredItem(A, { historical_year_carried_from_date: '2026-09-15' })];
@@ -451,7 +468,7 @@ describe('acquired ETF inventory', () => {
     expect(screen.getByRole('heading', { name: 'Acquired ETFs (2)' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Refresh list' })).not.toBeInTheDocument();
     expect(screen.getByText('42 quotes')).toBeInTheDocument();
-    expect(screen.getByText('2020-01-01 – 2026-09-16')).toBeInTheDocument();
+    expect(screen.getByText('42 quotes').querySelector('.muted')).toHaveTextContent('2020-01-01 – 2026-09-16');
     expect(screen.getByText('Profile only')).toBeInTheDocument();
     expect(screen.queryByText('No saved quotes')).not.toBeInTheDocument();
     const link = screen.getByRole('link', { name: 'iShares S&P ETF' });

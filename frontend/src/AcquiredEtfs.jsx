@@ -203,11 +203,19 @@ export default function AcquiredEtfs() {
       ? <div className="empty-state collection-empty"><span className="empty-icon"><Icon name="layers" /></span><h3>{minHistoryYears ? 'No ETFs match this history filter' : 'No acquired ETFs yet'}</h3><p>{minHistoryYears ? 'Try a shorter history or select All.' : 'Choose Add ETF to find a fund and request its data.'}</p></div>
       : <>
         <div className="collection-table-card">
-        <div className="table-heading"><h3>Fund overview</h3><span className="table-hint">Returns &amp; market data</span><span className="table-scroll-hint">Scroll for more →</span></div>
+        <div className="table-heading"><h3>Fund overview</h3><span className="collection-scroll-hint">Scroll horizontally for all columns →</span></div>
         <div className="acquired-table-scroll" role="region" aria-label="Acquired ETF data" tabIndex={0}>
-          <table className="acquired-table">
+          <table className="acquired-table etf-inventory-table">
             <caption className="sr-only">Acquired ETFs, historical annual return and volatility, statistical annual return and volatility, and saved quote coverage</caption>
-            <colgroup span={2} /><colgroup span={2} /><colgroup span={2} /><colgroup span={2} /><colgroup span={1} />
+            <colgroup>
+              <col className="inventory-fund" /><col className="inventory-asset" />
+              <col className="inventory-index" /><col className="inventory-listing" />
+            </colgroup>
+            <colgroup span={2} className="inventory-statistics" />
+            <colgroup span={2} className="inventory-statistics" />
+            <colgroup>
+              <col className="inventory-quotes" /><col className="inventory-collected" /><col className="inventory-actions" />
+            </colgroup>
             <thead>
               <tr>
                 <th scope="col" rowSpan={2}>ETF</th><th scope="col" rowSpan={2}>Asset class</th><th scope="col" rowSpan={2}>Index</th><th scope="col" rowSpan={2}>Saved listing</th>
@@ -239,9 +247,9 @@ export default function AcquiredEtfs() {
               <td className="annual-statistic" headers="acquired-historical acquired-historical-volatility" title={historicalVolatilityTitle(item)}>{percent(item.historical_year_volatility)}</td>
               <ReturnCell value={item.annualized_mean_log_return} headers="acquired-statistical acquired-statistical-return" />
               <td className="annual-statistic" headers="acquired-statistical acquired-statistical-volatility">{percent(item.annualized_volatility)}</td>
-              <td>{item.quote_count > 0 ? <>{item.quote_count.toLocaleString()} {item.quote_count === 1 ? 'quote' : 'quotes'}<span className="muted">{item.first_date} – {item.last_date}</span></>
+              <td className="saved-quotes">{item.quote_count > 0 ? <>{item.quote_count.toLocaleString()} {item.quote_count === 1 ? 'quote' : 'quotes'}<span className="muted"><time dateTime={item.first_date}>{item.first_date}</time> – <time dateTime={item.last_date}>{item.last_date}</time></span></>
                 : <span className="badge">Profile only</span>}</td>
-              <td><CollectionTime value={item.collected_at} /></td>
+              <td className="profile-collected"><CollectionTime value={item.collected_at} /></td>
               <td className="market-data-actions">
                 <button className="secondary" disabled={submitting || updatePending(updates[item.instrument_id]) || Boolean(selection)}
                   aria-label={`Update market data for ${displayText(item.name) || item.isin}`}
