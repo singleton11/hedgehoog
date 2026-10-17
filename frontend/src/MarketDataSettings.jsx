@@ -55,7 +55,7 @@ export default function MarketDataSettings({ request, admin }) {
   return <section aria-label="Missing quote policy">
     <h3>Missing quotes</h3>
     <p>Applies to all new calculations, without changing downloaded prices or existing saved reports. Only administrators can save changes.</p>
-    <p>Only explicit missing-price rows are filled; no weekend or holiday rows are created. Arithmetic smoothing needs valid prices on both sides within the calculation cutoff. For trailing gaps, portfolios use the last valid EUR close with a stale-price warning; daily P&L and risk ratios remain unavailable. Carried prices never enter instrument statistics or simulation fitting. Normal sampling uses only earlier observed daily log returns; insufficient history remains missing.</p>
+    <p>Only explicit missing-price rows are filled; no weekend or holiday rows are created. Arithmetic smoothing needs valid prices on both sides within the calculation cutoff. For trailing gaps, portfolios use the last valid EUR close; daily P&L and risk ratios remain unavailable. Carried prices never enter instrument statistics or simulation fitting. Normal sampling uses only earlier observed daily log returns; insufficient history remains missing.</p>
     {!loaded && !error && <p role="status">Loading missing-quote settings...</p>}
     {error && <p role="alert">{error}</p>}
     {!loaded && error && <button onClick={() => setAttempt(attempt + 1)}>Retry missing-quote settings</button>}

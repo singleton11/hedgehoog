@@ -813,7 +813,7 @@ describe('valuation, transaction pagination and read failures', () => {
     expect(within(table).queryByText(/Date unavailable/)).not.toBeInTheDocument();
   });
 
-  it('shows stale valuation warnings and the actual source price date without hiding equity', async () => {
+  it('hides stale valuation warnings while retaining equity and the actual source price date', async () => {
     const server = mockServer();
     const warning = 'Stale valuation: using last valid close from 2026-09-23; saved close missing through 2026-09-24. Daily unrealized PnL unavailable.';
     server.details.set(pid, snapshot(metadata(), {
@@ -826,9 +826,9 @@ describe('valuation, transaction pagination and read failures', () => {
     await open();
     expect(summaryValue('Equity')).toHaveTextContent('€1,137.50');
     expect(summaryValue('Daily unrealized P&L')).toHaveTextContent('Unavailable');
-    expect(screen.getByRole('list', { name: 'Valuation warnings' })).toHaveTextContent(warning);
+    expect(screen.queryByRole('list', { name: 'Valuation warnings' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Stale valuation:/)).not.toBeInTheDocument();
     const table = screen.getByRole('table', { name: 'Current holdings · EUR' });
-    expect(within(table).getByText(warning)).toBeInTheDocument();
     expect(within(table).getAllByTitle('Price date: 2026-09-23')).toHaveLength(2);
     expect(writes()).toHaveLength(0);
   });

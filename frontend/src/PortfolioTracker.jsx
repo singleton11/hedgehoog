@@ -317,7 +317,10 @@ function PortfolioList({ request, customerId, plans }) {
     </section>
   </>;
 }
+const isStaleValuationWarning = (warning) => /^(?:[^:]+: )?Stale valuation:/.test(warning);
+
 function Summary({ data, performance }) {
+  const warnings = data.warnings.filter((warning) => !isStaleValuationWarning(warning));
   const totalPnl = data.unrealized_pnl_eur === null ? null : (Number(data.realized_pnl_eur) + Number(data.unrealized_pnl_eur)).toFixed(2);
   const previousPortfolioValue = data.positions_value_eur === null || data.daily_unrealized_pnl_eur === null ? null : (Number(data.positions_value_eur) - Number(data.daily_unrealized_pnl_eur)).toFixed(2);
   const metrics = [['Cash', 'cash_eur'], ['Positions value', 'positions_value_eur'], ['Equity', 'equity_eur'], ['Realized P&L (incl. fees)', 'realized_pnl_eur'], ['Total unrealized P&L', 'unrealized_pnl_eur'], ['Daily unrealized P&L', 'daily_unrealized_pnl_eur'], ['Total P&L', 'total_pnl_eur']];
@@ -325,7 +328,7 @@ function Summary({ data, performance }) {
   return <section aria-label="Portfolio summary"><h3>Portfolio summary</h3>
     <dl className="facts">{metrics.map(([label, key]) => <div key={key}><dt>{label}</dt><dd className={key.includes('pnl') ? pnlClass(values[key]) : undefined}>{key === 'unrealized_pnl_eur' ? pnlDisplay(values[key], data.positions_value_eur === null ? null : Number(data.positions_value_eur) - Number(values[key])) : key === 'daily_unrealized_pnl_eur' ? pnlDisplay(values[key], previousPortfolioValue) : key.includes('pnl') ? signedEuros(values[key]) : formatEuros(values[key])}</dd></div>)}</dl>
     <dl className="facts">{[['TWR', 'twr_percent'], ['Average Sharpe', 'sharpe'], ['Average Sortino', 'sortino']].map(([label, key]) => <div key={key}><dt>{label}</dt><dd>{typeof performance?.[key] === 'string' && Number.isFinite(Number(performance[key])) ? `${Number(performance[key]).toFixed(2)}${key === 'twr_percent' ? '%' : ''}` : 'Unavailable'}</dd></div>)}</dl>
-    {data.warnings.length > 0 && <ul className="portfolio-warnings" aria-label="Valuation warnings">{data.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
+    {warnings.length > 0 && <ul className="portfolio-warnings" aria-label="Valuation warnings">{warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
   </section>;
 }
 function Positions({ positions }) {
@@ -336,7 +339,7 @@ function Positions({ positions }) {
       <table className="planner-table portfolio-table"><caption>Current holdings · EUR</caption><thead><tr>
         {['Instrument', 'Quantity', 'Average cost', 'Cost basis', 'Market price', 'Position value', 'Total unrealized P&L', 'Daily unrealized P&L'].map((label) => <th key={label} scope="col">{label}</th>)}
       </tr></thead><tbody>{positions.map((position) => <tr key={position.instrument.instrument_id}>
-        <th scope="row">{instrumentName(position.instrument)}<span className="simulation-parameter">{position.instrument.instrument_id}</span>{position.warning && <span className="portfolio-warning">{position.warning}</span>}</th>
+        <th scope="row">{instrumentName(position.instrument)}<span className="simulation-parameter">{position.instrument.instrument_id}</span>{position.warning && !isStaleValuationWarning(position.warning) && <span className="portfolio-warning">{position.warning}</span>}</th>
         <td>{position.quantity}</td><td>{formatEuros(position.average_price_eur)}</td><td>{formatEuros(position.cost_basis_eur)}</td>
         <td title={position.price_date ? `Price date: ${position.price_date}` : 'Price date unavailable'}>{formatEuros(position.market_price_eur)}</td>
         <td>{formatEuros(position.position_value_eur)}</td><td className={pnlClass(position.unrealized_pnl_eur)}>{pnlDisplay(position.unrealized_pnl_eur, Number(position.cost_basis_eur))}</td>
