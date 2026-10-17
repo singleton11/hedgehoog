@@ -43,7 +43,7 @@ services:
       retries: 12
       start_period: 20s
 
-  celery-worker:
+  celery-worker: &catalogue-worker
     build: ./backend
     restart: unless-stopped
     environment:
@@ -54,8 +54,10 @@ services:
       MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-yfinance}
       MARKET_DATA_MAX_CALLS_PER_JOB: ${MARKET_DATA_MAX_CALLS_PER_JOB:-40}
       MARKET_DATA_TIMEOUT_SECONDS: ${MARKET_DATA_TIMEOUT_SECONDS:-15}
+      YAHOO_REQUEST_INTERVAL_SECONDS: ${YAHOO_REQUEST_INTERVAL_SECONDS:-0.05}
+    # Catalogue imports remain serial, independent of parallel downloads.
     # Module launch retains /app/backend on sys.path for task-time imports.
-    command: ["python", "-m", "celery", "-A", "celery_app:app", "worker", "--loglevel=info", "--queues=etfs,marketdata", "--concurrency=1", "--hostname=etf-worker@%h"]
+    command: ["python", "-m", "celery", "-A", "celery_app:app", "worker", "--loglevel=info", "--queues=etfs", "--concurrency=1", "--hostname=etf-worker@%h"]
     depends_on:
       mongodb:
         condition: service_healthy
@@ -69,6 +71,17 @@ services:
       retries: 3
       start_period: 20s
 
+  celery-marketdata-worker:
+    <<: *catalogue-worker
+    # Prefork isolates yfinance sessions; Mongo paces every actual HTTP request.
+    command: ["python", "-m", "celery", "-A", "celery_app:app", "worker", "--loglevel=info", "--queues=marketdata", "--concurrency=${MARKET_DATA_WORKER_CONCURRENCY:-16}", "--hostname=marketdata-worker@%h"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -m celery -A celery_app:app inspect ping --destination marketdata-worker@$$HOSTNAME --timeout 5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
   celery-beat:
     build: ./backend
     restart: unless-stopped
@@ -76,7 +89,7 @@ services:
       MONGODB_DATABASE: ${MONGODB_DATABASE:-hedgehoog}
       MONGODB_URI: ${WORKER_MONGODB_URI:-mongodb://${MONGO_ROOT_USERNAME:-hedgehoog}:${MONGO_ROOT_PASSWORD:-hedgehoog-local}@mongodb:27017/?authSource=admin}
       CELERY_BROKER_URL: ${WORKER_CELERY_BROKER_URL:-amqp://${RABBITMQ_USER:-hedgehoog}:${RABBITMQ_PASSWORD:-hedgehoog-local}@rabbitmq:5672//}
-    # Run exactly one scheduler; acquisition runs in the existing worker.
+    # Run exactly one scheduler; the catalogue worker dispatches acquisitions.
     command: ["python", "-m", "celery", "-A", "celery_app:app", "beat", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
     depends_on:
       rabbitmq:

@@ -10,10 +10,10 @@ db-down:
 	docker compose stop mongodb
 
 services-up: setup
-	docker compose up -d --build --wait mongodb rabbitmq celery-worker celery-beat
+	docker compose up -d --build --wait mongodb rabbitmq celery-worker celery-marketdata-worker celery-beat
 
 services-down:
-	docker compose stop celery-beat celery-worker rabbitmq mongodb
+	docker compose stop celery-beat celery-marketdata-worker celery-worker rabbitmq mongodb
 
 import-etfs: services-up
 	docker compose exec celery-worker python -m celery -A celery_app:app call etfs.import_daily

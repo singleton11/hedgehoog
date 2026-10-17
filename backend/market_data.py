@@ -15,6 +15,7 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from marketstack import MarketstackClient  # Explicit legacy adapter; never a fallback.
 from market_provider import MarketDataError
+from request_pacing import wait_for_yahoo_request
 
 # Backward-compatible exception name for legacy callers and stored jobs.
 MarketstackError = MarketDataError
@@ -688,6 +689,8 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
             raise MarketDataError("job_request_limit", "This job reached its request safety limit. Its unfinished range was not marked complete.")
         if name == "marketstack":
             reserve_credit(db, settings)
+        else:
+            wait_for_yahoo_request(db, settings.yahoo_request_interval_seconds, checkpoint)
         checkpoint(increments={"calls": 1})
 
     try:

@@ -78,8 +78,12 @@ Use this module launcher rather than the `celery` console script; rebuilding alo
 does not fix an incorrect launcher. Run `make services-up` to rebuild and recreate
 the worker after changes.
 
-The worker runs with concurrency 1 to serialize imports. Do not run extra workers
-on the `etfs` queue without adding distributed locking. RabbitMQ persists queued
+The `celery-worker` service consumes only `etfs`, with concurrency 1 to serialize
+imports and refresh sweeps. Do not run extra workers on the `etfs` queue without
+adding distributed locking. The separate `celery-marketdata-worker` consumes
+`marketdata` with 16 isolated prefork processes by default; set
+`MARKET_DATA_WORKER_CONCURRENCY` to tune it. Both start/stop with `make services-up`
+and `make services-down`. RabbitMQ persists queued
 messages; MongoDB's `imports` collection tracks completion (no result backend).
 `CELERY_BROKER_URL` configures the host producer. Compose overrides worker URLs to
 use service hostnames; use `WORKER_MONGODB_URI` / `WORKER_CELERY_BROKER_URL` for
@@ -162,9 +166,22 @@ process is killed during deletion, its `status: deleting` job deliberately keeps
 that slot blocked; an operator must verify the process has stopped before deleting
 that lock record and retrying removal. Normal exceptions release the lock.
 
-Authenticated `/instruments/search`, `/instruments/{isin}` and `/instruments/{isin}/quotes` routes read the catalogue and collected observations from MongoDB. Explicit `POST /instruments/{isin}/acquisitions` requests queue `marketdata.acquire`; the worker consumes both `etfs` and `marketdata`.
+Authenticated `/instruments/search`, `/instruments/{isin}` and `/instruments/{isin}/quotes` routes read the catalogue and collected observations from MongoDB. Explicit `POST /instruments/{isin}/acquisitions` requests queue `marketdata.acquire`; the serial catalogue worker consumes `etfs` and the parallel acquisition worker consumes `marketdata`.
 
-The default provider is Yahoo Finance via pinned `yfinance==1.7.0`; no API key or paid quota is required. `MARKET_DATA_PROVIDER=yfinance`, `MARKET_DATA_MAX_CALLS_PER_JOB=40` and `MARKET_DATA_TIMEOUT_SECONDS=15` configure the experimental adapter and safety bounds. Rebuild the worker after code/dependency changes. Browsing never calls the provider. Errors are sanitized; provider failures can be retried manually or by the next automatic sweep, while database recovery replays saved checkpoints.
+The default provider is Yahoo Finance via pinned `yfinance==1.7.0`; no API key or paid quota is required. `MARKET_DATA_PROVIDER=yfinance`, `MARKET_DATA_MAX_CALLS_PER_JOB=40` and `MARKET_DATA_TIMEOUT_SECONDS=15` configure the experimental adapter and safety bounds.
+`YAHOO_REQUEST_INTERVAL_SECONDS=0.05` sets shared minimum spacing between Yahoo
+HTTP request admissions across acquisition workers (roughly 20 starts/second, not
+20 completed jobs/second). MongoDB coordinates the gate, including cookie/crumb,
+redirect, listing and history calls; workers need synchronized UTC clocks and the
+same database/configuration. Explicit interactive index searches and the standalone
+coverage survey are outside this acquisition-only gate. A stalled process can resume late, so this is pacing,
+not a strict wire-level rate guarantee. Zero disables pacing. Database failures
+fail closed; job call caps and terminal provider-denial behavior are unchanged.
+The successful standalone survey used the same 16-process/50-ms settings, but
+Yahoo can still throttle future traffic; lower concurrency or increase the
+interval if that happens. This is not a guaranteed speedup or a provider quota.
+Use `docker compose logs -f celery-marketdata-worker` for download task logs.
+Rebuild both workers with `make services-up` after code/dependency changes. Browsing never calls the provider. Errors are sanitized; provider failures can be retried manually or by the next automatic sweep, while database recovery replays saved checkpoints.
 
 The worker resolves a Yahoo listing from the catalogue ticker/ISIN and known venues, saving symbol/MIC and lookup evidence. POST accepts `{confirmed:true}` and an optional Yahoo `symbol` override (for example `SPYI.DE`). Without `exchange`, the worker detects its MIC from exact-symbol Yahoo chart metadata; it never substitutes a different symbol. An explicit paired `symbol`/`exchange` override remains available, and the legacy Marketstack provider still requires the pair. Every Yahoo acquisition refreshes full available history from inception through the current UTC date, then publishes a coherent immutable generation. Failed refreshes keep previous published data readable. `as_of` quote pagination pins the publication cutoff so updates cannot splice different adjusted-price vintages.
 
@@ -181,7 +198,7 @@ Startup queues `marketdata.refresh_stale` for saved ETFs and all active indices;
 
 One Compose `celery-beat` scheduler refreshes saved ETFs and active indices daily at **02:00 UTC**. Successful selected-provider checks through today or published Yahoo quotes for today suppress repeated requests within the current UTC freshness window: midnight until 02:00, then 02:00 onward, based on acquisition request time. Yahoo success must have published its generation. Failed attempts do not reset freshness, and removed indices remain excluded.
 
-The sweep uses the existing per-instrument active-job gate and saved listing, preserving full-history generation publication and manual acquisitions. Invalid entries are logged without blocking other candidates. Provider failures become eligible again on the next sweep; database/queue failures receive bounded retries. Run exactly one scheduler; `make services-up` rebuilds/starts it and `make services-down` stops it. Scheduled refreshes continue while Docker services run, even after stopping the development API. See `docker compose logs celery-beat celery-worker` and [the design contract](../docs/on-demand-market-data.md).
+The sweep uses the existing per-instrument active-job gate and saved listing, preserving full-history generation publication and manual acquisitions. Invalid entries are logged without blocking other candidates. Provider failures become eligible again on the next sweep; database/queue failures receive bounded retries. Run exactly one scheduler; `make services-up` rebuilds/starts it and `make services-down` stops it. Scheduled refreshes continue while Docker services run, even after stopping the development API. See `docker compose logs celery-beat celery-worker celery-marketdata-worker` and [the design contract](../docs/on-demand-market-data.md).
 
 ## Index catalogue and explicit Yahoo history
 

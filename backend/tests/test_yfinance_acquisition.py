@@ -66,6 +66,29 @@ def run(db, config, rows=None, splits=None, listing=LISTING, source=None):
     return md.run_acquisition(db, config, job["id"], provider.factory), provider
 
 
+def test_every_yahoo_request_is_globally_paced_and_counted(db, config, monkeypatch):
+    pacer = Mock()
+    monkeypatch.setattr(md, "wait_for_yahoo_request", pacer)
+    result, provider = run(db, config, listing=None)
+    assert result["status"] == "succeeded"
+    calls = db.acquisition_jobs.find_one({"_id": result["id"]})["calls"]
+    assert pacer.call_count == calls == len(provider.calls)
+    for call in pacer.call_args_list:
+        assert call.args[:2] == (db, 0.05)
+        assert callable(call.args[2])
+
+
+def test_legacy_requests_do_not_use_yahoo_pacing(db, legacy_config, monkeypatch):
+    pacer = Mock()
+    monkeypatch.setattr(md, "wait_for_yahoo_request", pacer)
+    job = md.request_acquisition(db, legacy_config, ISIN, LISTING, "update", "user", Mock())
+    provider = Provider()
+    result = md.run_acquisition(db, legacy_config, job["id"], provider.factory)
+    assert result["status"] == "succeeded"
+    pacer.assert_not_called()
+    assert db.marketstack_usage.count_documents({}) == 1
+
+
 def test_default_free_provider_requires_no_key_or_monthly_budget(db, config):
     default = Settings(_env_file=None, jwt_secret="s" * 48)
     assert default.market_data_provider == "yfinance"
