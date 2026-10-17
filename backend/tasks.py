@@ -1,9 +1,13 @@
 """Background catalogue tasks. MongoDB's imports collection records completion."""
 
+from kombu.exceptions import OperationalError
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
-from celery_app import ACQUISITION_TASK, ETF_IMPORT_TASK, MARKET_DATA_REFRESH_TASK, app
+from celery_app import (
+    ACQUISITION_TASK, ETF_IMPORT_TASK, MARKET_DATA_REFRESH_TASK, app,
+    enqueue_market_data_refresh,
+)
 from config import TaskSettings
 from etfs import ETFImportError, import_etfs
 from market_data import DataError, JobBusy, run_acquisition
@@ -12,7 +16,7 @@ from market_data_refresh import refresh_stale_market_data
 
 @app.task(
     name=ETF_IMPORT_TASK,
-    autoretry_for=(ETFImportError, PyMongoError),
+    autoretry_for=(ETFImportError, PyMongoError, OperationalError),
     retry_backoff=30,
     retry_backoff_max=600,
     retry_jitter=True,
@@ -25,7 +29,11 @@ def import_etfs_task() -> int:
     with MongoClient(
         config.mongodb_uri.get_secret_value(), serverSelectionTimeoutMS=5000,
     ) as client:
-        return import_etfs(client[config.mongodb_database])
+        count = import_etfs(client[config.mongodb_database])
+    # Even a same-day skipped import must acquire missing catalogue history.
+    # Retrying a failed dispatch safely reuses the completed import marker.
+    enqueue_market_data_refresh(config, include_catalogue=True)
+    return count
 
 
 @app.task(
@@ -36,12 +44,13 @@ def import_etfs_task() -> int:
     retry_jitter=True,
     max_retries=5,
 )
-def refresh_market_data_task():
+def refresh_market_data_task(include_catalogue=False):
     config = TaskSettings()
     with MongoClient(
         config.mongodb_uri.get_secret_value(), serverSelectionTimeoutMS=5000,
     ) as client:
-        return refresh_stale_market_data(client[config.mongodb_database], config)
+        options = {"include_catalogue": True} if include_catalogue else {}
+        return refresh_stale_market_data(client[config.mongodb_database], config, **options)
 
 
 @app.task(name=ACQUISITION_TASK, bind=True, max_retries=12, soft_time_limit=600, time_limit=660)

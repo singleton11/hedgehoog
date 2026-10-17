@@ -1,4 +1,4 @@
-"""Queue stale saved ETFs and active indices without calling a provider."""
+"""Queue stale ETFs and active indices without calling a provider."""
 
 import logging
 from datetime import timedelta
@@ -9,18 +9,21 @@ from market_data import DataError, aware, published_history, request_acquisition
 logger = logging.getLogger(__name__)
 
 
-def refresh_stale_market_data(db, settings, *, now=None, publish=enqueue_acquisition):
+def refresh_stale_market_data(db, settings, *, now=None, publish=enqueue_acquisition,
+                             include_catalogue=False):
     now = aware(now or utcnow())
     today = now.date().isoformat()
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     scheduled = midnight.replace(hour=MARKET_DATA_REFRESH_HOUR)
     fresh_since = scheduled if now >= scheduled else midnight
-    # Match the saved ETF inventory, not the entire reference catalogue. Failed
-    # unpublished Yahoo profiles must not silently become automatic acquisitions.
+    # Scheduled refreshes cover saved inventory; startup additionally acquires
+    # the catalogue after its import has completed.
     identifiers = set(db.instruments.distinct("instrument_id", {
         "instrument_id": {"$not": {"$regex": "^idx-"}},
         "$or": [{"provider": {"$ne": "yfinance"}}, {"published": True}],
     }))
+    if include_catalogue:
+        identifiers.update(db.etfs.distinct("isin"))
     identifiers.update(db.indices.distinct("instrument_id", {
         "removed_at": {"$exists": False},
     }))

@@ -10,6 +10,7 @@ from etfs import ETF_SOURCE_URL
 def automatic_refresh_producer(monkeypatch):
     producer = Mock(return_value="test-refresh-task")
     monkeypatch.setattr("main.enqueue_market_data_refresh", producer)
+    monkeypatch.setattr("tasks.enqueue_market_data_refresh", producer)
     return producer
 
 

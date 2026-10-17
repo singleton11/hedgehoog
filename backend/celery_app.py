@@ -71,9 +71,10 @@ def enqueue_etf_import(settings: TaskSettings) -> str:
     return result.id
 
 
-def enqueue_market_data_refresh(settings: TaskSettings) -> str:
+def enqueue_market_data_refresh(settings: TaskSettings, *, include_catalogue=False) -> str:
+    options = {"kwargs": {"include_catalogue": True}} if include_catalogue else {}
     with create_celery_app(settings) as producer:
-        result = producer.send_task(MARKET_DATA_REFRESH_TASK, queue="etfs")
+        result = producer.send_task(MARKET_DATA_REFRESH_TASK, queue="etfs", **options)
     logger.info("Queued market-data refresh sweep %s", result.id)
     return result.id
 
