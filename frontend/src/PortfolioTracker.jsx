@@ -319,7 +319,7 @@ function PortfolioList({ request, customerId, plans }) {
 }
 function Summary({ data, performance }) {
   const totalPnl = data.unrealized_pnl_eur === null ? null : (Number(data.realized_pnl_eur) + Number(data.unrealized_pnl_eur)).toFixed(2);
-  const previousPortfolioValue = data.positions_value_eur === null || data.daily_unrealized_pnl_eur === null ? null : (Number(data.positions_value_eur) - Number(data.daily_unrealized_pnl_eur)).toFixed(2);
+  const previousPortfolioValue = data.previous_value_eur ?? (data.positions_value_eur === null || data.daily_unrealized_pnl_eur === null ? null : (Number(data.positions_value_eur) - Number(data.daily_unrealized_pnl_eur)).toFixed(2));
   const metrics = [['Cash', 'cash_eur'], ['Positions value', 'positions_value_eur'], ['Equity', 'equity_eur'], ['Realized P&L (incl. fees)', 'realized_pnl_eur'], ['Total unrealized P&L', 'unrealized_pnl_eur'], ['Daily unrealized P&L', 'daily_unrealized_pnl_eur'], ['Total P&L', 'total_pnl_eur']];
   const values = { ...data, total_pnl_eur: totalPnl };
   return <section aria-label="Portfolio summary"><h3>Portfolio summary</h3>
@@ -340,7 +340,7 @@ function Positions({ positions }) {
         <td>{position.quantity}</td><td>{formatEuros(position.average_price_eur)}</td><td>{formatEuros(position.cost_basis_eur)}</td>
         <td title={position.price_date ? `Price date: ${position.price_date}` : 'Price date unavailable'}>{formatEuros(position.market_price_eur)}</td>
         <td>{formatEuros(position.position_value_eur)}</td><td className={pnlClass(position.unrealized_pnl_eur)}>{pnlDisplay(position.unrealized_pnl_eur, Number(position.cost_basis_eur))}</td>
-        <td className={pnlClass(position.daily_unrealized_pnl_eur)} title={position.price_date ? `Price date: ${position.price_date}` : 'Price date unavailable'}>{pnlDisplay(position.daily_unrealized_pnl_eur, position.position_value_eur === null || position.daily_unrealized_pnl_eur === null ? null : Number(position.position_value_eur) - Number(position.daily_unrealized_pnl_eur))}</td>
+        <td className={pnlClass(position.daily_unrealized_pnl_eur)} title={(position.daily_price_date ?? position.price_date) ? `Price date: ${position.daily_price_date ?? position.price_date}` : 'Price date unavailable'}>{pnlDisplay(position.daily_unrealized_pnl_eur, position.daily_previous_value_eur ?? (position.position_value_eur === null || position.daily_unrealized_pnl_eur === null ? null : Number(position.position_value_eur) - Number(position.daily_unrealized_pnl_eur)))}</td>
       </tr>)}</tbody></table>
     </div></>}
   </section>;
