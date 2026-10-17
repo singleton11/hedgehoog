@@ -113,6 +113,12 @@ async function openWorkspace(hash = newRoute()) {
 async function navigate(hash) {
   await act(async () => { window.location.hash = hash; window.dispatchEvent(new Event('hashchange')); });
 }
+function chooseInstrument(label, value) {
+  const input = screen.getByRole('combobox', { name: label, exact: true });
+  if (!value) { fireEvent.click(screen.getByRole('button', { name: `Clear ${label.toLowerCase()}` })); return; }
+  fireEvent.change(input, { target: { value } });
+  fireEvent.click(screen.getByRole('option', { name: new RegExp(value) }));
+}
 async function submit() { fireEvent.click(calculate()); await flush(); }
 
 beforeEach(() => {
@@ -169,7 +175,7 @@ describe('planner routes and eligibility', () => {
     expect(screen.queryByRole('combobox', { name: 'Find an ETF' })).not.toBeInTheDocument();
     expect(screen.queryByText('Model assumptions and limitations')).not.toBeInTheDocument();
     expect(calculate()).toBeDisabled();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Instrument' }), { target: { value: A } });
+    chooseInstrument('Instrument', A);
     await flush();
     expect(window.location.hash).toBe('#/');
     expect(screen.getByRole('heading', { name: 'World & Europe ETF' })).toBeInTheDocument();
@@ -185,7 +191,9 @@ describe('planner routes and eligibility', () => {
     await openGoal(null);
     expect(screen.getByText(/No acquired instruments yet/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Add an ETF' })).toHaveAttribute('href', '#/add');
-    expect(within(screen.getByLabelText('Instrument')).getAllByRole('option')).toHaveLength(1);
+    fireEvent.focus(screen.getByLabelText('Instrument'));
+    expect(screen.queryByRole('option', { name: /ETF/ })).not.toBeInTheDocument();
+    expect(screen.getByText('No acquired instruments available.')).toBeInTheDocument();
     expect(calculate()).toBeDisabled();
     fireEvent.submit(screen.getByRole('form', { name: 'Goal planner inputs' }));
     expect(posts()).toHaveLength(0);
@@ -201,7 +209,7 @@ describe('planner routes and eligibility', () => {
     expect(screen.getByRole('link', { name: 'acquire its data first' })).toHaveAttribute('href', `#/instruments/${A}`);
     expect(calculate()).toBeDisabled();
     expect(reads()).toHaveLength(0);
-    fireEvent.change(screen.getByLabelText('Instrument'), { target: { value: B } });
+    chooseInstrument('Instrument', B);
     await flush();
     expect(calculate()).toBeEnabled();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
@@ -221,10 +229,11 @@ describe('planner routes and eligibility', () => {
     };
     await openGoal(null);
     const instrument = screen.getByLabelText('Instrument');
-    expect(within(instrument).getAllByRole('option')).toHaveLength(102);
+    fireEvent.focus(instrument);
+    expect(screen.getAllByRole('option').filter((option) => option.closest('[role=listbox]'))).toHaveLength(101);
     expect(request.mock.calls.filter(([path]) => path.startsWith('/instruments/acquired')))
       .toEqual([['/instruments/acquired/universe', expect.objectContaining({ signal: expect.any(AbortSignal) })]]);
-    fireEvent.change(instrument, { target: { value: lastId } });
+    chooseInstrument('Instrument', lastId);
     await flush();
     await submit();
     expect(posts()[0][1].body.strategy.parameters.instrument).toBe(lastId);
@@ -301,7 +310,7 @@ describe('planner routes and eligibility', () => {
     fireEvent.click(screen.getByRole('link', { name: 'New simulation' }));
     await advance(5);
     expect(window.location.hash).toBe(newRoute());
-    expect(screen.getByLabelText('Instrument')).toHaveValue(A);
+    expect(screen.getByLabelText('Instrument').value).toContain(A);
     expect(calculate()).toBeEnabled();
     fireEvent.click(screen.getByRole('link', { name: 'ETFs' }));
     await advance(5);
@@ -396,10 +405,10 @@ describe('metadata-driven strategy configuration', () => {
     expect(calculate()).toBeDisabled();
     expect(screen.getByLabelText('Target (EUR)')).toHaveValue('250000');
     expect(screen.queryByLabelText('Instrument')).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Primary instrument'), { target: { value: A } });
+    chooseInstrument('Primary instrument', A);
     await flush();
     expect(calculate()).toBeDisabled();
-    fireEvent.change(screen.getByLabelText('Secondary instrument'), { target: { value: B } });
+    chooseInstrument('Secondary instrument', B);
     await flush();
     expect(calculate()).toBeEnabled();
     await submit();
@@ -605,13 +614,13 @@ describe('stale reads and results', () => {
     fireEvent.change(screen.getByLabelText('Target (EUR)'), { target: { value: '123456' } });
     await submit();
     expect(result()).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Instrument'), { target: { value: B } });
+    chooseInstrument('Instrument', B);
     expect(result()).not.toBeInTheDocument();
     expect(screen.getByLabelText('Target (EUR)')).toHaveValue('123456');
     await flush();
     await submit();
     expect(posts().at(-1)[1].body.strategy).toEqual(selection(B));
-    fireEvent.change(screen.getByLabelText('Instrument'), { target: { value: '' } });
+    chooseInstrument('Instrument', '');
     expect(result()).not.toBeInTheDocument();
     expect(calculate()).toBeDisabled();
   });
@@ -623,7 +632,7 @@ describe('stale reads and results', () => {
     server.simulate = () => pending.promise;
     await submit();
     const options = posts()[0][1];
-    fireEvent.change(screen.getByLabelText('Instrument'), { target: { value: B } });
+    chooseInstrument('Instrument', B);
     expect(options.signal.aborted).toBe(true);
     await flush();
     server.simulate = async (body) => simulation(body, { monthly_contribution_eur: '987.65' });
