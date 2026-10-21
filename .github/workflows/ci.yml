@@ -55,15 +55,25 @@ jobs:
           cache: npm
           cache-dependency-path: current/frontend/package-lock.json
 
-      - name: Test the coverage gate
+      - name: Install backend test dependencies
+        if: matrix.suite == 'backend'
+        working-directory: current/backend
+        run: uv sync --locked
+
+      - name: Test the coverage gate and baseline reporters
         if: matrix.suite == 'backend'
         working-directory: current
-        run: python3 -m unittest discover -s scripts/tests
+        run: python3 -m unittest discover -s scripts/tests -v
 
       - name: Install frontend dependencies
         if: matrix.suite == 'frontend'
         working-directory: current/frontend
         run: npm ci
+
+      - name: Test the frontend baseline reporter
+        if: matrix.suite == 'frontend'
+        working-directory: current
+        run: python3 -m unittest discover -s scripts/tests -p test_baseline_reporters.py -k vitest -v
 
       - name: Run tests with coverage
         run: bash current/scripts/run_coverage.sh "${{ matrix.suite }}" "$GITHUB_WORKSPACE/current" "$RUNNER_TEMP/coverage/current"
@@ -79,7 +89,7 @@ jobs:
 
       - name: Measure target branch coverage with the same instrumentation
         if: github.event_name == 'pull_request'
-        run: bash current/scripts/run_coverage.sh "${{ matrix.suite }}" "$GITHUB_WORKSPACE/baseline" "$RUNNER_TEMP/coverage/baseline"
+        run: bash current/scripts/run_coverage.sh "${{ matrix.suite }}" "$GITHUB_WORKSPACE/baseline" "$RUNNER_TEMP/coverage/baseline" baseline
 
       - name: Report coverage and reject regressions
         env:

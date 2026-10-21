@@ -329,9 +329,14 @@ lines, functions and branches** for JavaScript. Comparisons use exact counts, no
 rounded percentages, with no allowed decrease. Backend and frontend are gated
 separately, including source files never imported by tests. Backend tests and the
 Python virtualenv are excluded; frontend test files, test setup and the browser
-bootstrap (`src/main.jsx`) are excluded. A failing baseline run or missing report
-fails CI rather than bypassing the gate. The baseline is rerun for every PR, so no
-previous artifacts or initial baseline commit are needed. Push/manual runs report
+bootstrap (`src/main.jsx`) are excluded. Proposed-change tests must all pass.
+Baseline test-body failures are allowed only after a complete run with valid
+coverage; they produce a warning, not a skipped comparison. Collection, hook,
+runner and unhandled errors, interrupted/incomplete runs, and missing reports
+still fail CI. The baseline Vitest cleanup instrumentation supports the locked
+Vitest 4.1.11 Node runner and fails closed on other versions or custom runners;
+update its lifecycle fixtures when upgrading Vitest. The baseline is rerun for
+every PR, so no previous artifacts or initial baseline commit are needed. Push/manual runs report
 coverage without a comparison; use pull requests for regression enforcement.
 
 Coverage tables appear in the Actions job summaries. Download the
