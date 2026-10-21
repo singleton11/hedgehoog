@@ -875,7 +875,8 @@ def test_portfolio_transaction_and_instrument_pagination_are_stable(tracker, db)
     for offset, item in enumerate((third, second, first)):
         assert client.get(base, params={"limit": 1, "offset": offset}).json() == {
             "items": [{**item, "net_worth_eur": "0.00", "realized_pnl_eur": "0.00", "unrealized_pnl_eur": "0.00",
-                       "today_pnl_eur": "0.00", "total_pnl_eur": "0.00", "today_from_date": None, "today_to_date": None}],
+                       "today_pnl_eur": "0.00", "total_pnl_eur": "0.00", "today_from_date": None, "today_to_date": None,
+                       "cost_basis_eur": "0.00", "previous_value_eur": "0.00"}],
             "total": 3, "limit": 1, "offset": offset,
         }
     events = [record(client, url, cash(day=day, amount="10")) for day in
