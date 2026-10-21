@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests and coverage (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [backend, frontend]
+    env:
+      JWT_SECRET: ci-only-test-secret-not-used-outside-this-run
+    steps:
+      - name: Check out proposed changes
+        uses: actions/checkout@v4
+        with:
+          path: current
+          persist-credentials: false
+
+      - name: Check out target branch baseline
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: baseline
+          persist-credentials: false
+
+      - name: Set up Python and uv
+        if: matrix.suite == 'backend'
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.2'
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: '**/uv.lock'
+
+      - name: Set up Node.js
+        if: matrix.suite == 'frontend'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: current/frontend/package-lock.json
+
+      - name: Test the coverage gate
+        if: matrix.suite == 'backend'
+        working-directory: current
+        run: python3 -m unittest discover -s scripts/tests
+
+      - name: Install frontend dependencies
+        if: matrix.suite == 'frontend'
+        working-directory: current/frontend
+        run: npm ci
+
+      - name: Run tests with coverage
+        run: bash current/scripts/run_coverage.sh "${{ matrix.suite }}" "$GITHUB_WORKSPACE/current" "$RUNNER_TEMP/coverage/current"
+
+      - name: Install baseline frontend dependencies
+        if: github.event_name == 'pull_request' && matrix.suite == 'frontend'
+        working-directory: baseline/frontend
+        run: |
+          npm ci
+          # Only this disposable checkout's manifests change; keep the locked Vitest version.
+          version=$(node -p 'require("./node_modules/vitest/package.json").version')
+          npm install --save-dev --save-exact "@vitest/coverage-v8@$version"
+
+      - name: Measure target branch coverage with the same instrumentation
+        if: github.event_name == 'pull_request'
+        run: bash current/scripts/run_coverage.sh "${{ matrix.suite }}" "$GITHUB_WORKSPACE/baseline" "$RUNNER_TEMP/coverage/baseline"
+
+      - name: Report coverage and reject regressions
+        env:
+          SUITE: ${{ matrix.suite }}
+          IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+        run: |
+          report=coverage.json
+          if [ "$SUITE" = frontend ]; then report=coverage-summary.json; fi
+          args=(--suite "$SUITE" --current "$RUNNER_TEMP/coverage/current/$report")
+          if [ "$IS_PULL_REQUEST" = true ]; then
+            args+=(--baseline "$RUNNER_TEMP/coverage/baseline/$report")
+          fi
+          python3 current/scripts/check_coverage.py "${args[@]}"
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.suite }}
+          path: ${{ runner.temp }}/coverage
+          if-no-files-found: warn
+          retention-days: 14
