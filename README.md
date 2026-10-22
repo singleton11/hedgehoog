@@ -317,24 +317,15 @@ make test-coverage  # Backend + frontend tests with terminal, JSON and HTML cove
 
 ### GitHub Actions and coverage gate
 
-Push CI on `main` also publishes `baseline-backend` and `baseline-frontend`
-artifacts, retained for 90 days (subject to repository limits), for future PR
-coverage comparisons. Each contains the coverage JSON, validated completion status,
-and a manifest binding checksums to the commit, suite, branch, run ID, and
-schema/instrumentation versions. Bump the instrumentation version in
-`scripts/coverage_artifact.py` when measurement semantics or compatible tooling
-change. Completed test-body failures may produce a validated baseline, but still
-fail the CI check; incomplete or infrastructure-failed runs cannot publish one.
-Publication is limited to main push runs, not manual runs. PRs still measure their
-baseline locally; consuming these artifacts is a separate follow-up change.
-
-The `CI` workflow runs backend and frontend tests in separate jobs on pushes and
-pull requests (and supports manual runs). No production secrets, external coverage
+The `CI` workflow runs backend and frontend tests in separate jobs on pushes to
+`main` and on pull requests (and supports manual runs). Feature-branch pushes do
+not trigger a duplicate run. No production secrets, external coverage
 service, MongoDB or RabbitMQ are required; real-service integration tests remain
 opt-in as described below.
 
-For each pull request, CI measures both the proposed merge and the exact target
-branch commit with the same coverage instrumentation. Every metric must be at
+For each pull request targeting `main`, CI measures the proposed merge and downloads
+validated baseline artifacts from a completed `push` CI run for the exact target
+commit (`pull_request.base.sha`), never the latest available main commit. Every metric must be at
 least its target-branch value: **lines and branches** for Python, and **statements,
 lines, functions and branches** for JavaScript. Comparisons use exact counts, not
 rounded percentages, with no allowed decrease. Backend and frontend are gated
@@ -346,9 +337,24 @@ coverage; they produce a warning, not a skipped comparison. Collection, hook,
 runner and unhandled errors, interrupted/incomplete runs, and missing reports
 still fail CI. The baseline Vitest cleanup instrumentation supports the locked
 Vitest 4.1.11 Node runner and fails closed on other versions or custom runners;
-update its lifecycle fixtures when upgrading Vitest. The baseline is rerun for
-every PR, so no previous artifacts or initial baseline commit are needed. Push/manual runs report
-coverage without a comparison; use pull requests for regression enforcement.
+update its lifecycle fixtures when upgrading Vitest. Main push runs publish
+`baseline-backend` / `baseline-frontend` artifacts only after completion and coverage
+validation, even when test bodies fail; those failures still fail the main CI check.
+Each artifact includes completion status, report checksums, source commit, suite,
+branch, run ID, and schema/instrumentation versions. PRs reject mismatched or invalid
+artifacts. Bump the instrumentation version in `scripts/coverage_artifact.py` whenever
+coverage settings, tool compatibility, or measurement semantics change.
+
+Baseline artifacts are retained for 90 days (subject to repository retention limits).
+Missing, expired, or incompatible baselines fail the PR check; there is no local rerun
+fallback. Bootstrap by landing this workflow on `main` and letting its push CI finish
+before using the artifact gate. If a baseline is missing, rerun that commit's original
+push run while GitHub still permits reruns (within 30 days of the original run).
+For older commits or expired artifacts, advance `main` with a new commit, let its
+push CI publish fresh baselines, then update the PR to that base. Manual workflow
+runs do not publish baselines. Targets other than `main` are unsupported and fail
+explicitly. Push/manual runs report coverage without
+a comparison; use pull requests for regression enforcement.
 
 Coverage tables appear in the Actions job summaries. Download the
 `coverage-backend` / `coverage-frontend` artifacts for JSON and HTML reports
