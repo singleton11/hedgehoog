@@ -317,8 +317,9 @@ make test-coverage  # Backend + frontend tests with terminal, JSON and HTML cove
 
 ### GitHub Actions and coverage gate
 
-The `CI` workflow runs backend and frontend tests in separate jobs on pushes and
-pull requests (and supports manual runs). No production secrets, external coverage
+The `CI` workflow runs backend and frontend tests in separate jobs on pushes to
+`main` and on pull requests (and supports manual runs). Feature-branch pushes do
+not trigger a duplicate run. No production secrets, external coverage
 service, MongoDB or RabbitMQ are required; real-service integration tests remain
 opt-in as described below.
 
