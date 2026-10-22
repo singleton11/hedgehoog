@@ -107,17 +107,18 @@ Proceed only after the duplicate-check gate passes:
    `cancelled`, explaining that the reviewed snapshot is stale. Do not move the
    check to a new SHA or start another review.
 2. Otherwise complete that same check with a findings-first output summary:
-   `failure` for actionable defects requiring changes, `success` for a complete
-   static review with no actionable findings, or `neutral` for an incomplete or
-   blocked review. Never turn an access failure or incomplete diff into success.
+   `failure` for actionable defects requiring changes or an incomplete or blocked
+   review, and `success` only for a complete static review with no actionable
+   findings. Access failures and incomplete diffs must fail the check: GitHub
+   treats `neutral` and `skipped` as satisfying required status checks.
 3. Include scope (PR and reviewed SHA), findings with file/line references,
    assumptions, residual risks, and "Tests not run (static review)." A successful
    review is not a claim that tests pass. Keep output within GitHub API limits;
    summarize honestly if detailed findings must be shortened.
 4. On interruption after check creation, make a best effort to conclude only
-   your recorded check as `neutral` with an honest limitation. Do not create a
+   your recorded check as `failure` with an honest limitation. Do not create a
    replacement check or mark it successful. If publication fails, report the
    blocker locally without claiming the result was submitted.
 5. Publish through the check only, not duplicate PR reviews or comments. Return
    the PR/check link and a concise outcome locally. On later invocations, the
-   mandatory gate applies even to this invocation's cancelled or neutral check.
+   mandatory gate applies even to this invocation's cancelled or failed check.
