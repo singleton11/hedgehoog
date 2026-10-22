@@ -105,6 +105,16 @@ gh pr view <pr-number> --repo <owner/repo> --json url,body,baseRefName,headRefNa
 gh pr checks <pr-number> --repo <owner/repo>
 ```
 
+If the installed CLI reports `Unknown JSON field: closingIssuesReferences`,
+read the other fields without it and query the GraphQL API instead. Replace
+`OWNER`, `REPO`, and `123` with the PR repository and PR number:
+
+```sh
+gh api graphql -f query='query { repository(owner:"OWNER", name:"REPO") { pullRequest(number:123) { closingIssuesReferences(first:100) { nodes { number url repository { nameWithOwner } } pageInfo { hasNextPage endCursor } } } } }'
+```
+
+Follow pagination if `hasNextPage` is true before deciding an issue is absent.
+
 - Confirm the correct head and base, and compare the base to the repository's
   current default branch.
 - Verify the issue repository has **Auto-close issues with merged linked pull
