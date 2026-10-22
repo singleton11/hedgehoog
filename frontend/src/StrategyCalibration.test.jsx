@@ -184,7 +184,7 @@ describe('immutable calibration history and routes', () => {
     await follow('Calibration'); expect(screen.getByText(/No calibration runs yet/)).toBeInTheDocument(); expect(posts()).toHaveLength(0);
   });
 
-  it('keeps both identical submissions as distinct reports and refreshes/reopens without POST', async () => {
+  it('keeps both identical submissions as distinct reports and reloads/reopens without POST', async () => {
     const server = mockServer(); const view = await open({ choose: true }); change('Seed (optional)', '42');
     await submit(); const first = structuredClone([...server.runs.values()][0]);
     expect(window.location.hash).toBe(reportRoute(first.id)); expect(result()).toBeInTheDocument();
@@ -194,7 +194,7 @@ describe('immutable calibration history and routes', () => {
     expect(posts()[0][1].body).toEqual(posts()[1][1].body); expect(server.runs.get(first.id)).toEqual(first);
     await follow(/Calibration history/); expect(historyLinks()).toEqual([reportRoute(second.id), reportRoute(first.id)]);
     const catalogueReads = reads('/goals/strategies').length;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await flush();
+    await navigate('#/invalid'); await navigate('#/calibration');
     expect(historyLinks()).toEqual([reportRoute(second.id), reportRoute(first.id)]);
     fireEvent.click(within(historyTable()).getAllByRole('link')[1]); await tick();
     expect(window.location.hash).toBe(reportRoute(first.id)); expect(result()).toHaveTextContent('Seed 42');
@@ -203,7 +203,7 @@ describe('immutable calibration history and routes', () => {
     expect(reads('/goals/strategies')).toHaveLength(catalogueReads); expect(posts()).toHaveLength(2);
   });
 
-  it('paginates compact history by 20, refreshes to page one, and does not fetch audit reports', async () => {
+  it('paginates compact history by 20, reopens at page one, and does not fetch audit reports', async () => {
     const server = mockServer();
     for (let index = 0; index < 41; index += 1) server.save(generatedCalibration({ ...expectedBody, scenario_count: 10, seed: index }));
     await open({ route: '#/calibration' });
@@ -218,7 +218,7 @@ describe('immutable calibration history and routes', () => {
     fireEvent.click(pages().getByRole('button', { name: 'Previous' })); await flush();
     expect(pages().getByText('21–40 of 41')).toBeInTheDocument();
     server.save(generatedCalibration({ ...expectedBody, scenario_count: 10 }));
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await flush();
+    await navigate('#/invalid'); await navigate('#/calibration');
     expect(pages().getByText('1–20 of 42')).toBeInTheDocument(); expect(historyLinks()[0]).toBe(reportRoute(runId(42)));
     expect(request.mock.calls.map(([path]) => path)).toEqual([historyPath(), historyPath(20), historyPath(40), historyPath(20), historyPath()]);
     expect(posts()).toHaveLength(0);
@@ -877,7 +877,7 @@ describe('route, auth and request race protection', () => {
     expect(screen.getByLabelText('Number of scenarios')).toHaveValue(10); expect(screen.queryByRole('alert')).not.toBeInTheDocument(); expect(posts()).toHaveLength(0);
   });
 
-  it.each(['resolve', 'reject'])('ignores late history-page %s after refresh resets the offset', async (outcome) => {
+  it.each(['resolve', 'reject'])('ignores late history-page %s after reopening history resets the offset', async (outcome) => {
     const server = mockServer(), pending = deferred();
     for (let i = 0; i < 21; i += 1) server.save(generatedCalibration({ ...expectedBody, scenario_count: 10 }));
     const history = server.history;
@@ -887,21 +887,21 @@ describe('route, auth and request race protection', () => {
     const signal = reads(historyPath(20))[0][1].signal; expect(screen.queryByRole('table')).not.toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('Loading calibration history');
     const newest = server.save(generatedCalibration({ ...expectedBody, scenario_count: 10 }));
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await flush(); expect(signal.aborted).toBe(true);
+    await navigate('#/invalid'); await navigate('#/calibration'); expect(signal.aborted).toBe(true);
     expect(screen.getByText('1–20 of 22')).toBeInTheDocument(); expect(historyLinks()[0]).toBe(reportRoute(newest.id));
     await act(async () => outcome === 'resolve' ? pending.resolve(oldPage) : pending.reject(new Error('obsolete page')));
     expect(screen.getByText('1–20 of 22')).toBeInTheDocument(); expect(historyLinks()[0]).toBe(reportRoute(newest.id));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument(); expect(posts()).toHaveLength(0);
   });
 
-  it.each(['resolve', 'reject'])('ignores history %s from an older refresh of the same page', async (outcome) => {
+  it.each(['resolve', 'reject'])('ignores history %s from an older visit to the same page', async (outcome) => {
     const server = mockServer(), pending = deferred(); server.save(); await open({ route: '#/calibration' });
     const history = server.history, oldPage = await history(new URLSearchParams('limit=20&offset=0'));
     server.history = () => pending.promise;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await flush(); const signal = reads(historyPath()).at(-1)[1].signal;
+    await navigate('#/invalid'); await navigate('#/calibration'); const signal = reads(historyPath()).at(-1)[1].signal;
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
     const newest = server.save(); server.history = history;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await flush(); expect(signal.aborted).toBe(true);
+    await navigate('#/invalid'); await navigate('#/calibration'); expect(signal.aborted).toBe(true);
     await act(async () => outcome === 'resolve' ? pending.resolve(oldPage) : pending.reject(new Error('obsolete refresh')));
     expect(historyLinks()).toEqual([reportRoute(newest.id), reportRoute()]); expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
@@ -1010,13 +1010,13 @@ describe('route, auth and request race protection', () => {
     expect(metric('Brier score')).toHaveTextContent('0.0000'); expect(screen.queryByRole('alert')).not.toBeInTheDocument(); expect(posts()).toHaveLength(2);
   });
 
-  it('allows an abandoned server-side calculation to appear only when history is explicitly refreshed', async () => {
+  it('allows an abandoned server-side calculation to appear only when history is reopened', async () => {
     const server = mockServer(), pending = deferred(); server.calibrate = () => pending.promise;
     await open({ choose: true }); await submit(); const options = posts()[0][1];
     await follow(/Calibration history/); expect(options.signal.aborted).toBe(true);
     const saved = server.save(generatedCalibration(options.body)); await act(async () => pending.resolve(saved)); await tick();
     expect(window.location.hash).toBe('#/calibration'); expect(screen.getByText(/No calibration runs yet/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await flush(); expect(historyLinks()).toEqual([reportRoute(saved.id)]);
+    await navigate('#/invalid'); await navigate('#/calibration'); expect(historyLinks()).toEqual([reportRoute(saved.id)]);
     expect(posts()).toHaveLength(1);
   });
 

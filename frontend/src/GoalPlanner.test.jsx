@@ -77,7 +77,7 @@ function mockServer() {
       today_from_date: null, today_to_date: null }], total: 1, limit: 20, offset: 0 };
     if (path === '/customers/customer-1') return structuredClone(customer);
     if (path.startsWith('/customers/customer-1/portfolios?')) return { items: [], total: 0, limit: 20, offset: 0 };
-    if (path.startsWith('/customers/customer-1/goals?')) return { items: [structuredClone(goal)], total: 1, limit: Number(new URL(path, 'http://localhost').searchParams.get('limit')), offset: 0 };
+    if (path.startsWith('/customers/customer-1/goals?')) return { items: [{ ...structuredClone(goal), linked_portfolio_count: 0, linked_equity_eur: null }], total: 1, limit: Number(new URL(path, 'http://localhost').searchParams.get('limit')), offset: 0 };
     if (path === '/customers/customer-1/goals/goal-1') return structuredClone(goal);
     if (path.startsWith('/customers/customer-1/goals/goal-1/simulations?')) return { items: [], total: 0, limit: 20, offset: 0 };
     if (path === '/customers/customer-1/goals/goal-1/simulate') {
@@ -687,17 +687,17 @@ describe('stale reads and results', () => {
     expect(posts()).toHaveLength(2);
   });
 
-  it('invalidates a completed result on statistics refresh and disables calculation while refreshing', async () => {
+  it('invalidates a completed result while checking a newly selected instrument', async () => {
     const server = mockServer();
     await openGoal();
     await submit();
     const pending = deferred();
     server.stats = () => pending.promise;
-    fireEvent.click(screen.getByText('Saved return statistics'));
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh statistics' }));
+    fireEvent.change(screen.getByLabelText('Instrument'), { target: { value: B } });
+    fireEvent.click(screen.getByRole('option', { name: new RegExp(B) }));
     expect(result()).not.toBeInTheDocument();
     expect(calculate()).toBeDisabled();
-    await act(async () => pending.resolve(statistics(A, { eligible: false, price_currency: 'USD', ineligible_reason: 'EUR required' })));
+    await act(async () => pending.resolve(statistics(B, { eligible: false, price_currency: 'USD', ineligible_reason: 'EUR required' })));
     expect(calculate()).toBeDisabled();
     expect(posts()).toHaveLength(1);
   });

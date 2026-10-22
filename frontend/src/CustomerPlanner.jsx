@@ -73,18 +73,19 @@ function validPage(data, offset, validate) {
 function PagedList({ request, path, label, validate, children, empty }) {
   const [offset, setOffset] = useState(0);
   const resource = useRead(request, `${path}?limit=${PAGE_SIZE}&offset=${offset}`);
+  const valid = validPage(resource.data, offset, validate);
   // A successful creation changes the component key in the parent, starting at page one.
   return <section aria-label={label} className="planner-list">
     <div className="section-heading"><h3>{label}</h3></div>
-    <LoadState resource={resource} valid={validPage(resource.data, offset, validate)}>
-      {resource.data?.total === 0 ? <p className="empty-state">{empty}</p> : <>
-        {resource.data && children(resource.data.items)}
+    <LoadState resource={resource} valid={valid}>
+      {valid && (resource.data.total === 0 ? <p className="empty-state">{empty}</p> : <>
+        {children(resource.data.items)}
         <nav aria-label={`${label} pagination`} className="planner-pagination">
           <button type="button" className="secondary" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>Previous</button>
           <span aria-live="polite">{resource.data?.items.length ? offset + 1 : 0}–{offset + (resource.data?.items.length || 0)} of {resource.data?.total}</span>
           <button type="button" className="secondary" disabled={offset + PAGE_SIZE >= (resource.data?.total || 0)} onClick={() => setOffset(offset + PAGE_SIZE)}>Next</button>
         </nav>
-      </>}
+      </>)}
     </LoadState>
   </section>;
 }

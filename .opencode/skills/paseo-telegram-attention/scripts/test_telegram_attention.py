@@ -121,6 +121,13 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual(json.loads(output.getvalue()), {"chat_id": 12345, "user_id": 12345, "message_id": 77})
             self.assertNotIn(TOKEN, output.getvalue())
 
+    def test_redirects_are_refused(self):
+        with patch.object(attention.urllib.request, "build_opener") as network:
+            network.return_value.open.return_value = Response(b'{"ok":true,"result":{"message_id":77}}')
+            attention.send_question(attention.load_config(ENV), "question")
+            handler = network.call_args.args[0]
+            self.assertIsNone(handler.redirect_request(None, None, 302, "redirect", {}, "https://example.invalid"))
+
     def test_reply_requires_private_chat_sender_and_pending_id(self):
         pending = {"chat_id": 12345, "user_id": 12345, "message_id": 77}
         valid = {"chat": {"id": 12345, "type": "private"}, "from": {"id": 12345},
