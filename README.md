@@ -324,9 +324,12 @@ service, MongoDB or RabbitMQ are required; real-service integration tests remain
 opt-in as described below.
 
 For each pull request targeting `main`, CI measures the proposed merge and downloads
-validated baseline artifacts from a completed `push` CI run for the exact target
-commit (`pull_request.base.sha`), never the latest available main commit. Every metric must be at
-least its target-branch value: **lines and branches** for Python, and **statements,
+validated baseline artifacts from a completed `push` CI run. It prefers the exact
+target commit (`pull_request.base.sha`); when no retained artifact exists, it walks
+that commit's first-parent history and uses the nearest ancestor with an artifact
+for the suite. Run timestamps and overall CI success do not determine proximity.
+The chosen SHA and first-parent distance appear in the job summary, with a warning
+when falling back. Every metric must be at least its selected baseline value: **lines and branches** for Python, and **statements,
 lines, functions and branches** for JavaScript. Comparisons use exact counts, not
 rounded percentages, with no allowed decrease. Backend and frontend are gated
 separately, including source files never imported by tests. Backend tests and the
@@ -346,13 +349,14 @@ artifacts. Bump the instrumentation version in `scripts/coverage_artifact.py` wh
 coverage settings, tool compatibility, or measurement semantics change.
 
 Baseline artifacts are retained for 90 days (subject to repository retention limits).
-Missing, expired, or incompatible baselines fail the PR check; there is no local rerun
-fallback. Bootstrap by landing this workflow on `main` and letting its push CI finish
-before using the artifact gate. If a baseline is missing, rerun that commit's original
-push run while GitHub still permits reruns (within 30 days of the original run).
-For older commits or expired artifacts, advance `main` with a new commit, let its
-push CI publish fresh baselines, then update the PR to that base. Manual workflow
-runs do not publish baselines. Targets other than `main` are unsupported and fail
+Missing or expired artifacts allow searching older first-parent commits. If none
+has a retained artifact, the check fails; API errors and invalid or incompatible
+artifacts also fail rather than silently skipping validation. There is no local
+remeasurement fallback. An older baseline includes intervening main changes in the
+comparison and can miss a regression relative to an improvement in newer main.
+Bootstrap by letting a `main` push CI publish baselines. To refresh missing artifacts,
+rerun their original push run while GitHub permits it, or publish a new main push
+baseline. Manual workflow runs do not publish baselines. Targets other than `main` are unsupported and fail
 explicitly. Push/manual runs report coverage without
 a comparison; use pull requests for regression enforcement.
 
