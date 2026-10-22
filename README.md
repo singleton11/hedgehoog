@@ -317,6 +317,17 @@ make test-coverage  # Backend + frontend tests with terminal, JSON and HTML cove
 
 ### GitHub Actions and coverage gate
 
+Push CI on `main` also publishes `baseline-backend` and `baseline-frontend`
+artifacts, retained for 90 days (subject to repository limits), for future PR
+coverage comparisons. Each contains the coverage JSON, validated completion status,
+and a manifest binding checksums to the commit, suite, branch, run ID, and
+schema/instrumentation versions. Bump the instrumentation version in
+`scripts/coverage_artifact.py` when measurement semantics or compatible tooling
+change. Completed test-body failures may produce a validated baseline, but still
+fail the CI check; incomplete or infrastructure-failed runs cannot publish one.
+Publication is limited to main push runs, not manual runs. PRs still measure their
+baseline locally; consuming these artifacts is a separate follow-up change.
+
 The `CI` workflow runs backend and frontend tests in separate jobs on pushes and
 pull requests (and supports manual runs). No production secrets, external coverage
 service, MongoDB or RabbitMQ are required; real-service integration tests remain
