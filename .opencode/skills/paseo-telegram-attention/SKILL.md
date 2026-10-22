@@ -26,7 +26,19 @@ Do not send routine progress updates that do not require attention.
 ## Recipient And Credentials
 
 - Read the bot token from `PASEO_TELEGRAM_BOT_TOKEN` in the process environment.
-- Use private chat ID `169270756` and accept replies only from user ID `169270756`.
+- Read the private chat ID from `PASEO_TELEGRAM_CHAT_ID` and the authorized reply
+  sender's user ID from `PASEO_TELEGRAM_USER_ID` in the process environment. These
+  values must be configured by the operator before starting the session; never
+  hardcode recipient IDs in the skill or infer them from incoming updates.
+- Before making any Telegram request, require a nonempty bot token and both IDs
+  to be positive decimal integers. Parse the IDs as integers for request payloads
+  and reply comparisons. This skill supports private chats only: require the
+  chat ID to equal the user ID. Keep these validated values fixed for the pending
+  question and its reply checks.
+- If any required value is missing or invalid, report which environment variable
+  needs configuration through the current session, without printing its value,
+  and remain blocked. Do not send, poll, guess a recipient, or fall back to a
+  default ID.
 - Never embed the token in repository files, messages, logs, or command arguments.
 - Use an HTTP client inside a script that reads the environment directly, such as
   Python's standard-library `urllib.request`. Never print request URLs or raw
@@ -42,7 +54,8 @@ Do not send routine progress updates that do not require attention.
    answer is routed to the correct session. For a notification without a
    question, explicitly request acknowledgment.
 2. POST JSON to `https://api.telegram.org/bot<TOKEN>/sendMessage` with `chat_id`
-   set to `169270756`, `text` set to that message, and `reply_markup` set to
+   set to the validated `PASEO_TELEGRAM_CHAT_ID`, `text` set to that message, and
+   `reply_markup` set to
    `{"force_reply": true, "selective": true}`. Omit `parse_mode` to send plain text.
 3. Check both the HTTP status and Telegram's JSON `ok` value. Retain the returned
    `result.message_id` as the pending question's ID. Do not consider an attempted
@@ -65,8 +78,9 @@ Do not send routine progress updates that do not require attention.
    unacknowledged queue is full and prevents new replies from appearing, report
    the limitation rather than clearing the queue.
 5. Accept an answer only when all of these match:
-   - `message.chat.id == 169270756`;
-   - `message.from.id == 169270756`;
+   - `message.chat.type == "private"`;
+   - `message.chat.id` equals the validated `PASEO_TELEGRAM_CHAT_ID`;
+   - `message.from.id` equals the validated `PASEO_TELEGRAM_USER_ID`;
    - `message.reply_to_message.message_id` equals the pending question's ID;
    - the message contains a usable answer or acknowledgment.
 6. Ignore historical messages, replies to other questions, other senders, and

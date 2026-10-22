@@ -1,0 +1,174 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests and coverage (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [backend, frontend]
+    env:
+      JWT_SECRET: ci-only-test-secret-not-used-outside-this-run
+    steps:
+      - name: Check out proposed changes
+        uses: actions/checkout@v4
+        with:
+          path: current
+          persist-credentials: false
+
+      - name: Set up Python and uv
+        if: matrix.suite == 'backend'
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.2'
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: '**/uv.lock'
+
+      - name: Set up Node.js
+        if: matrix.suite == 'frontend'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: current/frontend/package-lock.json
+
+      - name: Install backend test dependencies
+        if: matrix.suite == 'backend'
+        working-directory: current/backend
+        run: uv sync --locked
+
+      - name: Test the coverage gate and baseline reporters
+        if: matrix.suite == 'backend'
+        working-directory: current
+        run: python3 -m unittest discover -s scripts/tests -v
+
+      - name: Install frontend dependencies
+        if: matrix.suite == 'frontend'
+        working-directory: current/frontend
+        run: npm ci
+
+      - name: Test baseline artifact lookup
+        if: matrix.suite == 'frontend'
+        working-directory: current
+        run: node --test scripts/tests/test_coverage_baseline.cjs
+
+      - name: Test the frontend baseline reporter
+        if: matrix.suite == 'frontend'
+        working-directory: current
+        run: python3 -m unittest discover -s scripts/tests -p test_baseline_reporters.py -k vitest -v
+
+      # Main publishes validated, completed measurements even when test bodies fail.
+      # PR tests still run in strict mode and must pass.
+      - name: Run tests with coverage
+        env:
+          MEASUREMENT_MODE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'baseline' || 'current' }}
+        run: bash current/scripts/run_coverage.sh "${{ matrix.suite }}" "$GITHUB_WORKSPACE/current" "$RUNNER_TEMP/coverage/current" "$MEASUREMENT_MODE"
+
+      - name: Seal main branch baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: >-
+          python3 current/scripts/coverage_artifact.py seal
+          --suite "${{ matrix.suite }}" --sha "$GITHUB_SHA"
+          --branch main --run-id "$GITHUB_RUN_ID"
+          --directory "$RUNNER_TEMP/coverage/current"
+
+      - name: Publish main branch baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-${{ matrix.suite }}
+          path: |
+            ${{ runner.temp }}/coverage/current/metadata.json
+            ${{ runner.temp }}/coverage/current/test-status.json
+            ${{ runner.temp }}/coverage/current/coverage.json
+            ${{ runner.temp }}/coverage/current/coverage-summary.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
+
+      - name: Find exact target commit baseline
+        if: github.event_name == 'pull_request'
+        id: baseline
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const findBaseline = require('./current/scripts/find_coverage_baseline.cjs');
+            const { sha, ref: branch } = context.payload.pull_request.base;
+            const runId = await findBaseline({
+              github, ...context.repo, sha, branch, suite: '${{ matrix.suite }}',
+            });
+            core.setOutput('run-id', runId);
+
+      - name: Download target commit baseline
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@v4
+        with:
+          name: baseline-${{ matrix.suite }}
+          path: ${{ runner.temp }}/coverage/baseline
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.baseline.outputs.run-id }}
+
+      - name: Validate target commit baseline
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_RUN_ID: ${{ steps.baseline.outputs.run-id }}
+        run: >-
+          python3 current/scripts/coverage_artifact.py validate
+          --suite "${{ matrix.suite }}" --sha "$BASE_SHA"
+          --branch main --run-id "$BASE_RUN_ID"
+          --directory "$RUNNER_TEMP/coverage/baseline"
+
+      - name: Report coverage and reject regressions
+        env:
+          SUITE: ${{ matrix.suite }}
+          IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+        run: |
+          report=coverage.json
+          if [ "$SUITE" = frontend ]; then report=coverage-summary.json; fi
+          args=(--suite "$SUITE" --current "$RUNNER_TEMP/coverage/current/$report")
+          if [ "$IS_PULL_REQUEST" = true ]; then
+            args+=(--baseline "$RUNNER_TEMP/coverage/baseline/$report")
+          fi
+          python3 current/scripts/check_coverage.py "${args[@]}"
+
+      - name: Preserve main branch test failures
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          STATUS_FILE: ${{ runner.temp }}/coverage/current/test-status.json
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, sys
+          from pathlib import Path
+          failures = json.loads(Path(os.environ["STATUS_FILE"]).read_text())["failures"]
+          if failures:
+              print(f"::error::{failures} test(s) failed; validated baseline published for PR comparisons.")
+              sys.exit(1)
+          PYTHON
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.suite }}
+          path: ${{ runner.temp }}/coverage
+          if-no-files-found: warn
+          retention-days: 14

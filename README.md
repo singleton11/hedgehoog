@@ -312,7 +312,69 @@ See `.env.example` for all settings. The backend loads the root `.env` regardles
 
 ```sh
 make test           # Backend tests, frontend component tests, production build
+make test-coverage  # Backend + frontend tests with terminal, JSON and HTML coverage
 ```
+
+### GitHub Actions and coverage gate
+
+The `CI` workflow runs backend and frontend tests in separate jobs on pushes to
+`main` and on pull requests (and supports manual runs). Feature-branch pushes do
+not trigger a duplicate run. No production secrets, external coverage
+service, MongoDB or RabbitMQ are required; real-service integration tests remain
+opt-in as described below.
+
+For each pull request targeting `main`, CI measures the proposed merge and downloads
+validated baseline artifacts from a completed `push` CI run for the exact target
+commit (`pull_request.base.sha`), never the latest available main commit. Every metric must be at
+least its target-branch value: **lines and branches** for Python, and **statements,
+lines, functions and branches** for JavaScript. Comparisons use exact counts, not
+rounded percentages, with no allowed decrease. Backend and frontend are gated
+separately, including source files never imported by tests. Backend tests and the
+Python virtualenv are excluded; frontend test files, test setup and the browser
+bootstrap (`src/main.jsx`) are excluded. Proposed-change tests must all pass.
+Baseline test-body failures are allowed only after a complete run with valid
+coverage; they produce a warning, not a skipped comparison. Collection, hook,
+runner and unhandled errors, interrupted/incomplete runs, and missing reports
+still fail CI. The baseline Vitest cleanup instrumentation supports the locked
+Vitest 4.1.11 Node runner and fails closed on other versions or custom runners;
+update its lifecycle fixtures when upgrading Vitest. Main push runs publish
+`baseline-backend` / `baseline-frontend` artifacts only after completion and coverage
+validation, even when test bodies fail; those failures still fail the main CI check.
+Each artifact includes completion status, report checksums, source commit, suite,
+branch, run ID, and schema/instrumentation versions. PRs reject mismatched or invalid
+artifacts. Bump the instrumentation version in `scripts/coverage_artifact.py` whenever
+coverage settings, tool compatibility, or measurement semantics change.
+
+Baseline artifacts are retained for 90 days (subject to repository retention limits).
+Missing, expired, or incompatible baselines fail the PR check; there is no local rerun
+fallback. Bootstrap by landing this workflow on `main` and letting its push CI finish
+before using the artifact gate. If a baseline is missing, rerun that commit's original
+push run while GitHub still permits reruns (within 30 days of the original run).
+For older commits or expired artifacts, advance `main` with a new commit, let its
+push CI publish fresh baselines, then update the PR to that base. Manual workflow
+runs do not publish baselines. Targets other than `main` are unsupported and fail
+explicitly. Push/manual runs report coverage without
+a comparison; use pull requests for regression enforcement.
+
+Coverage tables appear in the Actions job summaries. Download the
+`coverage-backend` / `coverage-frontend` artifacts for JSON and HTML reports
+(retained for 14 days). Locally, reports are written under `coverage/` (gitignored).
+You can also run each suite individually:
+
+```sh
+bash scripts/run_coverage.sh backend
+cd frontend && npm ci && npm run test:coverage
+```
+
+To block merging when tests or coverage fail, configure a GitHub branch ruleset
+for your default branch and require these status checks after the first CI run:
+
+- `Tests and coverage (backend)`
+- `Tests and coverage (frontend)`
+
+Require branches to be up to date before merging (or rerun CI after the target
+branch changes) so the comparison is against the latest baseline. Workflow files
+alone do not enable branch protection.
 
 The default backend suite uses MongoDB/broker doubles and mocked ETF HTTP responses (no GitHub access). It covers startup dispatch, worker client lifecycle and bounded retries as well as the import contract. To also run the real-MongoDB integration checks:
 

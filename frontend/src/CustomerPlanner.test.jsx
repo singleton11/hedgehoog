@@ -162,7 +162,11 @@ const reads = (path) => request.mock.calls.filter(([url]) => url === path);
 const result = () => screen.queryByRole('region', { name: 'Goal simulation result' });
 const calculate = () => screen.getByRole('button', { name: 'Calculate monthly contribution' });
 const saveButton = () => screen.queryByRole('button', { name: 'Save simulation' });
-function change(label, value) { fireEvent.change(screen.getByLabelText(label), { target: { value } }); }
+function change(label, value) {
+  const input = screen.getByLabelText(label);
+  fireEvent.change(input, { target: { value } });
+  if (input.getAttribute('role') === 'combobox' && value) fireEvent.click(screen.getByRole('option', { name: new RegExp(value) }));
+}
 function addCustomer() { fireEvent.click(screen.getByRole('button', { name: 'Add customer' })); }
 function addGoal() { fireEvent.click(screen.getByRole('button', { name: 'Add goal' })); }
 async function flush() { await act(async () => {}); }
@@ -228,15 +232,15 @@ describe('customer portfolio summary table', () => {
     expect(row.getAllByRole('cell')[0]).toHaveTextContent(/^23$/);
     expect(row.getAllByText('-€9,007,199,254,740,993.01')).toHaveLength(2);
     row.getAllByText('-€9,007,199,254,740,993.01').forEach((value) => expect(value).toHaveClass('return-negative'));
-    expect(row.getByText('€12.34')).toHaveClass('return-positive');
+    expect(row.getByText('+€12.34 (Unavailable)')).toHaveClass('return-positive');
     expect(row.getAllByRole('cell')[3].firstChild).not.toHaveClass('return-positive', 'return-negative');
-    expect(row.getAllByRole('cell')[4]).toHaveTextContent(/^€12\.34$/);
+    expect(row.getAllByRole('cell')[4]).toHaveTextContent(/^\+€12\.34 \(Unavailable\)$/);
     expect(row.getAllByRole('cell')[4]).toHaveAttribute('title', 'Price date: 2026-09-23');
     expect(row.queryByText(/2026-09-2[23]/)).not.toBeInTheDocument();
     const missing = within(table.getByRole('row', { name: /Unpriced/ }));
-    expect(missing.getAllByText('Unavailable')).toHaveLength(4);
+    expect(missing.getAllByText(/^Unavailable(?: \(Unavailable\))?$/)).toHaveLength(4);
     expect(missing.getAllByRole('cell')[4]).not.toHaveAttribute('title');
-    missing.getAllByText('Unavailable').forEach((value) => expect(value).not.toHaveClass('return-positive', 'return-negative'));
+    missing.getAllByText(/^Unavailable(?: \(Unavailable\))?$/).forEach((value) => expect(value).not.toHaveClass('return-positive', 'return-negative'));
     expect(screen.getByRole('table')).not.toHaveAttribute('aria-describedby');
     expect(request.mock.calls.map(([path]) => path)).toEqual([pagePath('/customers')]);
   });
@@ -265,10 +269,10 @@ describe('customer portfolio summary table', () => {
     expect(screen.getByRole('table')).toHaveTextContent('€123.45'); expect(posts()).toHaveLength(0);
   });
 
-  it('hides old totals during refresh, reports read failures and loads updated totals on retry', async () => {
+  it('hides old totals on route re-entry, reports read failures and loads updated totals on retry', async () => {
     const server = mockServer(); await open();
     const customerList = server.customerList, pending = deferred(); server.customerList = () => pending.promise;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh customers' })); await flush();
+    await navigate('#/invalid'); await navigate('#/goal');
     expect(screen.queryByRole('table')).not.toBeInTheDocument(); expect(screen.getByRole('status')).toHaveTextContent('Loading');
     await act(async () => pending.reject(new Error('Could not load customer valuations.')));
     expect(screen.getByRole('alert')).toHaveTextContent('Could not load customer valuations');
@@ -352,6 +356,37 @@ describe('goal summary table and on-demand creation', () => {
     await open(`${customerRoute()}/goals`);
     expect(screen.getByRole('alert')).toHaveTextContent('unexpected response');
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { linked_equity_eur: undefined },
+    { linked_equity_eur: 'invalid' },
+    { linked_portfolio_count: undefined },
+    { goal_eur: 'invalid' },
+  ])('rejects malformed goal summaries before rendering progress: %j', async (invalid) => {
+    const server = mockServer(), list = server.goalList;
+    server.goalList = async (...args) => {
+      const response = await list(...args);
+      return { ...response, items: response.items.map((item) => ({ ...item, ...invalid })) };
+    };
+    await open(`${customerRoute()}/goals`);
+    expect(screen.getByRole('alert')).toHaveTextContent('unexpected response');
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(posts()).toHaveLength(0);
+  });
+
+  it.each([undefined, null])('rejects malformed goal-list items and recovers on retry: %j', async (items) => {
+    const server = mockServer(), list = server.goalList;
+    server.goalList = async (...args) => ({ ...await list(...args), items });
+    await open(`${customerRoute()}/goals`);
+    expect(screen.getByRole('alert')).toHaveTextContent('unexpected response');
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    server.goalList = list;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await flush();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(posts()).toHaveLength(0);
   });
 
   it('opens creation only on demand, focuses it and discards cancelled drafts and errors', async () => {
@@ -521,7 +556,7 @@ describe('customers, fixed goals and instrument shortcuts', () => {
     expect(screen.getByRole('link', { name: /Alice.*Goals/ })).toHaveAttribute('href', `${customerRoute()}/goals?instrument=${A}`);
     expect(screen.getByRole('link', { name: 'New simulation' })).toHaveAttribute('href', newRoute()); expectNoPlannerReads();
     await follow('New simulation');
-    expect(screen.getByLabelText('Instrument')).toHaveValue(A); expect(calculate()).toBeEnabled();
+    expect(screen.getByLabelText('Instrument')).toHaveValue(`World ETF · ${A}`); expect(calculate()).toBeEnabled();
     expect(screen.getByRole('link', { name: /Retirement.*Saved simulations/ })).toHaveAttribute('href', `${goalRoute()}?instrument=${A}`);
     expect(posts()).toHaveLength(0);
   });
@@ -799,11 +834,11 @@ describe('preview first, explicit idempotent save and immutable reports', () => 
     }
   });
 
-  it('invalidates Save when statistics are refreshed and requires fresh eligibility and calculation', async () => {
+  it('invalidates Save on instrument selection and requires fresh eligibility and calculation', async () => {
     const server = mockServer(); await open(newRoute()); await submit(); const pending = deferred(); server.stats = () => pending.promise;
-    fireEvent.click(screen.getByText('Saved return statistics')); fireEvent.click(screen.getByRole('button', { name: 'Refresh statistics' }));
+    change('Instrument', B); await flush();
     expect(saveButton()).not.toBeInTheDocument(); expect(result()).not.toBeInTheDocument(); expect(calculate()).toBeDisabled();
-    await act(async () => pending.resolve(statistics())); expect(calculate()).toBeEnabled(); expect(saveButton()).not.toBeInTheDocument(); expect(posts()).toHaveLength(1);
+    await act(async () => pending.resolve(statistics(B))); expect(calculate()).toBeEnabled(); expect(saveButton()).not.toBeInTheDocument(); expect(posts()).toHaveLength(1);
   });
 
   it.each(['offline before save', 'reply lost after save', 'malformed save response'])('retries the same preview idempotently after %s without recalculation', async (failure) => {
@@ -956,16 +991,16 @@ describe('route, authentication and request identity isolation', () => {
     await navigate(newRoute(B, second.id)); expect(signal.aborted).toBe(true);
     await act(async () => pending.resolve(goal));
     expect(screen.getByLabelText('Target (EUR)')).toHaveValue(second.goal_eur); expect(screen.getByLabelText('Goal date (UTC)')).toHaveValue(second.goal_date);
-    expect(screen.getByLabelText('Instrument')).toHaveValue(B); expect(posts()).toHaveLength(0);
+    expect(screen.getByLabelText('Instrument')).toHaveValue(`Second ETF · ${B}`); expect(posts()).toHaveLength(0);
   });
 
-  it('aborts an obsolete same-page refresh and ignores its late data', async () => {
+  it('aborts an obsolete route reload and ignores its late data', async () => {
     const server = mockServer(); const first = server.seedRun(); await open(goalRoute());
     const history = server.history, pending = deferred(); server.history = () => pending.promise;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh saved simulations' })); await flush();
+    await navigate('#/invalid'); await navigate(goalRoute());
     const options = reads(historyPath()).at(-1)[1]; expect(screen.queryByRole('table')).not.toBeInTheDocument();
     const second = server.seedRun(); server.history = history;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh saved simulations' })); await flush(); expect(options.signal.aborted).toBe(true);
+    await navigate('#/invalid'); await navigate(goalRoute()); expect(options.signal.aborted).toBe(true);
     await act(async () => pending.resolve({ items: [summary(first)], total: 1, limit: 20, offset: 0 }));
     expect(historyLinks()).toEqual([reportRoute(second.id), reportRoute(first.id)]); expect(posts()).toHaveLength(0);
   });
