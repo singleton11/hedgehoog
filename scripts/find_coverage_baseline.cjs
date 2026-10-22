@@ -3,17 +3,22 @@ module.exports = async function findBaseline({ github, owner, repo, sha, branch,
   if (branch !== 'main') {
     throw new Error(`Artifact baselines are only published for main, not ${branch}`);
   }
-  for await (const page of github.paginate.iterator(github.rest.actions.listWorkflowRuns, {
-    owner, repo, workflow_id: 'ci.yml', event: 'push', branch,
-    head_sha: sha, status: 'completed', per_page: 100,
-  })) {
-    for (const run of page.data) {
-      if (run.head_sha !== sha || run.head_branch !== branch || run.event !== 'push' || run.status !== 'completed') continue;
-      const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
-        owner, repo, run_id: run.id, per_page: 100,
-      });
-      if (artifacts.some(a => a.name === `baseline-${suite}` && !a.expired)) {
-        return String(run.id);
+  const workflow = { owner, repo, workflow_id: 'ci.yml', per_page: 100 };
+  // Filtered search can omit an existing run; widen discovery, not eligibility.
+  const queries = [
+    { ...workflow, event: 'push', branch, head_sha: sha, status: 'completed' },
+    workflow,
+  ];
+  for (const query of queries) {
+    for await (const page of github.paginate.iterator(github.rest.actions.listWorkflowRuns, query)) {
+      for (const run of page.data) {
+        if (run.head_sha !== sha || run.head_branch !== branch || run.event !== 'push' || run.status !== 'completed') continue;
+        const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+          owner, repo, run_id: run.id, per_page: 100,
+        });
+        if (artifacts.some(a => a.name === `baseline-${suite}` && !a.expired)) {
+          return String(run.id);
+        }
       }
     }
   }
