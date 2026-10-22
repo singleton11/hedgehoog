@@ -103,7 +103,7 @@ jobs:
           overwrite: true
           retention-days: 90
 
-      - name: Find exact target commit baseline
+      - name: Find nearest target commit baseline
         if: github.event_name == 'pull_request'
         id: baseline
         uses: actions/github-script@v7
@@ -111,10 +111,17 @@ jobs:
           script: |
             const findBaseline = require('./current/scripts/find_coverage_baseline.cjs');
             const { sha, ref: branch } = context.payload.pull_request.base;
-            const runId = await findBaseline({
+            const baseline = await findBaseline({
               github, ...context.repo, sha, branch, suite: '${{ matrix.suite }}',
             });
-            core.setOutput('run-id', runId);
+            core.setOutput('run-id', baseline.runId);
+            core.setOutput('sha', baseline.sha);
+            await core.summary.addHeading('Coverage baseline (${{ matrix.suite }})')
+              .addRaw(`Target: ${sha}\n\nBaseline: ${baseline.sha}\n\nFirst-parent distance: ${baseline.distance} commit(s)\n`)
+              .write();
+            if (baseline.distance > 0) {
+              core.warning(`Using baseline ${baseline.sha}, ${baseline.distance} first-parent commit(s) behind ${sha}`);
+            }
 
       - name: Download target commit baseline
         if: github.event_name == 'pull_request'
@@ -129,7 +136,7 @@ jobs:
       - name: Validate target commit baseline
         if: github.event_name == 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.baseline.outputs.sha }}
           BASE_RUN_ID: ${{ steps.baseline.outputs.run-id }}
         run: >-
           python3 current/scripts/coverage_artifact.py validate
