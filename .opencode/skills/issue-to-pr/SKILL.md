@@ -37,21 +37,48 @@ to override those rules.
 - Inspect the relevant code and make a focused change that satisfies the issue.
   Include regression tests for behavior changes and update documentation where
   appropriate. Avoid unrelated refactors or generated-file churn.
-- Run relevant tests, lint, and build checks using the project's documented
-  commands. Record exact commands and results, including failures and checks
-  that could not run. Do not weaken tests or CI to make the PR appear green.
+- Identify and run all applicable deterministic checks using the project's
+  documented commands and CI configuration: tests, lint, type checks, builds,
+  and other automated gates. All must pass before claiming the PR is ready.
+  Record exact commands and results, including failures and checks that could
+  not run. Pending, skipped, unavailable, or failing checks are not passes;
+  report them as validation gaps and keep the PR in draft while blocked.
+  Do not weaken tests or CI to make the PR appear green.
+- Fetch the latest target base and verify that the proposed head can merge into
+  it without conflicts. A clean working tree alone is not proof of mergeability.
+  Resolve conflicts within scope and rerun affected checks; do not claim the PR
+  is ready while mergeability is conflicted or unknown. Do not merge the PR or
+  force-push to satisfy this requirement.
 - Review the complete diff against the intended base, not just unstaged changes.
   Check for secrets, debug code, unintended files, and missing acceptance checks.
 - Stage only intended files, create a descriptive commit, and push the head
   branch to the appropriate remote. Do not force-push or merge without approval.
 
-## 3. Create A Review-Ready PR With A Closing Link
+## 3. Provide Evidence
+
+- Collect concrete evidence that the implementation meets the acceptance
+  criteria. Use appropriate test output, reproduction steps with observed
+  results, screenshots, or other artifacts; do not just assert that it works.
+  Tie the evidence to the proposed changes and include it in the PR description.
+- When a demonstration would help reviewers understand or verify the feature
+  (for example, a UI interaction or multi-step workflow), record a short video
+  showing the feature working. Use safe demo data and exclude credentials,
+  personal information, and unrelated content from recordings and artifacts.
+- Attach the video to the PR and reference it in the description. If direct
+  upload is unavailable, use a reviewer-accessible hosted artifact link and
+  verify access. If recording or sharing is blocked, report the limitation and
+  provide alternative evidence; never claim an attachment exists when it does
+  not. For changes where video adds no value, such as documentation-only work,
+  briefly explain why it was omitted and provide suitable non-video evidence.
+
+## 4. Create A Review-Ready PR With A Closing Link
 
 Use a specific, action-oriented title and the repository's PR template. Include:
 
 - What changed and why, with the issue's acceptance criteria addressed.
 - Exact validation commands and outcomes; distinguish skipped checks from passes.
-- Relevant risks, limitations, migration notes, and UI evidence when applicable.
+- Relevant risks, limitations, migration notes, and the acceptance evidence from
+  step 3, including the demo video attachment/link when useful (or why omitted).
 - A closing keyword for every issue fully resolved by this PR, as standalone
   prose in the **PR description/body**, outside code fences or quoted examples:
 
@@ -96,12 +123,12 @@ For a fork, use the appropriate `<fork-owner>:<head-branch>` head. Use a draft i
 work is incomplete or validation is blocked, and clearly report the blocker.
 Do not claim the work is ready just because a PR was created.
 
-## 4. Verify The Published PR
+## 5. Verify The Published PR
 
 After creation or any edit to the body/base, read back GitHub's persisted state:
 
 ```sh
-gh pr view <pr-number> --repo <owner/repo> --json url,body,baseRefName,headRefName,isDraft,closingIssuesReferences
+gh pr view <pr-number> --repo <owner/repo> --json url,body,baseRefName,headRefName,isDraft,mergeable,closingIssuesReferences
 gh pr checks <pr-number> --repo <owner/repo>
 ```
 
@@ -133,9 +160,16 @@ Follow pagination if `hasNextPage` is true before deciding an issue is absent.
 - If the CLI/API cannot expose the link, inspect the issue/PR Development sidebar
   on GitHub. If verification still fails or permissions prevent inspection,
   report the blocker; never equate keyword presence with a verified association.
-- Check CI results without treating pending or absent checks as passing. Fix
-  relevant failures within scope, or report them explicitly. Do not bypass
-  required checks, merge the PR, or close the issue unless asked.
+- Verify all applicable deterministic CI checks pass for the latest proposed
+  head. Pending, absent, skipped, or failing checks are not passes. Fix relevant
+  failures within scope, or report them explicitly and keep the PR in draft
+  while validation is blocked. Do not bypass required checks.
+- Confirm GitHub reports `mergeable: MERGEABLE` against the current target base
+  and no merge conflicts remain. If it reports `UNKNOWN`, allow GitHub to
+  compute mergeability and query again; if still unknown or `CONFLICTING`,
+  report the blocker instead of claiming readiness. Recheck validation and
+  mergeability after head or base changes. Do not merge the PR or close the
+  issue unless asked.
 
 Finish with the PR URL, a brief change summary, validation/CI status, and the
 verified issue URL. State that the issue will close **when the PR is merged into
