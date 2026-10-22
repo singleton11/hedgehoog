@@ -8,9 +8,10 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/app/backend/.venv/bin:$PATH"
 WORKDIR /app/backend
 
-COPY pyproject.toml uv.lock ./
+# Source checkouts may be owner-readable only; the runtime user must read them.
+COPY --chmod=644 pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
-COPY *.py ./
+COPY --chmod=644 *.py ./
 RUN useradd --create-home --uid 10001 worker
 USER worker
 

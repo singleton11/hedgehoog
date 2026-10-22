@@ -1,0 +1,109 @@
+name: hedgehoog-production
+
+x-task-environment: &task-environment
+  MONGODB_URI: ${MONGODB_URI:?Set MONGODB_URI}
+  MONGODB_DATABASE: hedgehoog
+  CELERY_BROKER_URL: ${CELERY_BROKER_URL:?Set CELERY_BROKER_URL}
+  MARKET_DATA_PROVIDER: yfinance
+  YAHOO_REQUEST_INTERVAL_SECONDS: "0.05"
+
+x-backend: &backend
+  image: hedgehoog-backend:${RELEASE_SHA:?Set RELEASE_SHA}
+  restart: unless-stopped
+  environment: *task-environment
+  depends_on:
+    mongodb:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+  stop_grace_period: 2m
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  mongodb:
+    image: mongo:7.0
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Set MONGO_ROOT_PASSWORD}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?Set MONGO_APP_PASSWORD}
+    volumes:
+      - mongodb_data:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/app.js:ro
+    healthcheck:
+      test: [CMD-SHELL, 'mongosh --quiet --username "$$MONGO_INITDB_ROOT_USERNAME" --password "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "quit(db.adminCommand({ping: 1}).ok ? 0 : 1)"']
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    logging: *logging
+
+  rabbitmq:
+    image: rabbitmq:4.2-alpine
+    hostname: rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: hedgehoog
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD}
+      RABBITMQ_DEFAULT_VHOST: hedgehoog
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, check_running]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    logging: *logging
+
+  api:
+    <<: *backend
+    environment:
+      <<: *task-environment
+      ENVIRONMENT: production
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      ADMIN_LOGIN: admin
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
+      COOKIE_SECURE: "false"
+      ALLOW_INSECURE_HTTP: "true"
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?Set ALLOWED_ORIGINS}
+    command: [python, -m, uvicorn, 'main:create_app', --factory, --host, 0.0.0.0, --port, '8000']
+    healthcheck:
+      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=5)']
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
+
+  celery-worker:
+    <<: *backend
+    command: [python, -m, celery, -A, 'celery_app:app', worker, --loglevel=info, --queues=etfs, --concurrency=1, '--hostname=etf-worker@%h']
+
+  celery-marketdata-worker:
+    <<: *backend
+    command: [python, -m, celery, -A, 'celery_app:app', worker, --loglevel=info, --queues=marketdata, '--concurrency=${MARKET_DATA_WORKER_CONCURRENCY:-1}', '--hostname=marketdata-worker@%h']
+
+  celery-beat:
+    <<: *backend
+    command: [python, -m, celery, -A, 'celery_app:app', beat, --loglevel=info, '--schedule=/tmp/celerybeat-schedule']
+
+  web:
+    image: hedgehoog-web:${RELEASE_SHA:?Set RELEASE_SHA}
+    restart: unless-stopped
+    ports:
+      - 80:80
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, --quiet, --spider, 'http://127.0.0.1/api/health']
+      interval: 15s
+      timeout: 5s
+      retries: 6
+    logging: *logging
+
+volumes:
+  mongodb_data:
+  rabbitmq_data:
