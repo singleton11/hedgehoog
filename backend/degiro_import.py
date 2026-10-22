@@ -193,6 +193,10 @@ def parse_statement(text):
                 if not row.order or row.amount is None or row.amount > 0:
                     raise ValueError("Trade fees need an Order Id and a non-positive EUR change.")
                 fees.setdefault(row.order, []).append(row)
+            elif desc == "flatex interest income":
+                if row.cells[4] or row.order or row.amount != Decimal(0):
+                    raise ValueError("Only zero-value Flatex Interest Income without an ISIN or Order Id can be ignored; non-zero interest is not supported.")
+                ignore(row, "Zero-value Flatex interest income; no cash or position change.")
             elif desc == "reservation ideal":
                 if row.cells[4] or row.order or row.amount is None or row.amount == 0:
                     raise ValueError("Invalid iDEAL reservation.")

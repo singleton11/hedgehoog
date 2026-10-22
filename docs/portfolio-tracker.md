@@ -191,9 +191,12 @@ Supported format and accounting:
   are internal movements, not external funding. Amount, direction, timestamp and
   value date must match. Running balances are validated as numbers but are not
   used to invent opening cash or reconcile an account-wide valuation.
-- Dividends, interest, taxes, FX, corporate actions and any other unrecognized
-  rows block the **entire** import. The preview shows line-specific issues and
-  every ignored internal/reservation row. It never silently imports only the
+- `Flatex Interest Income` with an explicit zero EUR change and no ISIN or Order
+  Id is disclosed as ignored: it has no cash or position effect. Non-zero interest
+  remains unsupported.
+- Dividends, non-zero interest, taxes, FX, corporate actions and any other
+  unrecognized rows block the **entire** import. The preview shows line-specific
+  issues and every ignored zero-interest/internal/reservation row. It never silently imports only the
   recognized portion of a statement. File limit: 1,000,000 UTF-8 bytes / 10,000 rows.
 
 The preview shows new/duplicate transactions, resulting cash and holdings/cost
