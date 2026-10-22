@@ -312,7 +312,52 @@ See `.env.example` for all settings. The backend loads the root `.env` regardles
 
 ```sh
 make test           # Backend tests, frontend component tests, production build
+make test-coverage  # Backend + frontend tests with terminal, JSON and HTML coverage
 ```
+
+### GitHub Actions and coverage gate
+
+The `CI` workflow runs backend and frontend tests in separate jobs on pushes and
+pull requests (and supports manual runs). No production secrets, external coverage
+service, MongoDB or RabbitMQ are required; real-service integration tests remain
+opt-in as described below.
+
+For each pull request, CI measures both the proposed merge and the exact target
+branch commit with the same coverage instrumentation. Every metric must be at
+least its target-branch value: **lines and branches** for Python, and **statements,
+lines, functions and branches** for JavaScript. Comparisons use exact counts, not
+rounded percentages, with no allowed decrease. Backend and frontend are gated
+separately, including source files never imported by tests. Backend tests and the
+Python virtualenv are excluded; frontend test files, test setup and the browser
+bootstrap (`src/main.jsx`) are excluded. Proposed-change tests must all pass.
+Baseline test-body failures are allowed only after a complete run with valid
+coverage; they produce a warning, not a skipped comparison. Collection, hook,
+runner and unhandled errors, interrupted/incomplete runs, and missing reports
+still fail CI. The baseline Vitest cleanup instrumentation supports the locked
+Vitest 4.1.11 Node runner and fails closed on other versions or custom runners;
+update its lifecycle fixtures when upgrading Vitest. The baseline is rerun for
+every PR, so no previous artifacts or initial baseline commit are needed. Push/manual runs report
+coverage without a comparison; use pull requests for regression enforcement.
+
+Coverage tables appear in the Actions job summaries. Download the
+`coverage-backend` / `coverage-frontend` artifacts for JSON and HTML reports
+(retained for 14 days). Locally, reports are written under `coverage/` (gitignored).
+You can also run each suite individually:
+
+```sh
+bash scripts/run_coverage.sh backend
+cd frontend && npm ci && npm run test:coverage
+```
+
+To block merging when tests or coverage fail, configure a GitHub branch ruleset
+for your default branch and require these status checks after the first CI run:
+
+- `Tests and coverage (backend)`
+- `Tests and coverage (frontend)`
+
+Require branches to be up to date before merging (or rerun CI after the target
+branch changes) so the comparison is against the latest baseline. Workflow files
+alone do not enable branch protection.
 
 The default backend suite uses MongoDB/broker doubles and mocked ETF HTTP responses (no GitHub access). It covers startup dispatch, worker client lifecycle and bounded retries as well as the import contract. To also run the real-MongoDB integration checks:
 
