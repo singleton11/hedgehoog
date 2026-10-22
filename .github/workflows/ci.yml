@@ -75,8 +75,34 @@ jobs:
         working-directory: current
         run: python3 -m unittest discover -s scripts/tests -p test_baseline_reporters.py -k vitest -v
 
+      # Publish completed main measurements before preserving test failures below.
+      # PRs retain their existing strict tests and local baseline comparison.
       - name: Run tests with coverage
-        run: bash current/scripts/run_coverage.sh "${{ matrix.suite }}" "$GITHUB_WORKSPACE/current" "$RUNNER_TEMP/coverage/current"
+        env:
+          MEASUREMENT_MODE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'baseline' || 'current' }}
+        run: bash current/scripts/run_coverage.sh "${{ matrix.suite }}" "$GITHUB_WORKSPACE/current" "$RUNNER_TEMP/coverage/current" "$MEASUREMENT_MODE"
+
+      - name: Seal main branch baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: >-
+          python3 current/scripts/coverage_artifact.py seal
+          --suite "${{ matrix.suite }}" --sha "$GITHUB_SHA"
+          --branch main --run-id "$GITHUB_RUN_ID"
+          --directory "$RUNNER_TEMP/coverage/current"
+
+      - name: Publish main branch baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-${{ matrix.suite }}
+          path: |
+            ${{ runner.temp }}/coverage/current/metadata.json
+            ${{ runner.temp }}/coverage/current/test-status.json
+            ${{ runner.temp }}/coverage/current/coverage.json
+            ${{ runner.temp }}/coverage/current/coverage-summary.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
 
       - name: Install baseline frontend dependencies
         if: github.event_name == 'pull_request' && matrix.suite == 'frontend'
@@ -103,6 +129,20 @@ jobs:
             args+=(--baseline "$RUNNER_TEMP/coverage/baseline/$report")
           fi
           python3 current/scripts/check_coverage.py "${args[@]}"
+
+      - name: Preserve main branch test failures
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          STATUS_FILE: ${{ runner.temp }}/coverage/current/test-status.json
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, sys
+          from pathlib import Path
+          failures = json.loads(Path(os.environ["STATUS_FILE"]).read_text())["failures"]
+          if failures:
+              print(f"::error::{failures} test(s) failed; validated baseline published for PR comparisons.")
+              sys.exit(1)
+          PYTHON
 
       - name: Upload coverage reports
         if: always()
