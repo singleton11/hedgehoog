@@ -51,8 +51,18 @@ Do not use `down -v`. Release deployments preserve MongoDB and RabbitMQ volumes.
 Back up MongoDB and the secrets file securely before upgrades. This small
 single-instance deployment has no high availability or automated off-host backup.
 A failed rollout can leave a partially upgraded stack; investigate health and
-redeploy a release containing the last known-good commit. Old images are retained
-for at least seven days. EC2 stop does not stop EBS charges; terminating deletes
+redeploy a release containing the last known-good commit. After a healthy rollout,
+`deployed-sha` selects the current release and `rollback-sha` selects the previous
+successful distinct release (redeploying the same SHA does not rotate rollback).
+Only those two releases and images referenced by existing containers are retained;
+other SHA-tagged `hedgehoog-backend` and `hedgehoog-web` images expire immediately
+on that successful rollout, regardless of age. Cleanup never forces image removal,
+touches other repositories/tags, or prunes volumes. Container-referenced exceptions
+remain until the containers are removed and a later rollout runs cleanup. This is
+a release-count bound, not a seven-day grace period; monitor disk use and remove
+obsolete containers separately. The updated host installer must be installed at
+`/usr/local/sbin/hedgehoog-deploy` to enable this policy; release bundles do not
+update that privileged script. EC2 stop does not stop EBS charges; terminating deletes
 the root disk and all current application data. There is no ALB, NAT or RDS.
 
 Changes are proposed in a PR; debug prereleases can deploy the branch without
