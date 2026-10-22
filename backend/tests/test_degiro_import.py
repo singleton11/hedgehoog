@@ -100,6 +100,46 @@ def test_preview_is_read_only_and_atomic_import_reconciles_exactly(tracker, db):
     assert db.portfolios.find_one({"_id": meta["id"]}) == stored
 
 
+@pytest.mark.parametrize("delimiter", [",", ";"])
+def test_zero_flatex_interest_is_disclosed_and_import_retries_are_safe(tracker, db, delimiter):
+    client, _, meta, url = tracker
+    rows = [row(time="11:00", description="Flatex Interest Income", amount="0,00"), *sample_rows()]
+    content = statement(rows, delimiter)
+    before = db.portfolios.find_one({"_id": meta["id"]})
+    plan = preview(client, url, content)
+    baseline = preview(client, url, statement(sample_rows()))
+    assert plan["can_import"] and plan["errors"] == []
+    assert plan["summary"] == baseline["summary"]
+    assert plan["ignored_rows"][0] == {
+        "row": 2, "description": "Flatex Interest Income",
+        "reason": "Zero-value Flatex interest income; no cash or position change.",
+    }
+    assert len(plan["ignored_rows"]) == 9
+    assert db.portfolios.find_one({"_id": meta["id"]}) == before
+    assert commit(client, url, content, plan).json() == {"imported_count": 4, "duplicate_count": 0}
+    assert detail(client, url)["cash_eur"] == "357.00"
+    assert commit(client, url, content, plan).json() == {"imported_count": 0, "duplicate_count": 4}
+    assert preview(client, url, statement(sample_rows()))["summary"]["duplicate_count"] == 4
+
+
+@pytest.mark.parametrize("changes", [
+    {8: "0,01"}, {8: "-0,01"}, {7: "", 8: ""},
+    {4: ISIN}, {11: ORDER_A}, {7: "USD"}, {6: "1,00"},
+    {5: "Unknown activity"}, {5: "Dividend"},
+])
+def test_nonzero_or_unrecognized_zero_activity_still_blocks_import(tracker, db, changes):
+    client, _, meta, url = tracker
+    interest = row(time="11:00", description="Flatex Interest Income", amount="0,00")
+    for index, value in changes.items():
+        interest[index] = value
+    content = statement([interest, *sample_rows()])
+    before = db.portfolios.find_one({"_id": meta["id"]})
+    plan = preview(client, url, content)
+    assert not plan["can_import"] and plan["errors"][0]["row"] == 2
+    assert commit(client, url, content, plan).status_code == 422
+    assert db.portfolios.find_one({"_id": meta["id"]}) == before
+
+
 def test_overlapping_exports_deduplicate_by_order_not_row_number_and_append_new_cash(tracker):
     client, _, _, url = tracker
     content = statement(sample_rows())

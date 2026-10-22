@@ -103,7 +103,7 @@ export default function DegiroImport({ request, portfolioPath, onImported, disab
     <button ref={trigger} type="button" className="secondary" disabled={disabled || open} aria-expanded={open} onClick={() => { reset(); setOpen(true); }}>Import DEGIRO CSV</button>
     {open && <div className="planner-create">
       <h3>Import DEGIRO account statement</h3>
-      <p>Use a DEGIRO Account CSV with these exact English headers: <code>Date,Time,Value date,Product,ISIN,Description,FX,Change,,Balance,,Order Id</code> (including the two empty headers). Comma and semicolon separators are supported; descriptions may be Dutch or English. EUR only.</p>
+      <p>Use a DEGIRO Account CSV with these exact English headers: <code>Date,Time,Value date,Product,ISIN,Description,FX,Change,,Balance,,Order Id</code> (including the two empty headers). Comma and semicolon separators are supported; descriptions may be Dutch or English. EUR only. Zero-value Flatex Interest Income is shown as ignored; non-zero interest remains unsupported.</p>
       <p>Include the complete funding history so every purchase is funded. iDEAL reservations and reversals are ignored only when matched to a final deposit, which is counted once at funding time. Unmatched or ambiguous reservations block import. Cash sweeps are ignored.</p>
       <p>The CSV contains ISINs, not exchanges. Check the chosen acquired EUR listing and all transactions before importing.</p>
       <label htmlFor="degiro-csv">DEGIRO CSV file (maximum 1,000,000 UTF-8 bytes)</label>
