@@ -164,6 +164,26 @@ describe('manual split controls', () => {
     expect(screen.queryByText('Manual split saved.')).not.toBeInTheDocument();
   });
 
+  it('ignores a late history response after a newer refresh completes', async () => {
+    const pending = deferred();
+    const staleHistory = { ...structuredClone(server), manual: [saved()] };
+    request.mockImplementationOnce(() => pending.promise);
+    const input = props();
+    const { rerender } = render(<ManualSplits {...input} />);
+    fireEvent.click(screen.getByText('Splits', { selector: 'summary' }));
+    await screen.findByText('Loading split history…');
+    const signal = request.mock.calls[0][1].signal;
+
+    rerender(<ManualSplits {...input} refreshKey="newer-history" />);
+    await screen.findByText('No manual splits saved.');
+    expect(signal.aborted).toBe(true);
+
+    await act(async () => pending.resolve(staleHistory));
+    expect(screen.getByText('No manual splits saved.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove split on 2020-06-15' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading split history…')).not.toBeInTheDocument();
+  });
+
   it('blocks submission during a history refresh and reconciles the subsequent write', async () => {
     const pending = deferred();
     const { input, rerender } = await open(); await form();
