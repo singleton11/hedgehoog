@@ -1,0 +1,61 @@
+name: Release to EC2
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+concurrency:
+  group: ec2-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build immutable release images
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          docker build -t hedgehoog-backend:$sha backend
+          docker build -t hedgehoog-web:$sha frontend
+          mkdir bundle
+          docker save hedgehoog-backend:$sha hedgehoog-web:$sha -o bundle/images.tar
+          cp deploy/compose.yaml deploy/mongo-init.js bundle/
+          printf '%s\n' "$sha" > bundle/release-sha
+          echo "RELEASE_SHA=$sha" >> "$GITHUB_ENV"
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: arn:aws:iam::195275652830:role/hedgehoog-github-ssh-firewall
+          aws-region: eu-central-1
+      - name: Allow SSH only from this runner
+        id: firewall
+        run: |
+          set -euo pipefail
+          cidr=$(curl -fsS https://checkip.amazonaws.com)/32
+          echo "cidr=$cidr" >> "$GITHUB_OUTPUT"
+          aws ec2 authorize-security-group-ingress --group-id sg-016ad85d99c002153 --protocol tcp --port 22 --cidr "$cidr"
+      - name: Deploy over pinned SSH
+        env:
+          DEPLOY_KEY: ${{ secrets.EC2_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+          HOST: ${{ vars.EC2_HOST }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/deploy ~/.ssh/known_hosts
+          tar -C bundle -cf - images.tar compose.yaml mongo-init.js release-sha | ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=30 -i ~/.ssh/deploy "deploy@$HOST"
+          curl --fail --retry 10 --retry-delay 3 "http://$HOST/api/health"
+      - name: Close runner SSH access
+        if: always() && steps.firewall.outputs.cidr != ''
+        env:
+          CIDR: ${{ steps.firewall.outputs.cidr }}
+        run: aws ec2 revoke-security-group-ingress --group-id sg-016ad85d99c002153 --protocol tcp --port 22 --cidr "$CIDR"
+      - name: Remove SSH material
+        if: always()
+        run: rm -f ~/.ssh/deploy

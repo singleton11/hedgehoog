@@ -96,7 +96,7 @@ beforeEach(() => {
   auth.user = { id: 'user-a' }; auth.status = 'authenticated'; delete auth.request;
   window.history.replaceState(null, '', '#/');
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); window.history.replaceState(null, '', '#/'); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); window.history.replaceState(null, '', '#/'); });
 
 describe('portfolio routes, creation and optional goals', () => {
   it('links from existing customer goals with Customers active, creates multiple portfolios and attaches, changes or detaches a goal later', async () => {
@@ -361,7 +361,8 @@ describe('portfolio list creation and financial summary', () => {
 });
 
 describe('exact manually dated cash and trade transactions', () => {
-  it('defaults both dates to today UTC and submits exact deposit, withdrawal, buy and sell strings without ledger calculation', async () => {
+  it.each([false, true])('submits exact cash and trade transactions (randomUUID unavailable: %s)', async (unavailable) => {
+    if (unavailable) vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
     const server = mockServer(); await open();
     expect(transactionEntry()).not.toBeVisible();
     expect(screen.queryByRole('form', { name: 'Add transaction' })).not.toBeInTheDocument();
@@ -380,11 +381,21 @@ describe('exact manually dated cash and trade transactions', () => {
     expect(writes()[2][1].body).toEqual({ client_id: expect.any(String), date: '2020-01-02', type: 'buy', instrument_id: A, quantity: '9007199254740993.12345678', price_eur: '123.12345678', commission_eur: '1.25' });
     fillTrade({ Quantity: '0.00000001', 'Average execution price (EUR)': '1.00000001' }); await submit(tradeForm());
     expect(writes()[3][1].body).toEqual({ client_id: expect.any(String), date: '2026-09-24', type: 'sell', instrument_id: A, quantity: '0.00000001', price_eur: '1.00000001', commission_eur: '0.00' });
+    for (const [, options] of writes()) expect(options.body.client_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(new Set(writes().map(([, options]) => options.body.client_id)).size).toBe(4);
     expect(server.transactions).toHaveLength(4); expect(screen.getByText('Sell saved.')).toBeInTheDocument();
     expect(summaryValue('Cash')).toHaveTextContent('€1,000.00'); // server fixture, never inferred from submitted cash
     transactionsTab(); expect(within(screen.getByRole('table', { name: /Transactions ·/ })).getAllByRole('row')).toHaveLength(5);
     expect(request.mock.calls.some(([path]) => path.includes('/instruments/acquired'))).toBe(false);
+  });
+
+  it('shows an error and sends no transaction when secure randomness fails', async () => {
+    mockServer(); await open(); addTransaction();
+    vi.stubGlobal('crypto', { getRandomValues: () => { throw new Error('unavailable'); } });
+    change('Amount (EUR)', '25'); await submit(cashForm());
+    expect(screen.getByRole('alert')).toHaveTextContent('Secure transaction IDs are unavailable.');
+    expect(writes()).toHaveLength(0);
+    expect(screen.getByLabelText('Amount (EUR)')).toHaveValue('25');
   });
 
   it('discloses ledger correction rules before saving and links empty EUR choices to acquisition and currency settings', async () => {
@@ -465,7 +476,8 @@ describe('exact manually dated cash and trade transactions', () => {
     server.save = save; await submit(tradeForm()); expect(writes()[2][1].body).toEqual(retryBody);
   });
 
-  it('retains an uncertain cash client ID even if the response is malformed', async () => {
+  it.each([false, true])('retains an uncertain cash client ID (randomUUID unavailable: %s)', async (unavailable) => {
+    if (unavailable) vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
     const server = mockServer(); server.save = async () => ({ id: 'bad' }); await open(); addTransaction();
     change('Amount (EUR)', '10'); await submit(cashForm()); expect(screen.getByRole('alert')).toHaveTextContent('Unexpected response');
     await submit(cashForm()); expect(writes()[1][1].body).toEqual(writes()[0][1].body);

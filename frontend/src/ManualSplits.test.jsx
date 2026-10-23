@@ -32,7 +32,7 @@ beforeEach(() => {
     return structuredClone(server);
   });
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 const props = (extra = {}) => ({ isin: ISIN, listing, hasQuotes: true, inception: '2010-05-19', onChanged: vi.fn(), ...extra });
 async function open(extra = {}) {
@@ -75,6 +75,15 @@ describe('manual split controls', () => {
     expect(await screen.findByRole('button', { name: 'Remove split on 2020-06-15' })).toBeEnabled();
   });
 
+  it('shows an error and sends no split when secure randomness fails', async () => {
+    vi.stubGlobal('crypto', { getRandomValues: () => { throw new Error('unavailable'); } });
+    await open(); await form();
+    fireEvent.click(screen.getByRole('button', { name: 'Save split' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Secure split IDs are unavailable.');
+    expect(writes()).toHaveLength(0);
+    expect(screen.getByLabelText('Split factor (new shares per old share)')).toHaveValue('25');
+  });
+
   it.each(['0', '1', '1.000', '-2', 'NaN', 'Infinity', '1e2', '1,5', '0.0000000009', '1000000000.0000000001'])('rejects invalid or out-of-bounds factor %s', async (factor) => {
     await open();
     await form(factor);
@@ -113,7 +122,8 @@ describe('manual split controls', () => {
     expect(input.onChanged).toHaveBeenCalledOnce();
   });
 
-  it('retains form values and reuses the request ID after an uncertain failure', async () => {
+  it.each([false, true])('reuses the request ID after an uncertain failure (randomUUID unavailable: %s)', async (unavailable) => {
+    if (unavailable) vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
     const original = request.getMockImplementation();
     let first = true;
     request.mockImplementation((url, options = {}) => {
@@ -162,6 +172,26 @@ describe('manual split controls', () => {
     await act(async () => pending.resolve({ item: saved(body) }));
     expect(input.onChanged).not.toHaveBeenCalled();
     expect(screen.queryByText('Manual split saved.')).not.toBeInTheDocument();
+  });
+
+  it('ignores a late history response after a newer refresh completes', async () => {
+    const pending = deferred();
+    const staleHistory = { ...structuredClone(server), manual: [saved()] };
+    request.mockImplementationOnce(() => pending.promise);
+    const input = props();
+    const { rerender } = render(<ManualSplits {...input} />);
+    fireEvent.click(screen.getByText('Splits', { selector: 'summary' }));
+    await screen.findByText('Loading split history…');
+    const signal = request.mock.calls[0][1].signal;
+
+    rerender(<ManualSplits {...input} refreshKey="newer-history" />);
+    await screen.findByText('No manual splits saved.');
+    expect(signal.aborted).toBe(true);
+
+    await act(async () => pending.resolve(staleHistory));
+    expect(screen.getByText('No manual splits saved.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove split on 2020-06-15' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading split history…')).not.toBeInTheDocument();
   });
 
   it('blocks submission during a history refresh and reconciles the subsequent write', async () => {
