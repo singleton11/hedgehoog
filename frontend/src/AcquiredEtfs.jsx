@@ -16,15 +16,19 @@ function CollectionTime({ value }) {
   return <time dateTime={value} title={exact} aria-label={`${relative}, ${exact}`}>{relative}</time>;
 }
 
-function ReturnCell({ value, title, headers }) {
+function InventoryCell({ label, children, ...props }) {
+  return <td role="cell" {...props}><span className="inventory-cell-label" aria-hidden="true">{label}</span>{children}</td>;
+}
+
+function ReturnCell({ value, title, headers, label }) {
   const display = formatReturn(value);
-  return <td className={`annual-statistic ${display.className}`} title={title} headers={headers}>
+  return <InventoryCell label={label} className={`annual-statistic ${display.className}`} title={title} headers={headers}>
     {display.text}
-  </td>;
+  </InventoryCell>;
 }
 
 function HistoricalYearReturn({ item }) {
-  return <ReturnCell value={item.historical_year_return} title={historicalReturnTitle(item)} headers="acquired-historical acquired-historical-return" />;
+  return <ReturnCell label="Historical annual return" value={item.historical_year_return} title={historicalReturnTitle(item)} headers="acquired-historical acquired-historical-return" />;
 }
 
 function UpdateConfirmation({ selection, onConfirm, onCancel }) {
@@ -203,9 +207,14 @@ export default function AcquiredEtfs() {
       ? <div className="empty-state collection-empty"><span className="empty-icon"><Icon name="layers" /></span><h3>{minHistoryYears ? 'No ETFs match this history filter' : 'No acquired ETFs yet'}</h3><p>{minHistoryYears ? 'Try a shorter history or select All.' : 'Choose Add ETF to find a fund and request its data.'}</p></div>
       : <>
         <div className="collection-table-card">
-        <div className="table-heading"><h3>Fund overview</h3><span className="collection-scroll-hint">Scroll horizontally for all columns →</span></div>
+        <div className="table-heading"><h3>Fund overview</h3>
+          <button className="secondary" disabled={busy || loading || Boolean(selection)}
+            title="Update all acquired ETFs, including those hidden by the history filter, skipping ETFs collected 0 days ago"
+            onClick={(event) => review(event, { isin: null, total: minHistoryYears ? null : page.total })}>Update all</button>
+        </div>
+        <p className="collection-scroll-hint">Scroll horizontally for all columns →</p>
         <div className="acquired-table-scroll" role="region" aria-label="Acquired ETF data" tabIndex={0}>
-          <table className="acquired-table etf-inventory-table">
+          <table role="table" className="acquired-table etf-inventory-table">
             <caption className="sr-only">Acquired ETFs, historical annual return and volatility, statistical annual return and volatility, and saved quote coverage</caption>
             <colgroup>
               <col className="inventory-fund" /><col className="inventory-asset" />
@@ -216,41 +225,37 @@ export default function AcquiredEtfs() {
             <colgroup>
               <col className="inventory-quotes" /><col className="inventory-collected" /><col className="inventory-actions" />
             </colgroup>
-            <thead>
-              <tr>
-                <th scope="col" rowSpan={2}>ETF</th><th scope="col" rowSpan={2}>Asset class</th><th scope="col" rowSpan={2}>Index</th><th scope="col" rowSpan={2}>Saved listing</th>
-                <th id="acquired-historical" scope="colgroup" colSpan={2} className="statistic-group">Historical</th>
-                <th id="acquired-statistical" scope="colgroup" colSpan={2} className="statistic-group">Statistical</th>
-                <th scope="col" rowSpan={2}>Saved quotes</th><th scope="col" rowSpan={2}>Profile collected</th>
-                <th scope="col" rowSpan={2} className="market-data-actions"><span>Market data</span>
-                  <button className="secondary" disabled={busy || loading || Boolean(selection)}
-                    title="Update all acquired ETFs, including those hidden by the history filter, skipping ETFs collected 0 days ago"
-                    onClick={(event) => review(event, { isin: null, total: minHistoryYears ? null : page.total })}>Update all</button>
-                </th>
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col" rowSpan={2}>ETF</th><th role="columnheader" scope="col" rowSpan={2}>Asset class</th><th role="columnheader" scope="col" rowSpan={2}>Index</th><th role="columnheader" scope="col" rowSpan={2}>Saved listing</th>
+                <th role="columnheader" id="acquired-historical" scope="colgroup" colSpan={2} className="statistic-group">Historical</th>
+                <th role="columnheader" id="acquired-statistical" scope="colgroup" colSpan={2} className="statistic-group">Statistical</th>
+                <th role="columnheader" scope="col" rowSpan={2}>Saved quotes</th><th role="columnheader" scope="col" rowSpan={2}>Profile collected</th>
+                <th role="columnheader" scope="col" rowSpan={2} className="market-data-actions"><span>Market data</span></th>
               </tr>
-              <tr>
-                <th id="acquired-historical-return" headers="acquired-historical" scope="col" className="annual-statistic" title="Actual trailing 12-month price change: latest saved price ÷ year-ago price − 1. Not an annualized estimate.">Annual return</th>
-                <th id="acquired-historical-volatility" headers="acquired-historical" scope="col" className="annual-statistic" title="Trailing 12 months: sample standard deviation of daily log returns × √252 trading days, ending at the latest saved quote">Annual volatility</th>
-                <th id="acquired-statistical-return" headers="acquired-statistical" scope="col" className="annual-statistic" title="Average daily log return × 252 trading days">Annual return</th>
-                <th id="acquired-statistical-volatility" headers="acquired-statistical" scope="col" className="annual-statistic" title="All saved history: daily volatility × √252 trading days">Annual volatility</th>
+              <tr role="row">
+                <th role="columnheader" id="acquired-historical-return" headers="acquired-historical" scope="col" className="annual-statistic" title="Actual trailing 12-month price change: latest saved price ÷ year-ago price − 1. Not an annualized estimate.">Annual return</th>
+                <th role="columnheader" id="acquired-historical-volatility" headers="acquired-historical" scope="col" className="annual-statistic" title="Trailing 12 months: sample standard deviation of daily log returns × √252 trading days, ending at the latest saved quote">Annual volatility</th>
+                <th role="columnheader" id="acquired-statistical-return" headers="acquired-statistical" scope="col" className="annual-statistic" title="Average daily log return × 252 trading days">Annual return</th>
+                <th role="columnheader" id="acquired-statistical-volatility" headers="acquired-statistical" scope="col" className="annual-statistic" title="All saved history: daily volatility × √252 trading days">Annual volatility</th>
               </tr>
             </thead>
-            <tbody>{page.items.map((item) => <tr key={item.instrument_id}>
-              <th scope="row"><div className="fund-identity"><span className="fund-avatar" aria-hidden="true">{(displayText(item.ticker) || displayText(item.name) || item.isin).slice(0, 2).toUpperCase()}</span>
+            <tbody role="rowgroup">{page.items.map((item) => <tr role="row" key={item.instrument_id}>
+              <th role="rowheader" scope="row"><div className="fund-identity"><span className="fund-avatar" aria-hidden="true">{(displayText(item.ticker) || displayText(item.name) || item.isin).slice(0, 2).toUpperCase()}</span>
                 <div><a href={`#/instruments/${encodeURIComponent(item.instrument_id)}`}>{displayText(item.name) || item.isin}</a>
                   <span className="muted">{[displayText(item.ticker), item.isin].filter(Boolean).join(' · ')}</span></div>
               </div></th>
-              <td>{displayText(item.asset_class) || 'Not available'}</td>
-              <td>{displayText(item.index) || 'Not available'}</td>
-              <td className="saved-listing">{item.listing?.symbol || 'Unknown'}<span className="muted">{item.listing?.exchange || 'Unknown MIC'}</span></td>
+              <InventoryCell label="Asset class">{displayText(item.asset_class) || 'Not available'}</InventoryCell>
+              <InventoryCell label="Index">{displayText(item.index) || 'Not available'}</InventoryCell>
+              <InventoryCell label="Saved listing" className="saved-listing">{item.listing?.symbol || 'Unknown'}<span className="muted">{item.listing?.exchange || 'Unknown MIC'}</span></InventoryCell>
               <HistoricalYearReturn item={item} />
-              <td className="annual-statistic" headers="acquired-historical acquired-historical-volatility" title={historicalVolatilityTitle(item)}>{percent(item.historical_year_volatility)}</td>
-              <ReturnCell value={item.annualized_mean_log_return} headers="acquired-statistical acquired-statistical-return" />
-              <td className="annual-statistic" headers="acquired-statistical acquired-statistical-volatility">{percent(item.annualized_volatility)}</td>
-              <td className="saved-quotes">{item.quote_count > 0 ? <>{item.quote_count.toLocaleString()} {item.quote_count === 1 ? 'quote' : 'quotes'}<span className="muted"><time dateTime={item.first_date}>{item.first_date}</time> – <time dateTime={item.last_date}>{item.last_date}</time></span></>
-                : <span className="badge">Profile only</span>}</td>
-              <td className="profile-collected"><CollectionTime value={item.collected_at} /></td>
-              <td className="market-data-actions">
+              <InventoryCell label="Historical annual volatility" className="annual-statistic" headers="acquired-historical acquired-historical-volatility" title={historicalVolatilityTitle(item)}>{percent(item.historical_year_volatility)}</InventoryCell>
+              <ReturnCell label="Statistical annual return" value={item.annualized_mean_log_return} headers="acquired-statistical acquired-statistical-return" />
+              <InventoryCell label="Statistical annual volatility" className="annual-statistic" headers="acquired-statistical acquired-statistical-volatility">{percent(item.annualized_volatility)}</InventoryCell>
+              <InventoryCell label="Saved quotes" className="saved-quotes">{item.quote_count > 0 ? <>{item.quote_count.toLocaleString()} {item.quote_count === 1 ? 'quote' : 'quotes'}<span className="muted"><time dateTime={item.first_date}>{item.first_date}</time> – <time dateTime={item.last_date}>{item.last_date}</time></span></>
+                : <span className="badge">Profile only</span>}</InventoryCell>
+              <InventoryCell label="Profile collected" className="profile-collected"><CollectionTime value={item.collected_at} /></InventoryCell>
+              <InventoryCell label="Market data" className="market-data-actions">
                 <button className="secondary" disabled={submitting || updatePending(updates[item.instrument_id]) || Boolean(selection)}
                   aria-label={`Update market data for ${displayText(item.name) || item.isin}`}
                   onClick={(event) => review(event, { isin: item.instrument_id, name: displayText(item.name) || item.isin })}>Update market data</button>
@@ -258,7 +263,7 @@ export default function AcquiredEtfs() {
                   aria-label={`Remove ${displayText(item.name) || item.isin}`}
                   onClick={(event) => review(event, { remove: true, isin: item.instrument_id, name: displayText(item.name) || item.isin })}>Remove</button>
                 <UpdateStatus update={updates[item.instrument_id]} />
-              </td>
+              </InventoryCell>
             </tr>)}</tbody>
           </table>
         </div>
