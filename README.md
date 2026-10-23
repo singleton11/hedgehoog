@@ -250,8 +250,11 @@ Open **Calibration** (`#/calibration`) for your saved calculation history, with
 **Brier score** and **calibration error** (weighted average gap from ideal
 calibration, shown in percentage points). **New run** lets you choose a strategy,
 set its parameters, select Standard Monte Carlo or block bootstrap with a block
-size, and run the calculation. Each successful run keeps its own
-report, settings, instrument and seed. Open any report and choose **Run again**
+size, and run the calculation. Search the **Instrument** field by name, ticker or
+ISIN, then select a matching acquired instrument (or use arrow keys and Enter).
+Typing alone does not select an instrument; editing or clearing the field requires
+a new selection. Search uses the saved acquired universe without provider requests.
+Each successful run keeps its own report, settings, instrument and seed. Open any report and choose **Run again**
 to prefill a new calculation without overwriting the original. Existing saved
 latest results are preserved in the history.
 

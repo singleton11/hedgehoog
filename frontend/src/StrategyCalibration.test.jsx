@@ -129,7 +129,13 @@ async function open({ route = '#/calibration/new', choose = false, props = null 
   return view;
 }
 async function submit() { fireEvent.click(button()); await flush(); await tick(); }
-function change(label, value) { fireEvent.change(screen.getByLabelText(label), { target: { value } }); }
+function change(label, value) {
+  const input = screen.getByLabelText(label);
+  fireEvent.change(input, { target: { value } });
+  if (input.getAttribute('role') === 'combobox' && value) {
+    fireEvent.click(within(screen.getByRole('listbox')).getByRole('option', { name: new RegExp(value) }));
+  }
+}
 async function navigate(hash) {
   await act(async () => { window.history.pushState(null, '', hash); window.dispatchEvent(new Event('hashchange')); });
 }
@@ -272,7 +278,7 @@ describe('read-only saved reports and explicit editable clones', () => {
     await open({ route: reportRoute(original.id) }); await follow('Run again');
     expect(window.location.hash).toBe(cloneRoute(original.id)); expect(result()).not.toBeInTheDocument();
     expect(screen.getByText(/original report will not change/)).toBeInTheDocument();
-    for (const [label, value] of [['Strategy', BUY_AND_HOLD_ID], ['Instrument', A], ['Seed (optional)', '0'],
+    for (const [label, value] of [['Strategy', BUY_AND_HOLD_ID], ['Instrument', `World & Europe ETF · ${A}`], ['Seed (optional)', '0'],
       ['Forecast-origin start date (optional)', '2023-01-01'], ['Forecast-origin end date (optional)', '2025-01-01']]) {
       expect(screen.getByLabelText(label)).toHaveValue(value);
     }
@@ -295,7 +301,7 @@ describe('read-only saved reports and explicit editable clones', () => {
   it('directly reopens a clone URL without calculating and retains its source link', async () => {
     const server = mockServer(); const saved = server.save();
     const view = await open({ route: cloneRoute(saved.id) });
-    expect(screen.getByLabelText('Instrument')).toHaveValue(A); expect(screen.getByLabelText('Seed (optional)')).toHaveValue('42');
+    expect(screen.getByLabelText('Instrument')).toHaveValue(`World & Europe ETF · ${A}`); expect(screen.getByLabelText('Seed (optional)')).toHaveValue('42');
     expect(screen.getByRole('link', { name: 'saved run' })).toHaveAttribute('href', reportRoute(saved.id));
     view.unmount(); await open({ route: cloneRoute(saved.id) });
     expect(screen.getByLabelText('Seed (optional)')).toHaveValue('42'); expect(reads(reportPath(saved.id))).toHaveLength(2); expect(posts()).toHaveLength(0);
@@ -405,6 +411,55 @@ describe('simulation method for calibration', () => {
 });
 
 describe('new-run readiness, parameters, seeds and failures', () => {
+  it.each(['world', 'Europe', 'wOrLd', A, 'WRLD'])('searches acquired instruments by %s and requires explicit selection', async (query) => {
+    const server = mockServer(); server.acquiredItems[0].ticker = 'WRLD';
+    await open();
+    const input = screen.getByRole('combobox', { name: 'Instrument' });
+    fireEvent.change(input, { target: { value: query } }); await flush();
+    expect(within(screen.getByRole('listbox')).getAllByRole('option')).toHaveLength(1);
+    expect(within(screen.getByRole('listbox')).getByRole('option')).toHaveTextContent('World & Europe ETF');
+    expect(button()).toBeDisabled(); expect(posts()).toHaveLength(0);
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' }); await flush();
+    expect(input).toHaveValue(`World & Europe ETF · ${A} · WRLD`);
+    expect(button()).toBeEnabled(); expect(posts()).toHaveLength(0);
+    await submit(); expect(posts()[0][1].body.strategy).toEqual(selection);
+    expect(request.mock.calls.some(([path]) => path.includes('/statistics') || path.includes('/search'))).toBe(false);
+  });
+
+  it('keeps focus in the search while choosing a hovered result with the mouse', async () => {
+    mockServer(); await open();
+    const input = screen.getByRole('combobox', { name: 'Instrument' });
+    fireEvent.focus(input);
+    const option = within(screen.getByRole('listbox')).getByRole('option', { name: new RegExp(B) });
+    fireEvent.mouseEnter(option);
+    expect(input).toHaveAttribute('aria-activedescendant', option.id);
+    expect(fireEvent.mouseDown(option)).toBe(false);
+    expect(input).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(option); await flush();
+    expect(input).toHaveValue(`Second ETF · ${B}`); expect(button()).toBeEnabled();
+    expect(input).toHaveAttribute('aria-expanded', 'false'); expect(posts()).toHaveLength(0);
+  });
+
+  it.each(['#/calibration/%E0%A4%A', '#/strategies/%E0%A4%A'])('does not expose a selectable calibration form for a malformed route: %s', async (route) => {
+    mockServer(); await open({ route });
+    expect(screen.queryByRole('combobox', { name: 'Instrument' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Run calibration' })).not.toBeInTheDocument();
+    expect(posts()).toHaveLength(0);
+  });
+
+  it('invalidates the selection on edit or clear and shows empty matches without submitting', async () => {
+    mockServer(); await open({ choose: true });
+    const input = screen.getByRole('combobox', { name: 'Instrument' });
+    fireEvent.change(input, { target: { value: 'not acquired' } }); await flush();
+    expect(button()).toBeDisabled(); expect(within(screen.getByRole('listbox')).queryByRole('option')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('No matching acquired instruments');
+    fireEvent.keyDown(input, { key: 'Enter' }); expect(posts()).toHaveLength(0);
+    fireEvent.keyDown(input, { key: 'Escape' }); expect(input).toHaveAttribute('aria-expanded', 'false');
+    change('Instrument', B); await flush(); expect(button()).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear instrument' })); await flush();
+    expect(input).toHaveValue(''); expect(button()).toBeDisabled(); expect(posts()).toHaveLength(0);
+  });
   it('starts blank with generated defaults and loads no saved report or full-history statistics', async () => {
     mockServer(); await open(); expect(button()).toBeDisabled(); expect(screen.getByLabelText('Instrument')).toHaveValue('');
     expect(screen.getByLabelText('Strategy')).toHaveValue(BUY_AND_HOLD_ID);
@@ -415,7 +470,7 @@ describe('new-run readiness, parameters, seeds and failures', () => {
     expect(screen.queryByText('Instrument parameter · acquired universe only')).not.toBeInTheDocument();
     expect(screen.getByText('Settings', { selector: 'summary' }).closest('details')).not.toHaveAttribute('open');
     change('Instrument', A); await flush(); expect(button()).toBeEnabled(); expect(posts()).toHaveLength(0);
-    expect(screen.getByRole('option', { name: `World & Europe ETF · ${A}` })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Instrument' })).toHaveValue(`World & Europe ETF · ${A}`);
     expect(request.mock.calls.map(([path]) => path)).toEqual(['/goals/strategies', '/instruments/acquired/universe']);
     await submit(); expect(posts()[0]).toEqual(['/goals/calibrate', expect.objectContaining({ method: 'POST', body: expectedBody, signal: expect.any(AbortSignal) })]);
     expect(window.location.hash).toBe(reportRoute()); expect(result()).toHaveTextContent('Seed 42');
@@ -453,7 +508,7 @@ describe('new-run readiness, parameters, seeds and failures', () => {
     const server = mockServer(); const original = server.save(); server.calibrate = async () => { throw new Error(message); };
     await open({ route: cloneRoute(original.id) }); change('Instrument', B); change('Seed (optional)', '7'); await flush(); await submit();
     expect(screen.getByRole('alert')).toHaveTextContent(message); expect(button()).toBeEnabled(); expect(result()).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Instrument')).toHaveValue(B); expect(screen.getByLabelText('Seed (optional)')).toHaveValue('7');
+    expect(screen.getByLabelText('Instrument')).toHaveValue(`Second ETF · ${B}`); expect(screen.getByLabelText('Seed (optional)')).toHaveValue('7');
     await act(async () => { await vi.advanceTimersByTimeAsync(10000); }); expect(posts()).toHaveLength(1); expect(server.runs.size).toBe(1);
     await follow(/Calibration history/); expect(historyLinks()).toEqual([reportRoute(original.id)]);
     await navigate(cloneRoute(original.id)); server.calibrate = async (body) => server.save(generatedCalibration(body, body.scenario_count, true));
@@ -485,7 +540,7 @@ describe('new-run readiness, parameters, seeds and failures', () => {
 
   it('loads the full acquired universe once without requesting full-history statistics', async () => {
     const server = mockServer(); server.acquiredItems = Array.from({ length: 101 }, (_, index) => ({ instrument_id: `IE${String(index).padStart(10, '0')}`, name: `Fund ${index}` }));
-    await open(); expect(within(screen.getByLabelText('Instrument')).getAllByRole('option')).toHaveLength(102);
+    await open(); fireEvent.focus(screen.getByLabelText('Instrument')); expect(within(screen.getByRole('listbox')).getAllByRole('option')).toHaveLength(101);
     expect(reads('/instruments/acquired/universe')).toHaveLength(1);
     change('Instrument', server.acquiredItems[100].instrument_id); await flush(); await submit();
     expect(posts()[0][1].body.strategy.parameters.instrument).toBe(server.acquiredItems[100].instrument_id); expect(result()).toBeInTheDocument();
@@ -566,7 +621,7 @@ describe('read failures and strict API reply validation', () => {
     server.report = async () => ({ result: structuredClone(saved) });
     fireEvent.click(screen.getByRole('button', { name: 'Retry run' })); await flush();
     if (route === 'report') expect(result()).toBeInTheDocument();
-    else expect(screen.getByLabelText('Instrument')).toHaveValue(A);
+    else expect(screen.getByLabelText('Instrument')).toHaveValue(`World & Europe ETF · ${A}`);
     expect(posts()).toHaveLength(0);
   });
 
@@ -873,7 +928,7 @@ describe('route, auth and request race protection', () => {
     expect(screen.queryByRole('form')).not.toBeInTheDocument();
     await navigate(cloneRoute(second.id)); expect(signal.aborted).toBe(true);
     await act(async () => outcome === 'resolve' ? pending.resolve({ result: first }) : pending.reject(new Error('obsolete clone')));
-    expect(screen.getByLabelText('Instrument')).toHaveValue(B); expect(screen.getByLabelText('Seed (optional)')).toHaveValue('7');
+    expect(screen.getByLabelText('Instrument')).toHaveValue(`Second ETF · ${B}`); expect(screen.getByLabelText('Seed (optional)')).toHaveValue('7');
     expect(screen.getByLabelText('Number of scenarios')).toHaveValue(10); expect(screen.queryByRole('alert')).not.toBeInTheDocument(); expect(posts()).toHaveLength(0);
   });
 
