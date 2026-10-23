@@ -19,15 +19,8 @@ function InstrumentParameter({ parameter, value = '', instruments, onChange, onR
   return <div className="strategy-parameter">
     <label htmlFor={id}>{parameter.label}</label>
     {!compact && <p className="parameter-hint" id={`${id}-help`}>Instrument parameter · acquired universe only</p>}
-    {!compact ? <AcquiredInstrumentSearch id={id} label={parameter.label} value={value} instruments={instruments}
-      required={parameter.required} describedBy={`${id}-help`} onChange={(next) => onChange(parameter.key, next)} />
-      : <select id={id} value={acquired ? value : ''} aria-describedby={compact ? undefined : `${id}-help`} required={parameter.required}
-      onChange={(event) => onChange(parameter.key, event.target.value)}>
-      <option value="">Choose an acquired instrument</option>
-      {instruments.map((item) => <option key={item.instrument_id} value={item.instrument_id}>
-        {displayText(item.name) || item.instrument_id} · {item.instrument_id}{item.ticker ? ` · ${item.ticker}` : ''}
-      </option>)}
-    </select>}
+    <AcquiredInstrumentSearch id={id} label={parameter.label} value={value} instruments={instruments}
+      required={parameter.required} describedBy={compact ? undefined : `${id}-help`} onChange={(next) => onChange(parameter.key, next)} />
     {!instruments.length && <p className="empty-state">No acquired instruments yet. <a href="#/add">Add an ETF</a> and request its data first.</p>}
     {value && !acquired && <p role="alert">This instrument is not in the acquired universe. Choose an acquired instrument or <a href={`#/instruments/${encodeURIComponent(value)}`}>acquire its data first</a>.</p>}
     {acquired && !compact && <section aria-label={`Selected ${parameter.label.toLowerCase()}`} className="goal-instrument">
