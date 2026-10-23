@@ -77,7 +77,8 @@ def test_missing_marks_never_hide_realized_pnl_or_return_partial_values(tracker,
     if failure == "missing":
         db.quotes.delete_many({})
     elif failure == "invalid":
-        db.quotes.update_many({"date": "2026-09-16"}, {"$set": {"data.close": None}})
+        # Missing closes may use a stale mark; malformed prices must fail closed.
+        db.quotes.update_many({"date": "2026-09-16"}, {"$set": {"data.close": "garbage"}})
     elif failure == "currency":
         db.quotes.update_many({}, {"$set": {"data.price_currency": "USD"}})
     elif failure == "prior":

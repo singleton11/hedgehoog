@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
+import { secureUuid } from './secureUuid.js';
 
 const factorPattern = /^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
 const validFactor = (value) => {
@@ -99,7 +100,12 @@ function SplitEditor({ isin, listing, inception, disabled, refreshKey, onChanged
     if (!valid || blocked || loading || loadError) return;
     const payload = { ...listing, date: day, factor: factor.trim(), note: note.trim() };
     const key = JSON.stringify(payload);
-    if (pendingAdd.current?.key !== key) pendingAdd.current = { key, id: crypto.randomUUID() };
+    try {
+      if (pendingAdd.current?.key !== key) pendingAdd.current = { key, id: secureUuid() };
+    } catch {
+      setWriteError('Secure split IDs are unavailable. Use a browser with Web Crypto support and retry.');
+      return;
+    }
     mutate(null, { id: pendingAdd.current.id, ...payload });
   }
 

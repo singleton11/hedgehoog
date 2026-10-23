@@ -84,6 +84,11 @@ async function follow(name) { fireEvent.click(screen.getByRole('link', { name })
 function fillTrade(extra = {}) {
   for (const [label, value] of Object.entries({ 'Trade instrument': A, Quantity: '1.25000001', 'Average execution price (EUR)': '123.12345678', ...extra })) change(label, value);
 }
+async function renamePortfolio() {
+  fireEvent.click(screen.getByRole('button', { name: 'Edit portfolio name' }));
+  change('Portfolio name', 'Updated portfolio');
+  await submit(settings());
+}
 function summaryValue(label) { return within(screen.getByRole('region', { name: 'Portfolio summary' })).getByText(label).nextElementSibling; }
 
 beforeEach(() => {
@@ -91,7 +96,7 @@ beforeEach(() => {
   auth.user = { id: 'user-a' }; auth.status = 'authenticated'; delete auth.request;
   window.history.replaceState(null, '', '#/');
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); window.history.replaceState(null, '', '#/'); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); window.history.replaceState(null, '', '#/'); });
 
 describe('portfolio routes, creation and optional goals', () => {
   it('links from existing customer goals with Customers active, creates multiple portfolios and attaches, changes or detaches a goal later', async () => {
@@ -281,16 +286,16 @@ describe('portfolio list creation and financial summary', () => {
     ]);
     const rows = within(table()).getAllByRole('row');
     expect(within(rows[1]).getByRole('link', { name: 'Linked investments' })).toHaveAttribute('href', detailRoute);
-    expect(within(rows[1]).getByText(/Checking…|On track|Off track|Unavailable/)).toBeInTheDocument();
+    expect(within(rows[1]).getByRole('cell', { name: /^(Checking…|On track|Off track|Unavailable)$/ })).toBeInTheDocument();
     expect(within(rows[1]).getByText('€9,007,199,254,740,993.01')).toBeInTheDocument();
-    expect(within(rows[1]).getByText('€12.34')).toHaveClass('return-positive');
+    expect(within(rows[1]).getByText('+€12.34 (Unavailable)')).toHaveClass('return-positive');
     expect(within(rows[1]).getAllByText('-€12.34').every((cell) => cell.classList.contains('return-negative'))).toBe(true);
-    expect(within(rows[1]).getByText('€0.00')).not.toHaveClass('return-positive', 'return-negative');
+    expect(within(rows[1]).getByText('€0.00 (Unavailable)')).not.toHaveClass('return-positive', 'return-negative');
     expect(within(rows[1]).queryByText(/2026-09-2[23]/)).not.toBeInTheDocument();
-    expect(within(rows[1]).getAllByRole('cell')[4]).toHaveTextContent(/^€12\.34$/);
+    expect(within(rows[1]).getAllByRole('cell')[4]).toHaveTextContent(/^\+€12\.34 \(Unavailable\)$/);
     expect(within(rows[1]).getAllByRole('cell')[4]).toHaveAttribute('title', 'Price date: 2026-09-23');
     expect(within(rows[2]).getByText('No plan')).toBeInTheDocument();
-    expect(within(rows[2]).getAllByText('Unavailable')).toHaveLength(4);
+    expect(within(rows[2]).getAllByText(/^Unavailable(?: \(Unavailable\))?$/)).toHaveLength(4);
     expect(within(rows[2]).getAllByRole('cell')[4]).not.toHaveAttribute('title');
     expect(within(rows[2]).getByText('Some holdings cannot be valued.')).toBeInTheDocument();
     expect(within(rows[2]).getByText('€0.00')).toBeInTheDocument();
@@ -318,14 +323,14 @@ describe('portfolio list creation and financial summary', () => {
     expect(table()).toBeInTheDocument(); expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('hides outdated amounts on refresh failure and ignores superseded summary responses', async () => {
+  it('hides outdated amounts on route reload failure and ignores superseded summary responses', async () => {
     const server = mockServer(); await open(listRoute);
     const pending = deferred(); server.portfolioList = () => pending.promise;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolios' })); await flush();
+    await navigate('#/invalid'); await navigate(listRoute);
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
     const signal = request.mock.calls.filter(([path]) => path === pagePath(base)).at(-1)[1].signal;
     server.portfolioList = async () => { throw new Error('Summary unavailable.'); };
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolios' })); await flush();
+    await navigate('#/invalid'); await navigate(listRoute);
     expect(signal.aborted).toBe(true);
     expect(screen.getByRole('alert')).toHaveTextContent('Summary unavailable.');
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
@@ -356,7 +361,8 @@ describe('portfolio list creation and financial summary', () => {
 });
 
 describe('exact manually dated cash and trade transactions', () => {
-  it('defaults both dates to today UTC and submits exact deposit, withdrawal, buy and sell strings without ledger calculation', async () => {
+  it.each([false, true])('submits exact cash and trade transactions (randomUUID unavailable: %s)', async (unavailable) => {
+    if (unavailable) vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
     const server = mockServer(); await open();
     expect(transactionEntry()).not.toBeVisible();
     expect(screen.queryByRole('form', { name: 'Add transaction' })).not.toBeInTheDocument();
@@ -375,11 +381,21 @@ describe('exact manually dated cash and trade transactions', () => {
     expect(writes()[2][1].body).toEqual({ client_id: expect.any(String), date: '2020-01-02', type: 'buy', instrument_id: A, quantity: '9007199254740993.12345678', price_eur: '123.12345678', commission_eur: '1.25' });
     fillTrade({ Quantity: '0.00000001', 'Average execution price (EUR)': '1.00000001' }); await submit(tradeForm());
     expect(writes()[3][1].body).toEqual({ client_id: expect.any(String), date: '2026-09-24', type: 'sell', instrument_id: A, quantity: '0.00000001', price_eur: '1.00000001', commission_eur: '0.00' });
+    for (const [, options] of writes()) expect(options.body.client_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(new Set(writes().map(([, options]) => options.body.client_id)).size).toBe(4);
     expect(server.transactions).toHaveLength(4); expect(screen.getByText('Sell saved.')).toBeInTheDocument();
     expect(summaryValue('Cash')).toHaveTextContent('€1,000.00'); // server fixture, never inferred from submitted cash
     transactionsTab(); expect(within(screen.getByRole('table', { name: /Transactions ·/ })).getAllByRole('row')).toHaveLength(5);
     expect(request.mock.calls.some(([path]) => path.includes('/instruments/acquired'))).toBe(false);
+  });
+
+  it('shows an error and sends no transaction when secure randomness fails', async () => {
+    mockServer(); await open(); addTransaction();
+    vi.stubGlobal('crypto', { getRandomValues: () => { throw new Error('unavailable'); } });
+    change('Amount (EUR)', '25'); await submit(cashForm());
+    expect(screen.getByRole('alert')).toHaveTextContent('Secure transaction IDs are unavailable.');
+    expect(writes()).toHaveLength(0);
+    expect(screen.getByLabelText('Amount (EUR)')).toHaveValue('25');
   });
 
   it('discloses ledger correction rules before saving and links empty EUR choices to acquisition and currency settings', async () => {
@@ -460,7 +476,8 @@ describe('exact manually dated cash and trade transactions', () => {
     server.save = save; await submit(tradeForm()); expect(writes()[2][1].body).toEqual(retryBody);
   });
 
-  it('retains an uncertain cash client ID even if the response is malformed', async () => {
+  it.each([false, true])('retains an uncertain cash client ID (randomUUID unavailable: %s)', async (unavailable) => {
+    if (unavailable) vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
     const server = mockServer(); server.save = async () => ({ id: 'bad' }); await open(); addTransaction();
     change('Amount (EUR)', '10'); await submit(cashForm()); expect(screen.getByRole('alert')).toHaveTextContent('Unexpected response');
     await submit(cashForm()); expect(writes()[1][1].body).toEqual(writes()[0][1].body);
@@ -490,7 +507,7 @@ describe('exact manually dated cash and trade transactions', () => {
 });
 
 describe('portfolio detail interactions', () => {
-  it('keeps performance in its own tab and refreshes after refresh, deposit and removal', async () => {
+  it('keeps performance in its own tab and reloads after rename, deposit and removal', async () => {
     mockServer(); await open();
     const reads = () => request.mock.calls.filter(([url]) => url === `${detailPath}/performance`).length;
     expect(reads()).toBe(1);
@@ -503,7 +520,7 @@ describe('portfolio detail interactions', () => {
     expect(chart.closest('[role="tabpanel"]')).toHaveAttribute('id', 'portfolio-performance-panel');
     expect(screen.getByRole('region', { name: 'Portfolio summary' }).compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole('tablist').compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolio' })); await flush();
+    await renamePortfolio();
     expect(reads()).toBe(2);
     addTransaction(); change('Amount (EUR)', '100'); await submit(cashForm());
     expect(reads()).toBe(3);
@@ -535,18 +552,19 @@ describe('portfolio detail interactions', () => {
     fireEvent.keyDown(otherTab, { key: 'Escape' });
     expect(transactionForm()).toBe(form); expect(form).toBeVisible();
     expect(screen.getByRole('region', { name: 'Portfolio summary' })).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolio' })); await flush();
+    await renamePortfolio();
     expect(transactionForm()).toBe(form); expect(screen.getByLabelText('Quantity')).toHaveValue('1.25000001');
     fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }));
     expect(form).not.toBeVisible(); expect(form).toBeInTheDocument();
     expect(add).toHaveFocus(); expect(add).toHaveAttribute('aria-expanded', 'false'); expect(add).toBeEnabled();
     fireEvent.click(add);
     expect(transactionForm()).toBe(form); expect(screen.getByLabelText('Quantity')).toHaveValue('1.25000001');
-    expect(writes()).toHaveLength(0);
+    expect(writes()).toHaveLength(1);
+    expect(writes()[0][1].method).toBe('PATCH');
     await submit(form);
     expect(transactionEntry()).not.toBeVisible(); expect(add).toHaveFocus();
     expect(add).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByText('Buy saved.')).toBeVisible(); expect(writes()).toHaveLength(1);
+    expect(screen.getByText('Buy saved.')).toBeVisible(); expect(writes()).toHaveLength(2);
   });
 
   it('shows statement import only on Transactions and preserves its draft across tabs', async () => {
@@ -606,10 +624,10 @@ describe('portfolio detail interactions', () => {
     fireEvent.click(screen.getByRole('button', { name: editor === 'name' ? 'Edit portfolio name' : 'Assign plan' }));
     const form = screen.getByRole('form', { name: editor === 'name' ? 'Rename portfolio' : 'Assign portfolio plan' });
     server.detail = async () => { throw new Error('Portfolio refresh unavailable.'); };
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolio' })); await flush();
+    addTransaction(); change('Amount (EUR)', '1'); await submit(cashForm());
     expect(screen.getByRole('alert')).toHaveTextContent('Portfolio refresh unavailable.');
     expect(within(form).getByRole('button', { name: editor === 'name' ? 'Save name' : 'Save plan' })).toBeDisabled();
-    await submit(form); expect(writes()).toHaveLength(0);
+    await submit(form); expect(writes()).toHaveLength(1);
     expect(within(form).getByRole('button', { name: 'Cancel' })).toBeEnabled();
     fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }));
     expect(form).not.toBeInTheDocument();
@@ -856,7 +874,7 @@ describe('valuation, transaction pagination and read failures', () => {
     const table = screen.getByRole('table', { name: 'Current holdings · EUR' });
     const cells = within(within(table).getAllByRole('row')[1]).getAllByRole('cell');
     expect(cells[3]).toHaveTextContent(/^€110\.00$/);
-    expect(cells[6]).toHaveTextContent(/^-€1\.25$/);
+    expect(cells[6]).toHaveTextContent(/^-€1\.25 \(-0\.90%\)$/);
     for (const cell of [cells[3], cells[6]]) {
       expect(cell).toHaveAttribute('title', 'Price date: 2026-09-24');
       expect(cell).toHaveAccessibleDescription('Price date: 2026-09-24');
@@ -923,7 +941,7 @@ describe('valuation, transaction pagination and read failures', () => {
     server.instrumentList = async (query) => page([instrument], query); fireEvent.click(screen.getByRole('button', { name: 'Retry instruments' })); await flush();
     expect(screen.getByRole('option', { name: /World ETF/ })).toBeInTheDocument();
     await navigate(listRoute); server.portfolioList = async () => ({ items: [], total: 2, offset: 0, limit: 20 });
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolios' })); await flush();
+    await navigate('#/invalid'); await navigate(listRoute);
     expect(screen.getByRole('alert')).toHaveTextContent('unexpected portfolios');
   });
 });
@@ -959,12 +977,12 @@ describe('route and session isolation', () => {
     expect(screen.getByLabelText('Portfolio name')).toHaveValue(''); expect(screen.queryByText('Portfolio created.')).not.toBeInTheDocument();
   });
 
-  it('ignores an aborted refresh even if it resolves after the latest valuation', async () => {
+  it('ignores an aborted route reload even if it resolves after the latest valuation', async () => {
     const server = mockServer(); await open(); const old = deferred(); server.detail = () => old.promise;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolio' })); await flush();
+    await navigate(listRoute); await navigate(detailRoute);
     const oldSignal = request.mock.calls.filter(([path]) => path === detailPath).at(-1)[1].signal;
     server.detail = async () => snapshot(metadata(), { cash_eur: '222.22' });
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh portfolio' })); await flush(); expect(oldSignal.aborted).toBe(true);
+    await navigate(listRoute); await navigate(detailRoute); expect(oldSignal.aborted).toBe(true);
     await act(async () => old.resolve(snapshot(metadata(), { cash_eur: '999.99' })));
     expect(summaryValue('Cash')).toHaveTextContent('€222.22');
   });

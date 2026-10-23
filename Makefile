@@ -1,4 +1,4 @@
-.PHONY: setup db-up db-down services-up services-down import-etfs run run-backend run-frontend test
+.PHONY: setup db-up db-down services-up services-down import-etfs run run-backend run-frontend test test-coverage
 
 setup:
 	cd backend && uv run python ../scripts/init_env.py
@@ -32,3 +32,7 @@ run-frontend:
 test:
 	cd backend && uv run pytest
 	cd frontend && npm ci && npm test && npm run build
+
+test-coverage:
+	bash scripts/run_coverage.sh backend
+	cd frontend && npm ci && npm run test:coverage

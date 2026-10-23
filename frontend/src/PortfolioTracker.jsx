@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
+import { secureUuid } from './secureUuid.js';
 import CustomerTabs from './CustomerTabs.jsx';
 import Icon from './Icon.jsx';
 import DegiroImport from './DegiroImport.jsx';
@@ -385,8 +386,8 @@ function TransactionForm({ request, path, open, onClose, instruments, positions,
     }
     const signature = JSON.stringify(body);
     try {
-      if (!retries.current.has(signature)) retries.current.set(signature, crypto.randomUUID());
-    } catch { mutation.fail('Secure transaction IDs are unavailable. Open this app over HTTPS or localhost and retry.'); return; }
+      if (!retries.current.has(signature)) retries.current.set(signature, secureUuid());
+    } catch { mutation.fail('Secure transaction IDs are unavailable. Use a browser with Web Crypto support and retry.'); return; }
     body = { client_id: retries.current.get(signature), ...body };
     await mutation.submit(path, 'POST', body, (data) => validTransaction(data) && data.client_id === body.client_id && data.type === body.type,
       () => {

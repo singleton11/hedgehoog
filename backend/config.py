@@ -39,6 +39,8 @@ class Settings(TaskSettings):
     jwt_secret: SecretStr
     jwt_expire_minutes: int = Field(default=60, ge=1, le=1440)
     cookie_secure: bool = False
+    # Explicit exception for AWS-owned HTTP hostnames without trusted TLS.
+    allow_insecure_http: bool = False
     admin_login: str = Field(default="admin", min_length=1, max_length=128)
     admin_password: SecretStr = SecretStr("admin")
     allowed_origins: list[str] = [
@@ -58,6 +60,6 @@ class Settings(TaskSettings):
         if self.environment == "production":
             if password == "admin" or len(password) < 12:
                 raise ValueError("Set a strong ADMIN_PASSWORD (at least 12 characters) in production")
-            if not self.cookie_secure:
+            if not self.cookie_secure and not self.allow_insecure_http:
                 raise ValueError("COOKIE_SECURE must be true in production (HTTPS required)")
         return self
