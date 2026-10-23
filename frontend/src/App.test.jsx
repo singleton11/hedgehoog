@@ -66,6 +66,45 @@ describe('workspace presentation', () => {
     expect(window.location.hash).toBe('');
   });
 
+  it('expands the mobile menu, closes on Escape and restores focus to its toggle', async () => {
+    mockServer(admin);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('No acquired ETFs yet');
+    const toggle = screen.getByRole('button', { name: 'Menu' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveAttribute('aria-controls', 'workspace-navigation-links');
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    screen.getByRole('link', { name: 'Settings' }).focus();
+    await user.keyboard('{Escape}');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveFocus();
+  });
+
+  it('closes the menu on navigation, including selecting the current page', async () => {
+    mockServer(admin);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('No acquired ETFs yet');
+    const toggle = screen.getByRole('button', { name: 'Menu' });
+    await user.click(toggle);
+    await user.click(screen.getByRole('link', { name: 'ETFs', exact: true }));
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(document.getElementById('workspace-content')).toHaveFocus();
+    await user.click(toggle);
+    await user.click(screen.getByRole('link', { name: 'Customers', exact: true }));
+    expect(await screen.findByRole('heading', { name: 'Customers', level: 2 })).toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('link', { name: 'Customers' })).toHaveAttribute('aria-current', 'page');
+    await user.click(toggle);
+    await act(async () => {
+      window.location.hash = '/';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
   it('shows the ETF table without redundant summary cards', async () => {
     const server = mockServer(admin);
     const fallback = server.fetch.getMockImplementation();

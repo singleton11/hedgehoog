@@ -292,7 +292,7 @@ describe('acquired ETF inventory', () => {
         historical_year_volatility: 0.2, historical_year_volatility_price_basis: 'close' })];
     await open();
     expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
-      'ETF', 'Asset class', 'Index', 'Saved listing', 'Historical', 'Statistical', 'Saved quotes', 'Profile collected', 'Market dataUpdate all',
+      'ETF', 'Asset class', 'Index', 'Saved listing', 'Historical', 'Statistical', 'Saved quotes', 'Profile collected', 'Market data',
       'Annual return', 'Annual volatility', 'Annual return', 'Annual volatility',
     ]);
     expect(screen.getByRole('columnheader', { name: 'Historical' })).toHaveAttribute('colspan', '2');
@@ -311,6 +311,11 @@ describe('acquired ETF inventory', () => {
     expect(statisticalVolatility).toHaveAttribute('headers', 'acquired-statistical');
     expect(statisticalVolatility).toHaveAttribute('title', expect.stringContaining('All saved history'));
     const growing = within(screen.getByRole('link', { name: 'Growing ETF' }).closest('tr'));
+    for (const label of ['Asset class', 'Index', 'Saved listing', 'Historical annual return', 'Historical annual volatility',
+      'Statistical annual return', 'Statistical annual volatility', 'Saved quotes', 'Profile collected', 'Market data']) {
+      expect(growing.getByText(label, { exact: true })).toHaveAttribute('aria-hidden', 'true');
+      expect(growing.getByText(label, { exact: true })).toHaveClass('inventory-cell-label');
+    }
     expect(growing.getByRole('cell', { name: '+12%' })).toHaveAttribute('title', '2025-09-16 – 2026-09-16. Adjusted closes.');
     expect(growing.getByRole('cell', { name: '+12%' })).toHaveAttribute('headers', 'acquired-historical acquired-historical-return');
     expect(growing.getByRole('cell', { name: '+12%' })).toHaveClass('return-positive');
@@ -565,13 +570,16 @@ describe('acquired ETF market-data updates', () => {
     await flush();
   }
 
-  it('places Update all in the action header and requires consent before updating a row', async () => {
+  it('keeps Update all outside the responsive table and requires consent before updating a row', async () => {
     const server = mockServer();
     server.acquiredItems = [acquiredItem(), acquiredItem(B, { name: 'Second ETF' })];
     await open();
-    const header = screen.getByRole('columnheader', { name: /Market data Update all/ });
+    const header = screen.getByRole('columnheader', { name: 'Market data' });
     expect(header).toHaveAttribute('rowspan', '2');
-    expect(within(header).getByRole('button', { name: 'Update all' })).toBeEnabled();
+    const updateAll = screen.getByRole('button', { name: 'Update all' });
+    expect(updateAll).toBeEnabled();
+    expect(updateAll.closest('table')).toBeNull();
+    expect(updateAll.closest('.table-heading')).toHaveTextContent('Fund overview');
     expect(row().getByRole('button', { name: 'Update market data for iShares S&P ETF' })).toBeEnabled();
     expect(row().getByText('0 days ago')).toBeInTheDocument();
     expect(server.posts()).toHaveLength(0);
