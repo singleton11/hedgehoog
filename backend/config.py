@@ -37,7 +37,7 @@ class TaskSettings(BaseSettings):
 class Settings(TaskSettings):
     environment: Literal["development", "production"] = "development"
     jwt_secret: SecretStr
-    jwt_expire_minutes: int = Field(default=60, ge=1, le=1440)
+    jwt_expire_minutes: int = Field(default=43_200, ge=1, le=43_200)
     cookie_secure: bool = False
     # Explicit exception for AWS-owned HTTP hostnames without trusted TLS.
     allow_insecure_http: bool = False

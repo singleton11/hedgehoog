@@ -101,10 +101,12 @@ def test_real_mongo_atomic_job_gate_budget_and_observations(environment, listing
     assert acquired == {"total": 1, "limit": 1, "offset": 0, "items": [{
         "instrument_id": ISIN, "isin": ISIN, "name": "Synthetic ETF", "ticker": "SXR8",
         "listing": LISTING, "collected_at": "2026-09-17T12:00:00Z", "quote_count": 2,
+        "asset_class": None, "index": None,
         "first_date": "2026-09-15", "last_date": "2026-09-16",
         "annualized_mean_log_return": 0.0, "annualized_volatility": None,
         "historical_year_return": None, "historical_year_start_date": None,
         "historical_year_end_date": None, "historical_year_price_basis": None,
+        "historical_year_carried_from_date": None,
         "historical_year_volatility": None, "historical_year_volatility_start_date": None,
         "historical_year_volatility_end_date": None, "historical_year_volatility_price_basis": None,
         "historical_year_volatility_return_count": None,

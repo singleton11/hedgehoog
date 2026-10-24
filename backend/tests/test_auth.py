@@ -69,7 +69,7 @@ def test_login_session_and_logout(client):
     assert response.json()["role"] == "admin"
     assert "HttpOnly" in response.headers["set-cookie"]
     assert "SameSite=strict" in response.headers["set-cookie"]
-    assert "Max-Age=3600" in response.headers["set-cookie"]
+    assert "Max-Age=2592000" in response.headers["set-cookie"]
     assert "Domain=" not in response.headers["set-cookie"]
     assert response.headers["cache-control"] == "no-store"
     assert client.get("/auth/me").json() == response.json()
@@ -79,6 +79,60 @@ def test_login_session_and_logout(client):
     assert COOKIE_NAME not in client.cookies
     assert client.get("/auth/me").status_code == 401
     assert client.post("/auth/logout").status_code == 204
+
+
+@pytest.mark.parametrize("minutes", [43_200, 60, 1])
+def test_session_lifetime_matches_configuration(client, config, monkeypatch, minutes):
+    monkeypatch.setattr(config, "jwt_expire_minutes", minutes)
+    response = login(client)
+    assert response.status_code == 200
+    assert f"Max-Age={minutes * 60}" in response.headers["set-cookie"]
+    payload = jwt.decode(
+        client.cookies[COOKIE_NAME], config.jwt_secret.get_secret_value(),
+        algorithms=["HS256"], issuer=JWT_ISSUER, audience=JWT_AUDIENCE,
+    )
+    assert payload["exp"] - payload["iat"] == minutes * 60
+
+
+def test_default_session_survives_until_30_day_expiry(client, config, monkeypatch):
+    assert config.jwt_expire_minutes == 43_200
+    assert login(client).status_code == 200
+    payload = jwt.decode(
+        client.cookies[COOKIE_NAME], config.jwt_secret.get_secret_value(),
+        algorithms=["HS256"], issuer=JWT_ISSUER, audience=JWT_AUDIENCE,
+    )
+    issued_at = datetime.fromtimestamp(payload["iat"], timezone.utc)
+
+    class Clock(datetime):
+        current = issued_at
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current.astimezone(tz)
+
+    # Advance JWT verification time without waiting or disabling expiry checks.
+    monkeypatch.setattr("jwt.api_jwt.datetime", Clock)
+    for elapsed in (timedelta(hours=2), timedelta(days=29), timedelta(days=30, seconds=-1)):
+        Clock.current = issued_at + elapsed
+        assert client.get("/auth/me").status_code == 200
+        assert client.get("/auth/me").headers.get("set-cookie") is None
+    Clock.current = issued_at + timedelta(days=30)
+    assert client.get("/auth/me").status_code == 401
+    Clock.current += timedelta(seconds=1)
+    assert client.get("/auth/me").status_code == 401
+
+
+@pytest.mark.parametrize("minutes", [1, 60, 1440, 43_200])
+def test_session_lifetime_environment_override(monkeypatch, minutes):
+    monkeypatch.setenv("JWT_EXPIRE_MINUTES", str(minutes))
+    assert Settings(_env_file=None, jwt_secret="test-secret-" * 5).jwt_expire_minutes == minutes
+
+
+@pytest.mark.parametrize("minutes", [0, -1, 43_201])
+def test_session_lifetime_rejects_out_of_range_configuration(monkeypatch, minutes):
+    monkeypatch.setenv("JWT_EXPIRE_MINUTES", str(minutes))
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, jwt_secret="test-secret-" * 5)
 
 
 @pytest.mark.parametrize("name,password", [("admin", "wrong"), ("missing", "admin")])
