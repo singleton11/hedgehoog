@@ -1,0 +1,11 @@
+[Unit]
+Description=Durable Telegram attention receiver (operator opt-in)
+
+[Service]
+Type=oneshot
+UMask=0077
+EnvironmentFile=%h/.config/paseo-telegram-attention.env
+ExecStart=/usr/bin/python3 %h/.local/lib/paseo-telegram-attention/attention_receiver.py run --once --dispatch none
+SuccessExitStatus=2
+TimeoutStartSec=180
+NoNewPrivileges=true
