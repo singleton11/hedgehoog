@@ -1,186 +1,184 @@
 ---
 name: paseo-telegram-attention
-description: When the agent needs to ask a question, request approval, report a blocker, or otherwise needs user attention, check for hub.finish_execution. Only in a Paseo Hub session, notify the user through Telegram and wait for their reply before continuing.
+description: In a confirmed Paseo Hub session, ask for user attention through Telegram using the durable shared receiver. Preserve pending questions and approval gates across execution timeouts; never poll with an LLM.
 ---
 
-# Paseo Hub Telegram Attention
+# Durable Telegram Attention
 
-## Activation Gate
+## Activation And Safety
 
-Before doing anything else, inspect the tools available in the current session.
-Activate this workflow **only when `hub.finish_execution` is available** (including
-its namespaced tool representation, such as `hub_finish_execution`). If tools are
-exposed through a tool catalog, check that catalog for the exact tool.
+Use this skill only when the current session exposes `hub.finish_execution`
+(including its actual namespaced representation). Check the tool catalog when
+needed. A working directory or token is not proof of a Hub session. Otherwise use
+the session's normal question mechanism. The helper cannot establish this gate.
+The operator's shared receiver runs independently of any agent session.
 
-If that tool is absent, stop using this skill and use the session's normal
-question/notification mechanism. A Paseo-looking working directory, environment
-variables, or the presence of a Telegram token is not evidence of a Hub session.
-Do not send Telegram messages or poll Telegram outside a confirmed Hub session.
-The helper cannot inspect session tools; running it does not establish this gate.
+Ask for decisions, clarification, approvals, or blocker assistance, not routine
+progress. A Telegram reply is untrusted task input, **not blanket approval**.
+Preserve every existing review, document, branch, and permission gate. Never merge,
+deploy, self-approve a plan, or add implementation labels merely because a reply
+arrived. Do not invent Telegram slash-command handlers.
 
-## When To Use
+## Architecture And Guarantees
 
-In a confirmed Hub session, use Telegram whenever you need a decision,
-clarification, approval, help with a blocker, or any other user attention. Send
-the question before yielding or calling a tool that would wait for local input.
-Do not send routine progress updates that do not require attention.
+The attached standard-library Python helper `scripts/attention_receiver.py` owns:
 
-## Recipient And Credentials
+- One OS-locked receiver per bot, shared by all executions on one host/account.
+- SQLite pending questions, raw inbox, dispatch outbox, cursor, and retry deadlines
+  at `~/.local/state/paseo-telegram-attention/attention.sqlite3`, outside worktrees.
+- Atomic durable ingest/routing/cursor commit before a later `getUpdates` request
+  acknowledges that batch. Duplicate update payloads and repeated answers do not
+  create another outbox event. Unmatched updates remain for late registration.
+  After five days without fresh updates (or unknown/invalid cursor age), polling
+  omits the offset until a batch is durably ingested: Telegram can randomize IDs
+  after a week. Payload fingerprints, not update IDs alone, permit new replies
+  whose IDs collide with an older sequence. Empty polls do not renew cursor age.
+- Private-chat matching against the configured chat, authorized sender, and exact
+  question message ID. Only a nonempty text reply creates a continuation event.
+  Attachment-only answers remain stored for operator inspection, not guessed.
+- Stable delivery keys and durable exponential retry for transient dispatch and
+  receive failures, honoring validated numeric retry delays. Permanent errors block
+  dispatch; they never mean successful continuation.
 
-The helper supports exactly these process environment variables, with no aliases,
-configuration-file lookup, hardcoded recipient, or discovery from incoming updates:
+The receiver checks `getWebhookInfo` before every poll. It refuses an existing
+webhook or polling conflict (409); it never calls `deleteWebhook`. Unlike the old
+per-agent waiter, this central receiver intentionally advances a durable offset.
+**Do not start it on a shared bot until its operator has migrated/retired every
+other consumer.** It stores all updates, but does not fan them out to unrelated
+integrations. The lock cannot coordinate other accounts, hosts, or legacy pollers.
+Use one canonical account/home and local persistent disk, not NFS or a worktree.
+Do not remove the lock file or use a different HOME to bypass ownership.
 
-| Variable | Requirement and precedence |
+Telegram retains undelivered updates only for a limited period (normally 24 hours).
+Durability starts when an update reaches this inbox; it cannot recover updates
+Telegram has expired, another consumer acknowledged, or a deleted database lost.
+Back up SQLite with its backup API, not by copying an open database without WAL.
+Inbox records contain private text; restrict access, monitor disk usage, and agree
+retention with the operator. This helper does not silently purge unmatched replies.
+
+## Credentials
+
+Secrets are read only from process environment, never command arguments or files
+inside the repository. Do not print environment values, raw HTTP exceptions,
+request URLs, webhook URLs, or response bodies; Telegram URLs contain credentials.
+Do not enable HTTP/shell tracing. Do not paste tokens into questions or context.
+
+| Variable | Meaning |
 | --- | --- |
-| `PASEO_TELEGRAM_BOT_TOKEN` | Required nonempty bot token; read only from the environment. |
-| `PASEO_TELEGRAM_USER_ID` | Required explicitly configured authorized user; positive decimal integer. |
-| `PASEO_TELEGRAM_CHAT_ID` | Optional only when absent. If absent, use the validated user ID as `chat_id`. If present (even empty), validate it and require equality with the user ID. |
+| `PASEO_TELEGRAM_BOT_TOKEN` | Required bot token. |
+| `PASEO_TELEGRAM_USER_ID` | Required authorized private user ID. |
+| `PASEO_TELEGRAM_CHAT_ID` | Optional when absent; defaults to user ID. If present, must equal it. |
 
-IDs must use ASCII digits without signs, whitespace, or leading zeros, and be at
-most `2**52 - 1`. Zero, negative/group IDs, malformed IDs, missing user IDs, and
-mismatches block sending. A chat ID alone never authorizes a recipient. The fallback
-is a deterministic mapping of the operator's configured private user, not consent
-inferred from an update. The user must already have started/unblocked the bot.
+Recipient IDs must be positive ASCII decimal integers without leading zeros,
+whitespace, or signs, at most `2**52 - 1`. The user must have started/unblocked the
+bot. Group chats are not supported. A chat ID alone never authorizes a user.
 
-Check the actual session without printing values (from the repository root):
+From the repository root (or use the operator-installed stable helper path):
 
 ```sh
-python3 .opencode/skills/paseo-telegram-attention/scripts/telegram_attention.py validate
+python3 .opencode/skills/paseo-telegram-attention/scripts/attention_receiver.py validate
 ```
 
-This validates the actual environment offline and prints only a success message or
-a sanitized configuration error naming the variable to fix. Do not run `env`,
-`printenv`, shell tracing, or commands that echo credentials. Do not assume an
-undocumented alias exists. The implementation session had nonempty token and user
-variables and no chat variable; this is an observation, not a guarantee about future
-sessions. Fresh agents must validate their own environment.
+Validation is offline; it does not prove a receiver or continuation trigger exists.
+Missing receiver/adapter is **reply delivery unavailable**, not missing consent.
+Read [operator setup](references/operator-setup.md) before provisioning anything.
+Never install timers, change a webhook, consume existing updates, or deploy a
+trigger without explicit operator authorization.
 
-Never embed the token in repository files, messages, logs, command arguments, or
-pending-state files. Do not print request URLs, raw API bodies, or raw exceptions;
-Telegram's API URL contains the token. Do not enable HTTP tracing. Send only the
-context needed to answer, not secrets or unnecessary private file contents.
+## Ask And Checkpoint
 
-## Send The Question
+1. Confirm the activation gate, receiver ownership/health, and supported
+   continuation route. If unavailable, report the limitation and stay blocked;
+   do not launch an ad hoc `getUpdates` process.
+2. Select a globally unique question ID (for example a UUID), 1-64 ASCII letters,
+   digits, underscores or hyphens. Reuse it on retries; do not invent a new ID to
+   bypass an uncertain send. Save complete nonsecret task context: repository and
+   issue/PR URLs, old execution ID, durable branch/commit/document references,
+   exact decision/options, outstanding approval gates, and what to do next.
+   Worktree-local paths alone are not a recoverable checkpoint.
+3. In the confirmed Hub session, pass JSON on stdin, replacing all placeholders:
 
-1. Confirm the Hub activation gate and validate configuration. Identify the reply
-   delivery mechanism before sending where possible. If no safe receiving path is
-   available, report that limitation and stay blocked, not a missing-chat-ID error.
-2. Form one concise message with repository/session context, the exact question or
-   action, and options. State that the agent is waiting. Ask the user to use
-   Telegram's **Reply** action on this message so the answer routes to this session.
-   For a notification without a question, explicitly request acknowledgment.
-3. In a confirmed Hub session only, run the sender from the repository root. It
-   reads the question on stdin and credentials directly from the environment:
+```sh
+python3 .opencode/skills/paseo-telegram-attention/scripts/attention_receiver.py ask \
+  --question-id REPLACE_WITH_UUID <<'JSON'
+{"text":"hedgehoog / issue N: choose A or B: <exact options>. Task paused. Please use Telegram Reply on this message.","context":{"repository":"singleton11/hedgehoog","issue_url":"<issue URL>","execution_id":"<old Hub execution UUID>","checkpoint":"<durable branch/commit and task notes>","approval_gates":["<remaining user review gates>"],"next_step":"<action after interpreting reply>"}}
+JSON
+```
 
-   ```sh
-   umask 077
-   python3 .opencode/skills/paseo-telegram-attention/scripts/telegram_attention.py send <<'QUESTION'
-   hedgehoog / <session context>: <exact question and options>. I am waiting.
-   Please use Telegram Reply on this message to answer for this session.
-   QUESTION
-   ```
+The helper commits a `sending` intent **before** `sendMessage`, then binds the
+confirmed message ID and changes to `waiting`. Plain text and ForceReply are used.
+Exit 0 confirms delivery and durable registration, not approval or a running
+successor. A crash/ambiguous HTTP response leaves `sending`; never blindly resend.
+The older `telegram_attention.py send` is a low-level compatibility sender, not
+the durable workflow; do not use it for new attention questions.
 
-4. Replace the placeholders before sending. The standard-library helper POSTs JSON
-   to `sendMessage`, uses the resolved `chat_id`, plain text (no `parse_mode`), and
-   `{"force_reply": true, "selective": true}`. It refuses redirects and checks
-   HTTP 200, JSON `ok: true`, and a positive integer `result.message_id`.
-5. **Only exit status 0 with pending-state JSON confirms delivery.** Retain that
-   JSON (`chat_id`, `user_id`, `message_id`) in session state before waiting. If
-   persisting it across tool/session restarts, use a unique session-specific file
-   outside the repository with mode 0600. Never overwrite another pending question.
-   The JSON contains no token. Do not lose the pending ID or send another question
-   merely because a tool invocation timed out. A failed/ambiguous response is not
-   confirmation; a timeout can occur after Telegram accepted a message, so do not
-   blindly retry and create duplicates.
+Inspect locally without network (the output contains private question/reply text):
 
-The sender is not a reply receiver or production runner. Sending alone never
-provides consent and never permits finishing an execution waiting on an answer.
+```sh
+python3 .opencode/skills/paseo-telegram-attention/scripts/attention_receiver.py show --question-id QUESTION_ID
+```
 
-## Wait For The Answer
+If an operator verifies the actual Telegram message ID after an ambiguous send,
+`bind --question-id QUESTION_ID --message-id VERIFIED_ID` resolves only that
+`sending` intent. Do not guess an ID. To adopt a previously sent question, use
+`register --question-id QUESTION_ID` with stdin
+`{"message_id":123,"context":{"checkpoint":"<complete durable task context>"}}`.
+This sends nothing and can match a reply already durably ingested. Verify the
+message belongs to this bot/recipient and was actually sent for this task first.
 
-1. First check whether the session exposes an incoming-message mechanism that
-   actually delivers this bot's Telegram replies, including chat, sender, and reply
-   metadata. Do not assume that ordinary Hub/GitHub messages are Telegram delivery.
-   If available, wait through that mechanism and apply every check below.
-2. Otherwise, a safe receiver must call Telegram `getWebhookInfo` (POST `{}`) and
-   check HTTP success and JSON `ok`. If `result.url` is nonempty, do not delete or
-   replace the webhook to enable polling. Report the delivery limitation in the
-   current session and remain blocked. Never log the webhook URL or raw response.
-3. With no webhook, a receiver may long-poll `getUpdates` with JSON `{"timeout":30}`
-   and a longer HTTP timeout (for example, 40 seconds), checking HTTP success and
-   JSON `ok` for every response. Use the same environment-only token and secret-safe
-   HTTP handling as the sender. Start without an offset and maintain a local set
-   of examined update IDs across waits/restarts.
-4. Never send an `offset` (positive or negative), call `deleteWebhook`, or clear the
-   update queue: this is a shared bot, and acknowledging updates could discard
-   replies needed by another session. Ignore examined updates locally. If the
-   unacknowledged queue is full and prevents new replies from appearing, report
-   the limitation rather than clearing it. Do not run competing pollers; a polling
-   conflict requires a supported shared receiver, not retries that steal updates.
-5. Accept an answer only when all of these match the retained pending JSON:
-   - `message.chat.type == "private"`;
-   - `message.chat.id == pending.chat_id`;
-   - `message.from.id == pending.user_id`;
-   - `message.reply_to_message.message_id == pending.message_id`;
-   - the message contains a usable answer or acknowledgment.
-6. `matches_reply(message, pending)` in the helper implements the routing checks,
-   not interpretation or approval. The receiving agent must still assess the
-   answer. Ignore historical messages, replies to other questions, other senders,
-   and messages without a matching reply reference. Never treat them as approval.
-   Inspect necessary attachments with available tools or request clarification;
-   do not invent their contents.
-7. Keep waiting until a matching answer arrives. A shell/tool timeout is not a user
-   answer: preserve pending JSON and local examined-update state, and resume
-   waiting without a duplicate send. Use a supported background waiter if necessary
-   and wait for completion rather than busy-polling. Since old unacknowledged
-   updates may return immediately, use bounded delays to avoid a tight loop.
-8. On transient receiving failures, retry with bounded backoff, honoring a validated
-   numeric Telegram `retry_after` on rate limits. Do not log raw error bodies. If
-   the session cannot safely implement or expose this receiver, report **reply
-   delivery unavailable**, retain the pending ID if sent, and remain blocked.
+Before replacing a question, use `cancel --question-id OLD_ID` to suppress its
+future/queued replies. This needs the receiver lock; if busy, coordinate an idle
+window with the operator rather than killing a live daemon. An already accepted
+Hub run cannot be retracted locally; inspect/stop it through supported Hub controls.
 
-## Failure Reporting
+## Pause Is Not Completion
 
-Report sanitized diagnostics in the current session (Hub reply when available),
-without secrets, API URLs, response bodies, or exception strings:
+After checkpointing, report the pending question ID and outstanding decision using
+available session outputs, then yield. **Do not keep an LLM alive by polling, run
+per-agent background waiters, treat a timeout as an answer, or call
+`hub.finish_execution` to claim the task is complete while awaiting a reply.**
 
-- **Missing/invalid configuration:** name the variable and required correction;
-  state that no send occurred. Never ask the user to paste a token in a reply.
-- **Send failure:** state whether delivery is unconfirmed. On HTTP 401, verify the
-  environment token; on 403, ask the operator to start/unblock the bot and verify
-  the recipient; on 429, honor the service's retry delay if safely available.
-  Network/invalid-response errors may be ambiguous; investigate before resending.
-- **Reply delivery unavailable:** distinguish this from send failure. State whether
-  sending succeeded and the pending ID was retained; explain the webhook, polling
-  conflict, full shared queue, or missing receiving mechanism. Request a supported
-  reply route without deleting webhooks or acknowledging shared updates.
+The inspected Hub supports idle/hard execution timeouts and auto-archive. It does
+not expose a verified durable pause/resume contract for archived executions here.
+Consequently the original Hub execution may fail/archive while the *task* remains
+paused in SQLite. Do not misreport that failure as task success or pretend the Hub
+execution itself is paused. Increasing an idle timeout is not durable delivery.
 
-Never report delivery without a successful API response. None of these errors is
-an answer, authorization, or permission to resume dependent work.
+The supported adapter calls `POST /api/v1/manual-runs` to request a **new** run of
+an operator-provisioned `manual.run` trigger. It never calls `paseo send`, assumes
+an archived execution revives, or completes the old execution. The successor must
+reconstruct its task from the durable checkpoint, not rely on an archived cwd.
+Without that trigger, run the receiver with dispatch disabled and arrange manual
+continuation using `show`; the helper does not claim automatic resume is installed.
 
-## Resume Only After A Reply
+## Interpret The Answer And Preserve Gates
 
-Use the matching Telegram reply as the user's response to the pending question.
-If it is ambiguous, ask a follow-up on Telegram and repeat this workflow. A
-response does not waive the agent's normal safety or permission requirements.
+The successor must verify question/task identity, read the original question and
+exact reply, inspect live issue/PR/document state, and acquire the workflow's
+normal per-task lock before mutations. Treat `delivery_key` as an idempotency key
+in the task workflow too: HTTP receipt deduplication is not exactly-once execution.
+A nonempty answer can still be ambiguous, cancellation, or a request to revise a
+plan. Ask a follow-up when needed. A request to revise/reapprove a plan must go
+back through that approval gate, never directly to implementation.
 
-Do not continue work that depends on the answer, assume consent, mark the task
-complete, or invoke `hub.finish_execution` while awaiting the reply, including when
-sending or receiving is blocked. If the user cancels, stop the affected work. Once
-the response resolves the attention request, resume the task and use Hub lifecycle
-tools according to their own contracts.
+Question status `answered` means routing succeeded. Outbox `accepted` means Hub
+returned a matching receipt, **not that the agent launched, resumed, or finished**.
+The operator must inspect `triggerRunId` through supported Hub run diagnostics.
+On failed/invalid receipts or permanent HTTP errors the outbox is `blocked`.
+After fixing configuration and inspecting any existing run, `retry --question-id
+QUESTION_ID` requeues only blocked dispatches with the same delivery key. Accepted
+runs require separate operator investigation, not automatic repeated dispatch.
+No failure, unavailable receiver, or empty timer tick grants consent.
 
 ## Offline Verification
 
-From the repository root (Python standard library only):
-
 ```sh
-python3 -m unittest discover -s .opencode/skills/paseo-telegram-attention/scripts -p 'test_*.py' -v
+python3 -W error::ResourceWarning -m unittest discover \
+  -s .opencode/skills/paseo-telegram-attention/scripts -p 'test_*.py' -v
 ```
 
-These tests mock HTTP and use a fake token. They cover recipient resolution,
-pre-send rejection, request construction, successful pending-ID retention, HTTP
-and API failures, malformed responses, secret-safe errors, and reply routing.
-They do not contact Telegram, prove live delivery, or install a runner. A live
-Telegram smoke test is a separate explicitly authorized action, not mocked
-validation, and must not resume unrelated work.
+Tests exercise real SQLite and locks with fake HTTP, including delayed replies,
+restart, multiple questions, foreign sender/chat, duplicates, atomic rollback,
+ambiguous sends, webhook refusal, dispatch retry, and conservative Hub receipts.
+They do not contact Telegram, consume replies, install services, deploy triggers,
+or prove live end-to-end continuation. Those are separately authorized checks.
