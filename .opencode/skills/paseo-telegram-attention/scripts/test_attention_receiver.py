@@ -107,7 +107,7 @@ class DurableTests(unittest.TestCase):
             return {'url': ''} if method == 'getWebhookInfo' else [self.update()]
         self.r.poll_once(store, bot)
         self.r.poll_once(store, bot)
-        self.assertEqual(calls[1][1]['offset'], 0)
+        self.assertNotIn('offset', calls[1][1])
         self.assertEqual(calls[3][1]['offset'], 2)
         self.assertEqual(len(store.ready(0)), 1)
 
@@ -326,6 +326,50 @@ class DurableTests(unittest.TestCase):
         with patch.object(self.r.time, 'monotonic', side_effect=[0, 40, 40]):
             self.r.tick(store, limited, None, 100)
         self.assertEqual(store.db.execute('SELECT next_attempt FROM poll_backoff').fetchone()[0], 260)
+
+    def test_randomized_lower_update_id_after_idle_restart_is_not_acknowledged_unseen(self):
+        store = self.store()
+        store.ingest([self.update(999999)], now=100)
+        store.close()
+        store = self.store()
+        self.register(store, 'late', 20)
+        calls = []
+        def telegram(method, payload):
+            calls.append((method, payload))
+            if method == 'getWebhookInfo':
+                return {'url': ''}
+            # Telegram would discard this unseen lower-ID reply if offset is stale.
+            return [] if payload.get('offset', 0) > 1 else [self.update(1, reply=20)]
+        self.r.poll_once(store, telegram, now=100 + 8 * 86400)
+        self.assertNotIn('offset', calls[1][1])
+        self.assertEqual(store.offset(), 2)
+        self.assertEqual(store.ready(0)[0]['question_id'], 'late')
+
+    def test_reused_update_id_in_new_random_sequence_is_not_deduplicated_away(self):
+        store = self.store()
+        self.register(store)
+        store.ingest([self.update(1)], now=100)
+        self.register(store, 'q2', 20)
+        store.ingest([self.update(1, reply=20, text='new sequence')], now=100 + 8 * 86400, reset=True)
+        self.assertEqual(len(store.ready(0)), 2)
+        self.assertEqual(store.db.execute('SELECT count(*) FROM inbox').fetchone()[0], 2)
+        store.ingest([self.update(1, reply=20, text='new sequence')], now=100 + 8 * 86400)
+        self.assertEqual(store.db.execute('SELECT count(*) FROM inbox').fetchone()[0], 2)
+
+    def test_legacy_cursor_is_untrusted_until_safe_ingest_and_inbox_is_preserved(self):
+        import sqlite3
+        with sqlite3.connect(self.path) as db:
+            db.executescript('CREATE TABLE cursors(bot TEXT PRIMARY KEY,offset INTEGER);'
+                             'CREATE TABLE inbox(bot TEXT,id INTEGER,payload TEXT,PRIMARY KEY(bot,id));')
+            db.execute('INSERT INTO cursors VALUES(?,?)', ('123', 1000000))
+            db.execute('INSERT INTO inbox VALUES(?,?,?)', ('123', 999999, json.dumps(self.update(999999))))
+        db.close()
+        store = self.store()
+        self.assertIsNone(store.poll_offset(100))
+        self.assertEqual(store.db.execute('SELECT count(*) FROM inbox').fetchone()[0], 1)
+        store.ingest([self.update(1)], now=100, reset=True)
+        self.assertEqual(store.offset(), 2)
+        self.assertEqual(store.db.execute('SELECT count(*) FROM inbox').fetchone()[0], 2)
 
 
 if __name__ == '__main__':

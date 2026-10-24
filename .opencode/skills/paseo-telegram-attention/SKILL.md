@@ -27,8 +27,12 @@ The attached standard-library Python helper `scripts/attention_receiver.py` owns
 - SQLite pending questions, raw inbox, dispatch outbox, cursor, and retry deadlines
   at `~/.local/state/paseo-telegram-attention/attention.sqlite3`, outside worktrees.
 - Atomic durable ingest/routing/cursor commit before a later `getUpdates` request
-  acknowledges that batch. Duplicate update IDs and repeated answers do not create
-  another outbox event. Unmatched updates remain in the inbox for late registration.
+  acknowledges that batch. Duplicate update payloads and repeated answers do not
+  create another outbox event. Unmatched updates remain for late registration.
+  After five days without fresh updates (or unknown/invalid cursor age), polling
+  omits the offset until a batch is durably ingested: Telegram can randomize IDs
+  after a week. Payload fingerprints, not update IDs alone, permit new replies
+  whose IDs collide with an older sequence. Empty polls do not renew cursor age.
 - Private-chat matching against the configured chat, authorized sender, and exact
   question message ID. Only a nonempty text reply creates a continuation event.
   Attachment-only answers remain stored for operator inspection, not guessed.

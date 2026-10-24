@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import fcntl
+import hashlib
 import json
 import re
 import sqlite3
@@ -50,19 +51,32 @@ class Store:
             PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS poll_backoff(
                 bot TEXT PRIMARY KEY, next_attempt REAL NOT NULL, attempts INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS cursors(bot TEXT PRIMARY KEY, offset INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS cursors(
+                bot TEXT PRIMARY KEY, offset INTEGER NOT NULL, last_update_at REAL);
             CREATE TABLE IF NOT EXISTS questions(
                 bot TEXT, id TEXT, chat INTEGER, user INTEGER, message INTEGER,
                 context TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'waiting',
                 PRIMARY KEY(bot,id), UNIQUE(bot,chat,message));
             CREATE TABLE IF NOT EXISTS inbox(
-                bot TEXT, id INTEGER, payload TEXT NOT NULL, PRIMARY KEY(bot,id));
+                bot TEXT, digest TEXT, id INTEGER, payload TEXT NOT NULL, PRIMARY KEY(bot,digest));
             CREATE TABLE IF NOT EXISTS outbox(
                 bot TEXT, question TEXT, event TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
                 next_attempt REAL NOT NULL DEFAULT 0, receipt TEXT,
                 PRIMARY KEY(bot,question));
         ''')
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            if 'last_update_at' not in {row['name'] for row in self.db.execute('PRAGMA table_info(cursors)')}:
+                self.db.execute('ALTER TABLE cursors ADD COLUMN last_update_at REAL')
+            if 'digest' not in {row['name'] for row in self.db.execute('PRAGMA table_info(inbox)')}:
+                self.db.execute('ALTER TABLE inbox RENAME TO inbox_legacy')
+                self.db.execute('CREATE TABLE inbox(bot TEXT,digest TEXT,id INTEGER,payload TEXT NOT NULL,PRIMARY KEY(bot,digest))')
+                for row in self.db.execute('SELECT * FROM inbox_legacy').fetchall():
+                    payload = json.dumps(json.loads(row['payload']), sort_keys=True, separators=(',', ':'))
+                    digest = hashlib.sha256(payload.encode()).hexdigest()
+                    self.db.execute('INSERT INTO inbox VALUES(?,?,?,?)', (row['bot'], digest, row['id'], payload))
+                self.db.execute('DROP TABLE inbox_legacy')
 
     def close(self):
         self.db.close()
@@ -70,6 +84,15 @@ class Store:
     def offset(self):
         row = self.db.execute('SELECT offset FROM cursors WHERE bot=?', (self.bot,)).fetchone()
         return row[0] if row else 0
+
+    def poll_offset(self, now):
+        row = self.db.execute('SELECT offset,last_update_at FROM cursors WHERE bot=?', (self.bot,)).fetchone()
+        # Telegram can randomize IDs after a week. Leave margin for its 24h queue
+        # retention and delayed ingest; never send a stale offset on restart.
+        if (row is None or row['last_update_at'] is None or now < row['last_update_at']
+                or now - row['last_update_at'] >= 5 * 86400):
+            return None
+        return row['offset']
 
     def register(self, qid, pending, context):
         validate_question(qid, pending, context)
@@ -102,19 +125,29 @@ class Store:
                 raise AttentionError('only an unresolved sending intent may be bound; inspect state.')
             self._route()
 
-    def ingest(self, updates):
+    def ingest(self, updates, now=None, reset=False):
+        now = time.time() if now is None else now
         with self.db:
-            offset = self.offset()
+            self.db.execute('BEGIN IMMEDIATE')
+            row = self.db.execute('SELECT last_update_at FROM cursors WHERE bot=?', (self.bot,)).fetchone()
+            last_update_at = row[0] if row else None
+            offset = 0 if reset else self.offset()
             for update in updates:
                 if (not isinstance(update, dict) or type(update.get('update_id')) is not int
                         or update['update_id'] < 0):
                     raise AttentionError('receiver: invalid update batch; cursor not advanced.')
                 uid = update['update_id']
-                self.db.execute('INSERT OR IGNORE INTO inbox VALUES(?,?,?)',
-                                (self.bot, uid, json.dumps(update)))
+                payload = json.dumps(update, sort_keys=True, separators=(',', ':'))
+                digest = hashlib.sha256(payload.encode()).hexdigest()
+                inserted = self.db.execute('INSERT OR IGNORE INTO inbox VALUES(?,?,?,?)',
+                                           (self.bot, digest, uid, payload))
+                if inserted.rowcount or reset:
+                    last_update_at = now
                 offset = max(offset, uid + 1)
             self._route()
-            self.db.execute('INSERT OR REPLACE INTO cursors VALUES(?,?)', (self.bot, offset))
+            if updates:
+                self.db.execute('INSERT OR REPLACE INTO cursors VALUES(?,?,?)',
+                                (self.bot, offset, last_update_at))
 
     def _route(self):
         questions = self.db.execute("SELECT * FROM questions WHERE bot=? AND status='waiting'",
@@ -174,7 +207,7 @@ def tick(store, bot, adapter, now):
     polled = False
     if backoff is None or backoff['next_attempt'] <= now:
         try:
-            poll_once(store, bot)
+            poll_once(store, bot, now=now)
         except Retryable as error:
             attempts = backoff['attempts'] + 1 if backoff else 1
             delay = max(error.delay, min(3600, 30 * 2 ** min(attempts - 1, 7)))
@@ -278,16 +311,20 @@ def bot_client(config, http=json_http):
     return call
 
 
-def poll_once(store, bot):
+def poll_once(store, bot, now=None):
+    now = time.time() if now is None else now
     webhook = bot('getWebhookInfo', {})
     if not isinstance(webhook, dict) or webhook.get('url') != '':
         raise AttentionError('receiver: existing webhook or invalid webhook response; polling refused.')
-    updates = bot('getUpdates', {'offset': store.offset(), 'timeout': 30, 'limit': 100,
-                                 'allowed_updates': []})
+    offset = store.poll_offset(now)
+    payload = {'timeout': 30, 'limit': 100, 'allowed_updates': []}
+    if offset is not None:
+        payload['offset'] = offset
+    updates = bot('getUpdates', payload)
     if not isinstance(updates, list):
         raise AttentionError('receiver: invalid updates response; cursor not advanced.')
     # The next request acknowledges only this fully committed batch.
-    store.ingest(updates)
+    store.ingest(updates, now=now, reset=offset is None)
 
 
 def manual_adapter(environ, http=json_http):

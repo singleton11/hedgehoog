@@ -27,6 +27,15 @@ Provision only after explicit approval and an inventory of existing integrations
 5. Run offline `attention_receiver.py validate` using that actual environment.
    Validation does not contact the bot and cannot establish ownership or health.
 
+The cursor deliberately becomes untrusted after five idle days, on unknown legacy
+age, or if the clock goes backward. A no-offset poll safely reacquires the current
+queue before committing a new cursor. This leaves margin for Telegram's 24-hour
+retention before its week-idle ID randomization; do not replace this with an
+unconditional high-water offset. Canonical payload fingerprints deduplicate exact
+replays without discarding reused IDs from a later sequence. Existing helper
+schemas migrate transactionally while preserving inbox payloads; legacy cursors
+start untrusted. Keep backups before an operator-approved upgrade.
+
 The example oneshot service and timer in this directory poll every 30 seconds
 without an LLM. A poll can wait 30 seconds (40-second HTTP timeout); overlapping
 runs of the same unit do not execute concurrently, and the bot lock covers other
