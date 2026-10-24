@@ -77,6 +77,7 @@ def send_question(config, text, opener=None):
                 raise AttentionError(http_failure(response.status))
             data = json.loads(response.read())
     except urllib.error.HTTPError as error:
+        error.close()
         raise AttentionError(http_failure(error.code)) from None
     except AttentionError:
         raise

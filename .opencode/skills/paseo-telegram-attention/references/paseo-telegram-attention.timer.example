@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll durable Telegram attention inbox without an LLM
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=30s
+Unit=paseo-telegram-attention.service
+
+[Install]
+WantedBy=timers.target

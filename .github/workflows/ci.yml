@@ -59,6 +59,13 @@ jobs:
         working-directory: current
         run: python3 -m unittest discover -s scripts/tests -v
 
+      - name: Test durable Telegram attention helper (offline)
+        if: matrix.suite == 'backend'
+        working-directory: current
+        run: >-
+          python3 -W error::ResourceWarning -m unittest discover
+          -s .opencode/skills/paseo-telegram-attention/scripts -p 'test_*.py' -v
+
       - name: Install frontend dependencies
         if: matrix.suite == 'frontend'
         working-directory: current/frontend
