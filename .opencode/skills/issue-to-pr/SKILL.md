@@ -47,6 +47,12 @@ body, and report it as not ready; never bypass checks or claim completion.
 
 ## 2. Implement And Validate
 
+- Before changing product code, load the `issue-classification` skill and follow
+  its live assessment and label read-back checks. If classification is blocked
+  or the verified label is `Requires planning with AI`, stop implementation and
+  report the planning handoff. Continue only with a verified `Ready for
+  implementation with AI` decision, honoring any existing `planning` approval
+  gate. Classification labels do not authorize skipping this workflow's checks.
 - Use a dedicated non-default branch, preferably `issue-<number>-<short-slug>`.
   Reuse an assigned worktree/branch when provided; never force-reset user work.
 - Inspect the relevant code and make a focused change that satisfies the issue.
