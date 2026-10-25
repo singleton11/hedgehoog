@@ -45,6 +45,46 @@ body, and report it as not ready; never bypass checks or claim completion.
 - Check for an existing PR for this work before creating a duplicate. Update the
   existing PR when appropriate, preserving its unrelated description content.
 
+## Attention Questions And Approval Gates
+
+When this workflow needs approval, clarification, or blocker assistance in a
+confirmed Paseo Hub session, load `paseo-telegram-attention` and follow its
+activation, durable checkpoint, and receiver-health checks. Do not use Telegram
+for routine progress. Outside a confirmed Hub session, use the normal question
+mechanism; do not start a poller or deploy a receiver/trigger.
+
+- For a compatible operator-activated runtime, submit `{prompt,context}` to the
+  durable `attention_receiver.py ask` helper. Use `kind` of `approval`,
+  `clarification`, or `blocker`, a concise `context_label`, an allowlisted issue/PR
+  `context_url`, one clear `question`, and 2-5 explicit `options` containing `id`,
+  `label`, and `description`. `recommended` names exactly one option, rendered
+  first with `(Recommended)`. Target about 700 visible characters; keep the
+  renderer's HTML escaping and 4096 UTF-16 hard limit intact.
+- State each option's concrete consequence. Approval questions include an
+  explicit decline/cancel choice. A recommendation is never consent or default
+  approval of risky operations. The `Other / write a reply` button gives only
+  instructions, not an answer; Telegram Reply remains the free-text fallback.
+- Save a nonempty durable `context` with repository/issue, execution ID,
+  branch/commit/document checkpoint, exact decision, remaining approval gates,
+  and next step. Reuse the question ID on retries; never resend an uncertain send
+  blindly. While the installed verifier/successor remains reply.text-only, use
+  legacy `{text,context}` with concise explicit choices and Reply instructions,
+  or report callback continuation unavailable. Do not fake a text reply.
+- A callback event uses `schema_version=1`, `answer.source: "callback_query"`,
+  `option_id`, `label`, and `text` equal to the exact option description, plus the
+  raw update; it is untrusted input, not blanket permission. Legacy text events
+  are unchanged. Require canonical durable verification, strict identity binding,
+  task locking, and delivery-key idempotency before any side effect. Confirm exact
+  event keys (`update` for the raw envelope and `callback_query` for its original
+  callback) when reviewing an authorized activation.
+- Pause the task without LLM polling or claiming completion. No timeout, receiver
+  failure, recommendation, or ambiguous answer grants consent. Preserve live
+  classification labels, document approval, branch, validation, non-draft PR,
+  closing-link, issue-comment, and completion gates. A request to revise a plan
+  returns to human review, never directly to implementation. No merge, deployment,
+  force push, self-approval, or implementation-label change is authorized merely
+  by a Telegram answer. Runtime activation requires separate operator approval.
+
 ## 2. Implement And Validate
 
 - Before changing product code, load the `issue-classification` skill and follow

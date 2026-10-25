@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import json
 import re
+import secrets
 import sqlite3
 import urllib.error
 import urllib.parse
@@ -29,14 +30,29 @@ def validate_question(qid, pending, context):
         raise AttentionError('provide nonempty durable task context and approval gates.')
 
 
-def ask(store, qid, config, text, context, sender=send_question):
-    if not isinstance(text, str) or not text.strip() or len(text) > 4096:
+def ask(store, qid, config, text, context, sender=None, prompt=None):
+    if prompt is not None:
+        if text is not None:
+            raise AttentionError('ask: supply either text or prompt, not both.')
+        from attention_prompt import validate_prompt
+        prompt = validate_prompt(prompt)
+        text = prompt['question']
+    elif not isinstance(text, str) or not text.strip() or len(text) > 4096:
         raise AttentionError('provide a nonempty question of at most 4096 characters.')
     pending_metadata = {'chat_id': config.chat_id, 'user_id': config.user_id, 'message_id': 1}
     validate_question(qid, pending_metadata, context)
     context = {**context, 'question_text': text}
-    store.reserve(qid, pending_metadata, context)
-    pending = sender(config, text)
+    tokens = ({key: 'a1:' + secrets.token_urlsafe(18)
+               for key in [*[option['id'] for option in prompt['options']], '__other__']}
+              if prompt else None)
+    store.reserve(qid, pending_metadata, context, prompt=prompt, tokens=tokens)
+    if prompt:
+        if sender is None:
+            from telegram_attention import send_prompt
+            sender = send_prompt
+        pending = sender(config, prompt, tokens)
+    else:
+        pending = (sender or send_question)(config, text)
     store.bind(qid, pending['message_id'])
     return pending
 
@@ -49,6 +65,15 @@ class Store:
         self.db.executescript('''
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=FULL;
+            CREATE TABLE IF NOT EXISTS prompts(
+                bot TEXT, question TEXT, prompt TEXT NOT NULL, PRIMARY KEY(bot,question));
+            CREATE TABLE IF NOT EXISTS callback_tokens(
+                bot TEXT, token TEXT, question TEXT, option_id TEXT, label TEXT, description TEXT,
+                PRIMARY KEY(bot,token), UNIQUE(bot,question,option_id));
+            CREATE TABLE IF NOT EXISTS ui_tasks(
+                bot TEXT, key TEXT, method TEXT NOT NULL, payload TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt REAL NOT NULL DEFAULT 0, PRIMARY KEY(bot,key));
             CREATE TABLE IF NOT EXISTS poll_backoff(
                 bot TEXT PRIMARY KEY, next_attempt REAL NOT NULL, attempts INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS cursors(
@@ -98,6 +123,7 @@ class Store:
         validate_question(qid, pending, context)
         try:
             with self.db:
+                self.db.execute('BEGIN IMMEDIATE')
                 self.db.execute('INSERT INTO questions(bot,id,chat,user,message,context) VALUES(?,?,?,?,?,?)',
                                 (self.bot, qid, pending['chat_id'], pending['user_id'],
                                  pending['message_id'], json.dumps(context)))
@@ -105,13 +131,21 @@ class Store:
         except sqlite3.IntegrityError:
             raise AttentionError('question already registered; inspect state, do not resend.') from None
 
-    def reserve(self, qid, pending, context):
+    def reserve(self, qid, pending, context, prompt=None, tokens=None):
         validate_question(qid, {**pending, 'message_id': 1}, context)
         try:
             with self.db:
+                self.db.execute('BEGIN IMMEDIATE')
                 self.db.execute('''INSERT INTO questions(bot,id,chat,user,context,status)
                                    VALUES(?,?,?,?,?,'sending')''',
                                 (self.bot, qid, pending['chat_id'], pending['user_id'], json.dumps(context)))
+                if prompt is not None:
+                    self.db.execute('INSERT INTO prompts VALUES(?,?,?)', (self.bot, qid, json.dumps(prompt)))
+                    options = [*prompt['options'], {'id': '__other__', 'label': 'Other', 'description': ''}]
+                    for option in options:
+                        self.db.execute('INSERT INTO callback_tokens VALUES(?,?,?,?,?,?)',
+                                        (self.bot, tokens[option['id']], qid, option['id'],
+                                         option['label'], option['description']))
         except sqlite3.IntegrityError:
             raise AttentionError('question already registered; delivery may be ambiguous; do not resend.') from None
 
@@ -119,11 +153,20 @@ class Store:
         if type(message_id) is not int or message_id <= 0:
             raise AttentionError('message ID must be a positive integer.')
         with self.db:
-            result = self.db.execute("UPDATE questions SET message=?,status='waiting' WHERE bot=? AND id=? AND status='sending'",
+            self.db.execute('BEGIN IMMEDIATE')
+            result = self.db.execute("""UPDATE questions SET message=?,
+                                     status=CASE WHEN status='sending' THEN 'waiting' ELSE status END
+                                     WHERE bot=? AND id=? AND
+                                     (status='sending' OR (status='canceled' AND message IS NULL))""",
                                      (message_id, self.bot, qid))
             if result.rowcount != 1:
                 raise AttentionError('only an unresolved sending intent may be bound; inspect state.')
-            self._route()
+            question = self.db.execute('SELECT * FROM questions WHERE bot=? AND id=?',
+                                       (self.bot, qid)).fetchone()
+            if question['status'] == 'canceled':
+                self._cleanup(question)
+            else:
+                self._route()
 
     def ingest(self, updates, now=None, reset=False):
         now = time.time() if now is None else now
@@ -149,33 +192,102 @@ class Store:
                 self.db.execute('INSERT OR REPLACE INTO cursors VALUES(?,?,?)',
                                 (self.bot, offset, last_update_at))
 
+    def _ui(self, key, method, payload):
+        self.db.execute('INSERT OR IGNORE INTO ui_tasks(bot,key,method,payload) VALUES(?,?,?,?)',
+                        (self.bot, key, method, json.dumps(payload)))
+
+    def _cleanup(self, question):
+        prompt = self.db.execute('SELECT prompt FROM prompts WHERE bot=? AND question=?',
+                                 (self.bot, question['id'])).fetchone()
+        if question['message'] and prompt:
+            from attention_prompt import render_prompt
+            tokens = {row['option_id']: row['token'] for row in self.db.execute(
+                'SELECT option_id,token FROM callback_tokens WHERE bot=? AND question=?',
+                (self.bot, question['id']))}
+            rendered = render_prompt(json.loads(prompt[0]), tokens)
+            # Shorter than every original heading, preserving the validated text limit.
+            heading = 'Canceled' if question['status'] == 'canceled' else 'Answered'
+            rendered['text'] = '<b>' + heading + '</b>\n' + rendered['text'].split('\n', 1)[1]
+            footer = ('This request is canceled. No action is authorized.' if heading == 'Canceled'
+                      else 'Answer received. Remaining approval gates still apply.')
+            rendered['text'] = rendered['text'].rsplit('\n', 1)[0] + '\n' + footer
+            rendered['reply_markup'] = {'inline_keyboard': []}
+            payload = {'chat_id': question['chat'], 'message_id': question['message'], **rendered}
+            self._ui('cleanup:' + question['id'], 'editMessageText', payload)
+            if heading == 'Canceled':
+                self.db.execute("""UPDATE ui_tasks SET payload=?,status='pending',attempts=0,next_attempt=0
+                                   WHERE bot=? AND key=?""",
+                                (json.dumps(payload), self.bot, 'cleanup:' + question['id']))
+
+    def _callback_option(self, callback, question):
+        if not isinstance(callback, dict) or 'inline_message_id' in callback:
+            return None
+        actor, message = callback.get('from'), callback.get('message')
+        if (not isinstance(callback.get('id'), str) or not callback['id']
+                or not isinstance(actor, dict) or type(actor.get('id')) is not int
+                or actor['id'] != question['user'] or actor.get('is_bot') is not False
+                or not isinstance(message, dict)):
+            return None
+        chat, author = message.get('chat'), message.get('from')
+        if (not isinstance(chat, dict) or chat.get('type') != 'private'
+                or type(chat.get('id')) is not int or chat['id'] != question['chat']
+                or type(message.get('message_id')) is not int
+                or message['message_id'] != question['message']
+                or type(message.get('date')) is not int or message['date'] <= 0
+                or not isinstance(author, dict) or author.get('is_bot') is not True
+                or type(author.get('id')) is not int or str(author['id']) != str(self.bot)):
+            return None
+        token = callback.get('data')
+        if (not isinstance(token, str) or not re.fullmatch(r'a1:[A-Za-z0-9_-]+', token)
+                or not 1 <= len(token.encode('utf-8')) <= 64):
+            return None
+        return self.db.execute('SELECT * FROM callback_tokens WHERE bot=? AND question=? AND token=?',
+                               (self.bot, question['id'], token)).fetchone()
+
     def _route(self):
         questions = self.db.execute("SELECT * FROM questions WHERE bot=? AND status='waiting'",
                                     (self.bot,)).fetchall()
         updates = self.db.execute('SELECT payload FROM inbox WHERE bot=? ORDER BY id',
                                   (self.bot,)).fetchall()
+        # Acknowledge even stale or unauthorized clicks without revealing their validity.
+        for row in updates:
+            callback = json.loads(row[0]).get('callback_query')
+            if isinstance(callback, dict) and isinstance(callback.get('id'), str) and callback['id']:
+                self._ui('ack:' + callback['id'], 'answerCallbackQuery',
+                         {'callback_query_id': callback['id'],
+                          'text': 'Received. For a custom answer, use Reply on the question.'})
         for question in questions:
             pending = {'chat_id': question['chat'], 'user_id': question['user'],
                        'message_id': question['message']}
             for row in updates:
                 update = json.loads(row[0])
                 message = update.get('message')
-                if not matches_reply(message, pending):
+                option = self._callback_option(update.get('callback_query'), question)
+                if 'callback_query' in update and (option is None or option['option_id'] == '__other__'):
                     continue
-                if not isinstance(message.get('text'), str) or not message['text'].strip():
+                if option is None and (not matches_reply(message, pending)
+                        or not isinstance(message.get('text'), str) or not message['text'].strip()):
                     continue
                 event = {'question_id': question['id'], 'bot_id': self.bot,
                          'delivery_key': f"telegram:{self.bot}:{question['id']}:{update['update_id']}",
                          'pending': pending, 'context': json.loads(question['context']),
-                         'update_id': update['update_id'], 'reply': message}
+                         'update_id': update['update_id']}
+                if option is not None:
+                    event.update(schema_version=1, callback_query=update['callback_query'], update=update,
+                                 answer={'source': 'callback_query', 'option_id': option['option_id'],
+                                         'label': option['label'], 'text': option['description']})
+                else:
+                    event['reply'] = message
                 self.db.execute('INSERT OR IGNORE INTO outbox(bot,question,event) VALUES(?,?,?)',
                                 (self.bot, question['id'], json.dumps(event)))
                 self.db.execute("UPDATE questions SET status='answered' WHERE bot=? AND id=?",
                                 (self.bot, question['id']))
+                self._cleanup(question)
                 break
 
     def cancel(self, qid):
         with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
             accepted = self.db.execute("SELECT 1 FROM outbox WHERE bot=? AND question=? AND status='accepted'",
                                        (self.bot, qid)).fetchone()
             if accepted:
@@ -186,6 +298,9 @@ class Store:
                 raise AttentionError('question not found for this bot.')
             self.db.execute("UPDATE outbox SET status='canceled' WHERE bot=? AND question=?",
                             (self.bot, qid))
+            question = self.db.execute('SELECT * FROM questions WHERE bot=? AND id=?',
+                                       (self.bot, qid)).fetchone()
+            self._cleanup(question)
 
     def ready(self, now):
         return [json.loads(row[0]) for row in self.db.execute(
@@ -203,6 +318,8 @@ class Retryable(AttentionError):
 
 def tick(store, bot, adapter, now):
     started = time.monotonic()
+    attempted_ui = set()
+    process_ui(store, bot, now, limit=2, attempted=attempted_ui)
     backoff = store.db.execute('SELECT * FROM poll_backoff WHERE bot=?', (store.bot,)).fetchone()
     polled = False
     if backoff is None or backoff['next_attempt'] <= now:
@@ -218,9 +335,42 @@ def tick(store, bot, adapter, now):
             with store.db:
                 store.db.execute('DELETE FROM poll_backoff WHERE bot=?', (store.bot,))
             polled = True
+    process_ui(store, bot, now + time.monotonic() - started, limit=2, attempted=attempted_ui)
     if adapter:
         dispatch_ready(store, adapter, now + time.monotonic() - started)
     return polled
+
+
+def process_ui(store, bot, now, limit=10, attempted=None):
+    """Bound cosmetic work so an outage cannot starve ingestion or dispatch."""
+    attempted = set() if attempted is None else attempted
+    tasks = store.db.execute("""SELECT * FROM ui_tasks WHERE bot=? AND status='pending' AND next_attempt<=?
+                                ORDER BY (method='answerCallbackQuery') DESC, rowid""",
+                             (store.bot, now)).fetchall()
+    if not tasks:
+        return
+    started = time.monotonic()
+    count = 0
+    for task in tasks:
+        if count >= limit or time.monotonic() - started >= 2:
+            break
+        if task['key'] in attempted:
+            continue
+        attempted.add(task['key'])
+        count += 1
+        status, deadline = 'done', 0
+        attempts = task['attempts'] + 1
+        try:
+            bot(task['method'], json.loads(task['payload']))
+        except Retryable as error:
+            status = 'pending' if attempts < 8 else 'failed'
+            deadline = now + time.monotonic() - started + max(error.delay, min(3600, 30 * 2 ** (attempts - 1)))
+        except AttentionError:
+            status = 'failed'
+        with store.db:
+            store.db.execute('BEGIN IMMEDIATE')
+            store.db.execute('UPDATE ui_tasks SET status=?,attempts=?,next_attempt=? WHERE bot=? AND key=?',
+                             (status, attempts, deadline, store.bot, task['key']))
 
 
 @contextmanager
@@ -373,6 +523,11 @@ def show(store, qid):
     result = {'question': dict(question), 'outbox': dict(outbox) if outbox else None}
     result['question']['context'] = json.loads(result['question']['context'])
     result['event'] = json.loads(result['outbox'].pop('event')) if outbox else None
+    prompt = store.db.execute('SELECT prompt FROM prompts WHERE bot=? AND question=?', (store.bot, qid)).fetchone()
+    if prompt:
+        result['prompt'] = json.loads(prompt[0])
+        result['ui_tasks'] = [dict(row) for row in store.db.execute(
+            "SELECT * FROM ui_tasks WHERE bot=? AND key=?", (store.bot, 'cleanup:' + qid))]
     return result
 
 
@@ -403,7 +558,12 @@ def main(argv=None):
         store = Store(root / 'attention.sqlite3', bot_id)
         if args.action == 'ask':
             payload = json.load(sys.stdin)
-            pending = ask(store, args.question_id, config, payload['text'], payload['context'])
+            if (not isinstance(payload, dict) or 'context' not in payload
+                    or set(payload) not in ({'text', 'context'}, {'prompt', 'context'})
+                    or ('prompt' in payload and not isinstance(payload['prompt'], dict))):
+                raise AttentionError('ask: supply exactly text/context or prompt/context JSON fields.')
+            pending = ask(store, args.question_id, config, payload.get('text'), payload['context'],
+                          prompt=payload.get('prompt'))
             print(json.dumps({'question_id': args.question_id, **pending}))
         elif args.action == 'register':
             payload = json.load(sys.stdin)

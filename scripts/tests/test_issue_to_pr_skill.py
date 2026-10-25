@@ -72,6 +72,58 @@ class IssueToPRSkillTests(unittest.TestCase):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, attachment)
 
+    def test_attention_uses_structured_prompt_and_safe_fallback(self):
+        attention = self.sections["Attention Questions And Approval Gates"]
+        for requirement in (
+            "load `paseo-telegram-attention`",
+            "confirmed Paseo Hub session",
+            "`{prompt,context}`",
+            "`approval`, `clarification`, or `blocker`",
+            "`context_label`",
+            "`context_url`",
+            "2-5 explicit `options`",
+            "`recommended` names exactly one option",
+            "first with `(Recommended)`",
+            "700 visible characters",
+            "HTML escaping and 4096 UTF-16 hard limit",
+            "explicit decline/cancel choice",
+            "A recommendation is never consent",
+            "`Other / write a reply` button gives only instructions, not an answer",
+            "Telegram Reply remains the free-text fallback",
+            "nonempty durable `context`",
+            "legacy `{text,context}`",
+            "reply.text-only",
+            "Do not fake a text reply",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, attention)
+
+    def test_attention_preserves_verification_and_workflow_gates(self):
+        attention = self.sections["Attention Questions And Approval Gates"]
+        for requirement in (
+            "`schema_version=1`",
+            '`answer.source: "callback_query"`',
+            "exact option description",
+            "raw update",
+            "Legacy text events are unchanged",
+            "canonical durable verification",
+            "strict identity binding",
+            "task locking",
+            "delivery-key idempotency",
+            "Pause the task without LLM polling or claiming completion",
+            "classification labels, document approval",
+            "non-draft PR, closing-link, issue-comment, and completion gates",
+            "returns to human review, never directly to implementation",
+            "No merge, deployment, force push, self-approval",
+            "Runtime activation requires separate operator approval",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, attention)
+        implementation = self.sections["2. Implement And Validate"]
+        self.assertIn("load the `issue-classification` skill", implementation)
+        self.assertIn("honoring any existing `planning` approval gate", implementation)
+        self.assertIn("All must pass before claiming the PR is ready", implementation)
+
     def test_completion_gate_requires_all_outcomes(self):
         completion = self.sections["Completion Gate"]
         self.assertIn("all required outcomes and validation/mergeability checks pass", completion)
