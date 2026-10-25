@@ -66,6 +66,11 @@ jobs:
           python3 -W error::ResourceWarning -m unittest discover
           -s .opencode/skills/paseo-telegram-attention/scripts -p 'test_*.py' -v
 
+      - name: Test native planning formatting (offline)
+        if: matrix.suite == 'backend'
+        working-directory: current
+        run: python3 -m unittest discover -s .opencode/skills/planning/tests -v
+
       - name: Install frontend dependencies
         if: matrix.suite == 'frontend'
         working-directory: current/frontend
