@@ -1,3 +1,4 @@
+import PhoneTable from './PhoneTable.jsx';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
 import CalibrationChart from './CalibrationChart.jsx';
@@ -51,7 +52,7 @@ function CalibrationHistory({ request }) {
       <button type="button" className="secondary" onClick={() => setAttempt((value) => value + 1)}>Retry history</button>
     </> : data.total === 0 ? <p className="empty-state">No calibration runs yet. Choose New run to calculate and save your first report.</p> : <>
       <div className="calibration-table-scroll" role="region" aria-label="Calibration history" tabIndex={0}>
-        <table className="calibration-table calibration-history"><caption>Calibration runs</caption>
+        <PhoneTable className="calibration-table calibration-history"><caption>Calibration runs</caption>
           <thead><tr>{['Run date', 'Strategy', 'Simulation', 'Evaluation', 'Parameters', 'Brier score', 'Calibration error', 'Scored scenarios'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
           <tbody>{data.items.map((run) => <tr key={run.id}>
             <th scope="row"><a href={runRoute(run.id)}><CalculatedTime value={run.calculated_at} /></a></th>
@@ -60,7 +61,7 @@ function CalibrationHistory({ request }) {
             <td><RunParameters selection={run.strategy} /></td>
             <td>{run.brier_score.toFixed(4)}</td><td>{calibrationError(run.calibration_error)}</td><td>{run.sample_count.toLocaleString('en')}</td>
           </tr>)}</tbody>
-        </table>
+        </PhoneTable>
       </div>
       <nav aria-label="Calibration history pagination">
         <button type="button" className="secondary" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>Previous</button>
@@ -76,10 +77,10 @@ function AuditTable({ caption, rows, headings, renderRow }) {
   const start = page * 50;
   return <section aria-label={caption}>
     <div className="calibration-table-scroll" tabIndex={0} role="region" aria-label={`${caption} table`}>
-      <table className="calibration-table calibration-audit"><caption>{caption}</caption>
+      <PhoneTable className="calibration-table calibration-audit"><caption>{caption}</caption>
         <thead><tr>{headings.map((heading) => <th scope="col" key={heading}>{heading}</th>)}</tr></thead>
         <tbody>{rows.slice(start, start + 50).map(renderRow)}</tbody>
-      </table>
+      </PhoneTable>
     </div>
     <nav aria-label={`${caption} pagination`}>
       <button type="button" className="secondary" disabled={page === 0} onClick={() => setPage(page - 1)}>Previous</button>

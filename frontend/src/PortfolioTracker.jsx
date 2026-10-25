@@ -1,3 +1,4 @@
+import PhoneTable from './PhoneTable.jsx';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
 import { secureUuid } from './secureUuid.js';
@@ -297,7 +298,7 @@ function PortfolioList({ request, customerId, plans }) {
       {!resource.loading && !resource.error && valid && <>{resource.data.total === 0 ? <p className="empty-state">No portfolios yet. Select Add portfolio to create your first portfolio.</p> : <>
         <p id="portfolio-summary-scroll" className="portfolio-scroll-hint">Scroll horizontally to view all columns.</p>
         <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Portfolios table" aria-describedby="portfolio-summary-scroll">
-          <table className="planner-table planner-summary-table portfolios-table">
+          <PhoneTable className="planner-table planner-summary-table portfolios-table">
             <caption>Portfolio summary</caption>
             <thead><tr><th scope="col">Portfolio</th><th scope="col">Status</th><th scope="col">Net worth (EUR)</th>
               {pnlColumns.map(([label, key]) => <th key={key} scope="col">{label}</th>)}
@@ -310,7 +311,7 @@ function PortfolioList({ request, customerId, plans }) {
                 <span className={pnlClass(portfolio[key])}>{signedEuros(portfolio[key])}{key === 'unrealized_pnl_eur' ? ` (${percentOf(portfolio[key], portfolio.cost_basis_eur) ?? 'Unavailable'})` : key === 'today_pnl_eur' ? ` (${percentOf(portfolio[key], portfolio.previous_value_eur) ?? 'Unavailable'})` : ''}</span>
               </td>)}
             </tr>)}</tbody>
-          </table>
+          </PhoneTable>
         </div>
       </>}
         {resource.data.total > 0 && <Pagination label="Portfolios" offset={offset} total={resource.data.total} count={resource.data.items.length} setOffset={setOffset} loading={resource.loading} />}
@@ -337,7 +338,7 @@ function Positions({ positions }) {
     {positions.length === 0 ? <p className="empty-state">No open positions.</p> : <>
       <p id="portfolio-positions-scroll" className="portfolio-scroll-hint">Scroll horizontally to view all columns.</p>
       <div className="planner-table-scroll" role="region" tabIndex={0} aria-label="Positions table" aria-describedby="portfolio-positions-scroll">
-      <table className="planner-table portfolio-table"><caption>Current holdings · EUR</caption><thead><tr>
+      <PhoneTable className="planner-table portfolio-table"><caption>Current holdings · EUR</caption><thead><tr>
         {['Instrument', 'Quantity', 'Average cost', 'Cost basis', 'Market price', 'Position value', 'Total unrealized P&L', 'Daily unrealized P&L'].map((label) => <th key={label} scope="col">{label}</th>)}
       </tr></thead><tbody>{positions.map((position) => <tr key={position.instrument.instrument_id}>
         <th scope="row">{instrumentName(position.instrument)}<span className="simulation-parameter">{position.instrument.instrument_id}</span>{position.warning && !isStaleValuationWarning(position.warning) && <span className="portfolio-warning">{position.warning}</span>}</th>
@@ -345,7 +346,7 @@ function Positions({ positions }) {
         <td title={position.price_date ? `Price date: ${position.price_date}` : 'Price date unavailable'}>{formatEuros(position.market_price_eur)}</td>
         <td>{formatEuros(position.position_value_eur)}</td><td className={pnlClass(position.unrealized_pnl_eur)}>{pnlDisplay(position.unrealized_pnl_eur, Number(position.cost_basis_eur))}</td>
         <td className={pnlClass(position.daily_unrealized_pnl_eur)} title={(position.daily_price_date ?? position.price_date) ? `Price date: ${position.daily_price_date ?? position.price_date}` : 'Price date unavailable'}>{pnlDisplay(position.daily_unrealized_pnl_eur, position.daily_previous_value_eur ?? (position.position_value_eur === null || position.daily_unrealized_pnl_eur === null ? null : Number(position.position_value_eur) - Number(position.daily_unrealized_pnl_eur)))}</td>
-      </tr>)}</tbody></table>
+      </tr>)}</tbody></PhoneTable>
     </div></>}
   </section>;
 }
@@ -467,14 +468,14 @@ function Transactions({ request, path, revision, onRemoved }) {
     <MutationStatus mutation={mutation} />
     {valid && <>{resource.data.total === 0 ? <p className="empty-state">No transactions yet. Record a deposit to fund your first purchase.</p> : <>
       <p id="portfolio-transactions-scroll" className="portfolio-scroll-hint">Scroll horizontally to view all columns.</p>
-      <div className="planner-table-scroll" role="region" tabIndex={0} aria-label="Transactions table" aria-describedby="portfolio-transactions-scroll"><table className="planner-table portfolio-table">
+      <div className="planner-table-scroll" role="region" tabIndex={0} aria-label="Transactions table" aria-describedby="portfolio-transactions-scroll"><PhoneTable className="planner-table portfolio-table">
         <caption>Transactions · newest date and sequence first</caption><thead><tr>{['Date (UTC)', 'Type', 'Instrument', 'Quantity', 'Execution price', 'Commission', 'Cash amount', 'Actions'].map((label) => <th key={label} scope="col">{label}</th>)}</tr></thead>
         <tbody>{resource.data.items.map((event) => <tr key={event.id}><th scope="row"><time dateTime={event.date}>{event.date}</time></th><td>{transactionName(event.type)}</td>
           <td className="portfolio-instrument">{event.instrument ? instrumentName(event.instrument) : '—'}</td><td>{event.quantity ?? '—'}</td><td>{event.price_eur === undefined ? '—' : formatEuros(event.price_eur)}</td>
           <td>{event.commission_eur === undefined ? '—' : formatEuros(event.commission_eur)}</td><td>{event.amount_eur === undefined ? '—' : formatEuros(event.amount_eur)}</td>
           <td><button type="button" className="secondary" disabled={blocked} aria-label={`Remove ${transactionName(event.type).toLowerCase()} on ${event.date}`} onClick={(click) => { removeButton.current = click.currentTarget; setSelected(event); }}>Remove</button></td>
         </tr>)}</tbody>
-      </table></div>
+      </PhoneTable></div>
       <Pagination label="Transactions" offset={offset} total={resource.data.total} count={resource.data.items.length} setOffset={setOffset} loading={resource.loading || mutation.busy} />
     </>}</>}
   </section>;

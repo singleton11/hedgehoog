@@ -1,3 +1,4 @@
+import PhoneTable from './PhoneTable.jsx';
 import { useId } from 'react';
 import { percent } from './ReturnStatistics.jsx';
 
@@ -38,7 +39,7 @@ export default function CalibrationChart({ bins, countLabel = 'forecasts' }) {
     </div>
     <details className="disclosure"><summary>Calibration bins</summary><div className="disclosure-content">
     <div className="calibration-table-scroll" role="region" aria-label="Calibration bin data" tabIndex={0}>
-      <table className="calibration-table">
+      <PhoneTable className="calibration-table">
         <caption>Calibration bins</caption>
         <thead><tr><th scope="col">Predicted probability bin</th><th scope="col">{countLabel === 'scenarios' ? 'Scored scenarios' : 'Evaluated forecasts'}</th><th scope="col">Mean predicted probability</th><th scope="col">Observed success frequency</th></tr></thead>
         <tbody>{bins.map((bin) => <tr key={bin.lower}>
@@ -46,7 +47,7 @@ export default function CalibrationChart({ bins, countLabel = 'forecasts' }) {
           <td>{bin.count ? percent(bin.mean_predicted_probability) : `No ${countLabel}`}</td>
           <td>{bin.count ? percent(bin.observed_success_rate) : `No ${countLabel}`}</td>
         </tr>)}</tbody>
-      </table>
+      </PhoneTable>
     </div>
     </div></details>
   </section>;

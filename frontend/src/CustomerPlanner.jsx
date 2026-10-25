@@ -1,3 +1,4 @@
+import PhoneTable from './PhoneTable.jsx';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
 import CustomerTabs from './CustomerTabs.jsx';
@@ -221,7 +222,7 @@ function Customers({ request, isin }) {
     <PagedList key={revision} request={request} path="/customers" label="Customers" validate={validCustomerSummary} empty="No customers yet. Select Add customer to create your first customer.">
       {(items) => <>
         <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Customers table">
-          <table className="planner-table planner-summary-table customers-table">
+          <PhoneTable className="planner-table planner-summary-table customers-table">
             <caption>Customer portfolio summary</caption>
             <thead><tr><th scope="col">Customer</th><th scope="col">Goals</th><th scope="col">Net worth (EUR)</th>
               {pnlColumns.map(([label, key]) => <th key={key} scope="col">{label}</th>)}
@@ -234,7 +235,7 @@ function Customers({ request, isin }) {
                 <span className={pnlClass(customer[key])}>{signedEuros(customer[key])}{key === 'unrealized_pnl_eur' ? ` (${percentOf(customer[key], customer.cost_basis_eur) ?? 'Unavailable'})` : key === 'today_pnl_eur' ? ` (${percentOf(customer[key], customer.previous_value_eur) ?? 'Unavailable'})` : ''}</span>
               </td>)}
             </tr>)}</tbody>
-          </table>
+          </PhoneTable>
         </div>
       </>}
     </PagedList>
@@ -277,7 +278,7 @@ function CustomerGoals({ request, customer, isin }) {
       {(items) => <>
         <p className="goals-scroll-hint muted" id="goals-scroll-note">Scroll horizontally to see all goal details.</p>
         <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Goals table" aria-describedby="goals-scroll-note">
-          <table className="planner-table goals-table">
+          <PhoneTable className="planner-table goals-table">
             <caption>Goal summary for {customer.name}</caption>
             <thead><tr>{['Goal', 'Target (EUR)', 'Linked equity (EUR)', 'Achieved', 'Remaining (EUR)', 'Goal date (UTC)', 'Time remaining', 'Created (UTC)'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
             <tbody>{items.map((goal) => <tr key={goal.id}>
@@ -293,7 +294,7 @@ function CustomerGoals({ request, customer, isin }) {
               <td>{timeRemaining(goal.goal_date)}</td>
               <td><CreatedDate value={goal.created_at} /></td>
             </tr>)}</tbody>
-          </table>
+          </PhoneTable>
         </div>
       </>}
     </PagedList>
@@ -364,7 +365,7 @@ function SimulationHistory({ request, goal, isin, onUpdated }) {
     <PagedList request={request} path={`${goalPath(goal.customer_id, goal.id)}/simulations`} label="Saved simulations" validate={validSummary}
       empty="No saved simulations yet. Calculate a simulation, then choose Save simulation to keep it.">
       {(items) => <div className="planner-table-scroll" tabIndex={0} role="region" aria-label="Simulation comparison">
-        <table className="planner-table"><caption>Saved simulations for {goal.name}</caption>
+        <PhoneTable className="planner-table"><caption>Saved simulations for {goal.name}</caption>
           <thead><tr>{['Saved', 'Goal target / date', 'Strategy / parameters', 'Starting capital', 'Reliability target', 'Monthly contribution', 'Estimated success', 'Plan'].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
           <tbody>{items.map((run) => <tr key={run.id}>
             <th scope="row"><a href={simulationRoute(goal.customer_id, goal.id, run.id)}><Time value={run.saved_at} /></a></th>
@@ -374,7 +375,7 @@ function SimulationHistory({ request, goal, isin, onUpdated }) {
             <td>{formatEuros(run.monthly_contribution_eur)}</td><td>{percent(run.success_probability)}</td>
             <td><MakePlan key={run.id} request={request} goal={goal} run={run} /></td>
           </tr>)}</tbody>
-        </table>
+        </PhoneTable>
       </div>}
     </PagedList>
   </>;

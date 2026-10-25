@@ -620,6 +620,36 @@ main.login-page { display: grid; grid-template-columns: 1fr 1fr; width: min(calc
   .acquired-pagination { padding-inline: 0; }
   .acquired-pagination .button-group { width: 100%; }
 }
+/* Labels share native column headers; only their phone presentation is duplicated. */
+.phone-cell-label { display: none; }
+/* Lines is now a row header; keep the former DEGIRO data-cell typography. */
+.degiro-import .phone-table tbody th[scope='row'] { font-weight: 400; font-variant-numeric: tabular-nums; }
+@media (min-width: 601px) {
+  .degiro-import .phone-table tbody th[scope='row'] { white-space: nowrap; }
+}
+
+@media (max-width: 600px) {
+  .planner-table-scroll, .calibration-table-scroll { overflow: visible; min-width: 0; }
+  .jobs-scroll-hint, .portfolio-scroll-hint, .goals-scroll-hint, .table-scroll-hint { display: none; }
+  .phone-table:is(.acquired-table, .planner-table, .calibration-table) { display: block; width: 100%; min-width: 0; max-width: 100%; }
+  .phone-table caption:not(.sr-only) { display: block; width: 100%; }
+  .phone-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .phone-table tbody { display: grid; gap: 1rem; }
+  .phone-table tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: var(--radius); background: white; overflow: hidden; }
+  .phone-table tbody tr > :is(th[scope='row'], td) { display: block; width: auto; min-width: 0; max-width: none; padding: 0.8rem 1rem; text-align: left; font-size: 0.8rem; white-space: normal; overflow-wrap: anywhere; }
+  .phone-table tbody th[scope='row'] { padding: 1rem; }
+  .phone-table tbody .phone-cell-wide, .phone-table tbody .portfolio-instrument { grid-column: 1 / -1; }
+  .degiro-import .phone-table tbody .portfolio-instrument { min-width: 0; max-width: none; }
+  .phone-table tbody .phone-cell-label { display: block; margin: 0 0 0.35rem; color: var(--muted); font-size: 0.7rem; font-weight: 400; white-space: normal; }
+  .phone-cell-label::before { content: attr(data-label); }
+  .phone-table tbody time, .phone-table tbody .saved-listing { white-space: normal; }
+  .phone-table tbody .market-data-actions { min-width: 0; }
+  .phone-table tbody :is(button, .button-link) { width: 100%; min-height: 44px; margin-block: 0.5rem; white-space: normal; overflow-wrap: anywhere; }
+  .phone-table tbody a { overflow-wrap: anywhere; }
+  .phone-table tbody a:not(.button-link) { display: inline-block; min-height: 44px; align-content: center; max-width: 100%; }
+  .phone-table tbody .goal-progress-bar { margin-left: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
 }

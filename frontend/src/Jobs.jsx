@@ -1,3 +1,4 @@
+import PhoneTable from './PhoneTable.jsx';
 import { useEffect, useState } from 'react';
 import { useAuth } from './Auth.jsx';
 
@@ -109,7 +110,7 @@ export default function Jobs() {
       {!page ? <p className="jobs-empty">{error ? 'Job history is unavailable.' : 'Loading job history...'}</p>
         : !page.items.length ? <p className="jobs-empty">{status || jobType ? 'No jobs match these filters.' : 'No jobs recorded yet.'}</p>
           : <div className="acquired-table-scroll" role="region" aria-label="Job history" tabIndex={0}>
-            <table className="acquired-table jobs-table"><thead><tr>
+            <PhoneTable className="acquired-table jobs-table"><thead><tr>
               <th scope="col">Job / type</th><th scope="col">Status</th><th scope="col">Instrument</th>
               <th scope="col">Queued at</th><th scope="col">Started at</th><th scope="col">Finished at</th><th scope="col">Details</th>
             </tr></thead><tbody>{page.items.map((job) => <tr key={`${job.job_type}:${job.id}`}>
@@ -118,7 +119,7 @@ export default function Jobs() {
               <td><Instrument id={job.instrument_id} /></td><td><Timestamp value={job.requested_at} /></td>
               <td><Timestamp value={job.started_at} /></td><td><Timestamp value={job.finished_at} /></td>
               <td>{job.error || <span className="muted">No errors reported</span>}</td>
-            </tr>)}</tbody></table>
+            </tr>)}</tbody></PhoneTable>
           </div>}
       {page && <div className="acquired-pagination section-heading">
         <p>{page.total ? `${offset + 1}-${Math.min(offset + page.items.length, page.total)} of ${page.total.toLocaleString()} jobs` : '0 jobs'}</p>

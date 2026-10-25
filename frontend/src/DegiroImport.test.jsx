@@ -110,6 +110,7 @@ describe('DEGIRO explicit preview/import', () => {
     expect(region).toHaveAttribute('tabindex', '0'); expect(region).toHaveClass('planner-table-scroll');
     expect(region).toHaveAccessibleDescription('Scroll horizontally to view all columns.');
     expect(region.querySelector('table')).toHaveClass('planner-table', 'portfolio-table');
+    expect(region.querySelector('tbody tr > :first-child')).toHaveAttribute('scope', 'row');
     expect(screen.getByText(/Date,Time,Value date,Product,ISIN,Description,FX,Change,,Balance,,Order Id/)).toBeInTheDocument();
     expect(screen.getByText(/Unmatched or ambiguous reservations block import/)).toBeInTheDocument();
   });
