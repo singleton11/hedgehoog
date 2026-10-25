@@ -126,6 +126,33 @@ class BuildPlanTests(unittest.TestCase):
             with self.subTest(text=repr(text)), self.assertRaises(ValueError):
                 plan.build_plan(sample([text]))
 
+    def test_reject_bmp_private_use_before_rendering(self):
+        for char in ("\ue000", "\ue001", "\uf8fe", "\uf8ff"):
+            values = [
+                {**sample(), "title": "Plan " + char},
+                {**sample(), "issue_url": "https://example.org/" + char},
+                {**sample(), "sections": [{"heading": "Goal " + char, "paragraphs": []}]},
+            ]
+            for text in (char, "before " + char + " `later.py`",
+                         "`file" + char + ".py`",
+                         "[label" + char + "](https://example.org)"):
+                values.append(sample([text]))
+                values.append(sample([{"text": text, "list": "bullet"}]))
+            for value in values:
+                with self.subTest(char=repr(char), value=value):
+                    with self.assertRaisesRegex(ValueError, "BMP private-use"):
+                        plan.build_plan(value)
+
+    def test_preserve_characters_outside_bmp_private_use(self):
+        text = "\ud7ff\uf900\U000f0000\U0010fffd `later.py`"
+        requests = plan.build_plan(sample([text]))["requests"]
+        inserted = requests[0]["insertText"]["text"]
+        self.assertIn(text.replace("`", ""), inserted)
+        code = next(r["updateTextStyle"] for r in requests
+                    if r.get("updateTextStyle", {}).get("fields") == "weightedFontFamily")
+        self.assertEqual(slice_utf16(inserted, code["range"]["startIndex"],
+                                     code["range"]["endIndex"]), "later.py")
+
     def test_reject_unsafe_urls(self):
         for link in ("javascript:bad", "//example.org", "https://", "https://user:pw@example.org",
                      "https://example.org/a b", "https://example.org/\n", "https://[", "https://example.org:bad"):

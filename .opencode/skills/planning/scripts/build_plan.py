@@ -129,6 +129,9 @@ def fields(value, required, optional=()):
 def plain_string(value):
     if not isinstance(value, str):
         raise ValueError("text must be a string")
+    # Docs strips BMP private-use characters, invalidating calculated ranges.
+    if any("\ue000" <= c <= "\uf8ff" for c in value):
+        raise ValueError("text must not contain BMP private-use characters")
     if any(unicodedata.category(c) in {"Cc", "Cs", "Cf", "Zl", "Zp"} for c in value):
         raise ValueError("text must be a single line without control characters")
     if (value.startswith("    ") or
