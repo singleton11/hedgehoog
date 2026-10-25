@@ -11,8 +11,9 @@ Provision only after explicit approval and an inventory of existing integrations
    Never delete a webhook to force polling. A 409 is a fatal ownership problem,
    not an invitation to restart/retry competing pollers.
 2. Install the reviewed scripts from this skill into a stable directory outside
-   worktrees, for example `~/.local/lib/paseo-telegram-attention/`. Keep both
-   `attention_receiver.py` and its imported `telegram_attention.py` together. If
+   worktrees, for example `~/.local/lib/paseo-telegram-attention/`. Keep
+   `attention_receiver.py`, `telegram_attention.py`, and `attention_prompt.py`
+   together as one reviewed upgrade bundle. If
    installing a global OpenCode skill, copy the complete skill including scripts
    and references, not only SKILL.md. Keep all agents on the same reviewed version.
 3. Run agents and the receiver under the same trusted Unix account/HOME. State is
@@ -94,11 +95,83 @@ Before enabling `--dispatch hub`:
 6. Only then switch the installed receiver to `--dispatch hub`. Default dispatch
    is `none`; matched answers remain in durable outbox for manual handling.
 
-The event includes `question_id`, `bot_id`, `delivery_key`, exact `pending`
-chat/user/message metadata, original `context` (including question text for new
-asks), `update_id`, and the full matching `reply`. The body is sent as manual-run
-`input`, not as trusted instructions. One question produces at most one outbox
-row. A successor must still deduplicate its own side effects by delivery key.
+Legacy text events retain `question_id`, `bot_id`, `delivery_key`, exact `pending`
+chat/user/message metadata, original `context`, `update_id`, and the full matching
+`reply`, unchanged. New callback events use `schema_version=1`, an `answer` object
+with `source: "callback_query"`, `option_id`, `label`, and `text` equal to the exact
+persisted option description, `update` containing the original raw Telegram
+update, and `callback_query` containing its unchanged callback payload. No
+synthesized text `reply` may stand in for a callback. The body is sent
+as manual-run `input`, not as trusted instructions. One question produces at most
+one outbox row. A successor must still deduplicate side effects by delivery key.
+
+## Callback Activation Dependencies (Not Deployed Here)
+
+The repo-only upgrade adds structured prompts and callbacks, not a live rollout.
+The inspected external runtime
+`/home/singleton/services/paseo-automations/attention-runtime/verify_event.py`
+currently loads `event['reply']`, requires nonempty `reply.text`, checks its
+`from`, private `chat`, and `reply_to_message.message_id` against the configured
+user/message, and restricts `context.issue_url` to this repository's issues. It
+also requires equality with the durable dispatchable outbox event (with one
+accepted-event delivery-key repair exception) and the configured bot ID. It does
+not validate a callback envelope and cannot accept one as a text reply. A PR
+context URL is allowed for prompt display, not authorization to bypass the
+installed issue-only continuation restriction.
+
+The inspected global successor skill
+`/home/singleton/.config/opencode/skills/paseo-attention-resume/SKILL.md` calls
+`verify_event_by_key.py QUESTION_ID DELIVERY_KEY` for the canonical durable event
+and explicitly reads exact `reply.text`. It therefore also needs a reviewed
+callback-aware change. Do not forge reply metadata, weaken the verifier, or
+rewrite the durable event to fit that legacy consumer. Neither external file is
+modified by this repository change.
+
+Before sending structured questions through the installed runtime, obtain
+explicit operator authorization for a coordinated upgrade:
+
+1. Back up durable SQLite using its backup API; review the receiver, prompt,
+   sender, migration, and tests together. Preserve pending legacy questions,
+   events, cursor, and dispatch idempotency. Persist short opaque `a1` tokens
+   before network I/O; never embed task content in callback data.
+2. Upgrade the verifier and successor to validate `schema_version=1`, canonical
+   option mapping and raw callback update with strict sender/chat/message/bot
+   binding, while preserving the legacy text path. Preserve per-task locks,
+   journals, live approval checks, and all existing workflow gates.
+3. Verify first-answer/outbox/cursor atomicity and independent durable UI retries
+   offline. `Other / write a reply` is instructions only, not a task answer;
+   retain Telegram Reply as the text fallback. UI acknowledgement/keyboard cleanup
+   failure must not replay a continuation or grant approval.
+4. Install the complete reviewed bundle and compatible global skills/adapter only
+   with authorization. Coordinate receiver ownership; do not start a second
+   poller, change services/triggers, or deploy anything as part of this PR.
+5. Obtain separate permission for a dedicated live callback and Reply fallback
+   test. Check actual ingest, canonical verification, dispatch, successor gates,
+   and UI retry separately. Offline tests are not live end-to-end evidence.
+
+UI work is inspectable in `ui_tasks` (`pending`, `done`, `failed`, attempts and
+next-attempt time). Each pass processes at most ten tasks within a two-second
+budget, and a receiver tick limits each of its two passes to two tasks, never
+attempting the same key twice in one tick. A single in-flight HTTP request can
+still take up to 40 seconds. Retryable failures honor backoff; eight failures or a
+permanent Telegram error mark only that UI task `failed`. Expired callbacks,
+deleted messages and already-applied edits cannot undo an answer or requeue a
+continuation. `show` includes the structured prompt and its cleanup task; private
+callback acknowledgement details remain available in SQLite for operator review.
+
+For an authorized rollback, first stop issuing new structured questions and
+coordinate an idle receiver window. Keep a SQLite backup and the complete newer
+bundle. Do not drop additive tables or restore an old database over newer answers.
+An older binary cannot route callbacks or service UI tasks: resolve/cancel pending
+structured questions and drain/review outbox and UI work with the compatible
+receiver before reverting the whole helper/skill/adapter bundle. Preserve legacy
+pending questions, receipts and cursor throughout; rollback is not permission to
+resend uncertain prompts or redispatch accepted decisions.
+
+Until those dependencies are satisfied, continue using legacy `{text,context}`
+questions with explicit choices and Reply instructions, or report callback
+continuation unavailable and remain blocked. No recommendation, timeout, declined
+choice, or delivery failure means consent.
 
 A 200 response must match delivery key and configured trigger, contain run and
 receipt IDs, and report running/succeeded before the local status becomes

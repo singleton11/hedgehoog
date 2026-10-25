@@ -60,6 +60,16 @@ def send_question(config, text, opener=None):
         raise AttentionError("configuration: provide a nonempty question of at most 4096 characters on stdin.")
     payload = {"chat_id": config.chat_id, "text": text,
                "reply_markup": {"force_reply": True, "selective": True}}
+    return _send_payload(config, payload, opener)
+
+
+def send_prompt(config, prompt, tokens, opener=None):
+    from attention_prompt import render_prompt
+    payload = {'chat_id': config.chat_id, **render_prompt(prompt, tokens)}
+    return _send_payload(config, payload, opener)
+
+
+def _send_payload(config, payload, opener=None):
     request = urllib.request.Request(
         f"https://api.telegram.org/bot{config.token}/sendMessage",
         data=json.dumps(payload).encode("utf-8"),

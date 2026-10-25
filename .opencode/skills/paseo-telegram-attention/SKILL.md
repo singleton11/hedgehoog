@@ -33,9 +33,15 @@ The attached standard-library Python helper `scripts/attention_receiver.py` owns
   omits the offset until a batch is durably ingested: Telegram can randomize IDs
   after a week. Payload fingerprints, not update IDs alone, permit new replies
   whose IDs collide with an older sequence. Empty polls do not renew cursor age.
-- Private-chat matching against the configured chat, authorized sender, and exact
-  question message ID. Only a nonempty text reply creates a continuation event.
-  Attachment-only answers remain stored for operator inspection, not guessed.
+- Private sender/chat/message binding for legacy text replies, and strict
+  sender/chat/message/bot binding for callback choices. Only a nonempty text reply
+  or a valid persisted choice creates a
+  continuation event. Attachment-only answers remain stored, not guessed.
+- Short opaque `a1` callback tokens are persisted before network I/O; callback
+  data contains no task text, URLs, credentials, or approval authority. The first
+  valid answer, outbox event, and cursor commit atomically. Duplicate/stale choices
+  cannot create a second answer. Callback acknowledgement and keyboard cleanup
+  retry independently and durably; UI failure must not replay task dispatch.
 - Stable delivery keys and durable exponential retry for transient dispatch and
   receive failures, honoring validated numeric retry delays. Permanent errors block
   dispatch; they never mean successful continuation.
@@ -96,17 +102,49 @@ trigger without explicit operator authorization.
    issue/PR URLs, old execution ID, durable branch/commit/document references,
    exact decision/options, outstanding approval gates, and what to do next.
    Worktree-local paths alone are not a recoverable checkpoint.
-3. In the confirmed Hub session, pass JSON on stdin, replacing all placeholders:
+3. In the confirmed Hub session, use a structured prompt for new approval,
+   clarification, or blocker questions, only after the operator has activated the
+   compatible receiver and successor described in [operator setup](references/operator-setup.md).
+   Pass JSON on stdin, replacing the example issue and checkpoint with live data:
 
 ```sh
 python3 .opencode/skills/paseo-telegram-attention/scripts/attention_receiver.py ask \
   --question-id REPLACE_WITH_UUID <<'JSON'
-{"text":"hedgehoog / issue N: choose A or B: <exact options>. Task paused. Please use Telegram Reply on this message.","context":{"repository":"singleton11/hedgehoog","issue_url":"<issue URL>","execution_id":"<old Hub execution UUID>","checkpoint":"<durable branch/commit and task notes>","approval_gates":["<remaining user review gates>"],"next_step":"<action after interpreting reply>"}}
+{"prompt":{"kind":"clarification","context_label":"hedgehoog / issue 34","context_url":"https://github.com/singleton11/hedgehoog/issues/34","question":"Which scope should this change cover?","options":[{"id":"scoped","label":"Keep approved scope","description":"Implement only the already approved behavior."},{"id":"revise","label":"Revise the plan","description":"Pause implementation and return the plan for human review."}],"recommended":"scoped"},"context":{"repository":"singleton11/hedgehoog","issue_url":"https://github.com/singleton11/hedgehoog/issues/34","execution_id":"<old Hub execution UUID>","checkpoint":"<durable branch/commit and task notes>","approval_gates":["<remaining user review gates>"],"next_step":"<action after interpreting answer>"}}
 JSON
 ```
 
-The helper commits a `sending` intent **before** `sendMessage`, then binds the
-confirmed message ID and changes to `waiting`. Plain text and ForceReply are used.
+### Prompt Contract
+
+Accept either legacy `{text,context}` or structured `{prompt,context}`, not both.
+`context` is a nonempty durable object, not just a worktree path. Legacy plain-text
+questions and their event shape remain unchanged. Until callback activation is
+explicitly authorized, use legacy text with clear choices and Telegram Reply.
+
+- `kind` is `approval`, `clarification`, or `blocker`. `context_label` is at most
+  80 characters; `question` at most 500. `context_url` must be an allowlisted
+  `https://github.com/singleton11/hedgehoog/issues/N` or
+  `https://github.com/singleton11/hedgehoog/pull/N` URL (positive issue/PR number,
+  no query, fragment, credentials, or alternate host).
+- Supply 2-5 options with unique `id`, `label` (at most 40 raw characters), and
+  `description` (at most 160 characters). `recommended` identifies exactly one
+  option. Render it first and mark it `(Recommended)`; final button labels are
+  bounded to 64 characters. Do not add the suffix to the raw label yourself.
+- Keep the normal message near 700 visible characters; the hard limit is 4096
+  Telegram UTF-16 code units. Shorten wording rather than silently truncating
+  decision meaning or durable context. The renderer HTML-escapes all supplied text
+  and allows only the validated context URL as a link.
+- Approval questions must include an explicit decline/cancel choice using option
+  ID `decline` or `cancel` and a label/description stating the negative decision. A
+  recommendation is never consent or default approval of risky operations. No
+  timeout, unavailable delivery, or unselected recommendation authorizes action.
+- The `Other / write a reply` button only gives instructions; it is not an answer
+  and must not dispatch a continuation. Telegram Reply remains the free-text
+  fallback. Do not invent a choice from a request for reply instructions.
+
+The helper commits a `sending` intent and choice token mappings **before**
+`sendMessage`, then binds the confirmed message ID and changes to `waiting`.
+Structured messages use HTML and an inline keyboard; legacy text uses ForceReply.
 Exit 0 confirms delivery and durable registration, not approval or a running
 successor. A crash/ambiguous HTTP response leaves `sending`; never blindly resend.
 The older `telegram_attention.py send` is a low-level compatibility sender, not
@@ -120,7 +158,9 @@ python3 .opencode/skills/paseo-telegram-attention/scripts/attention_receiver.py 
 
 If an operator verifies the actual Telegram message ID after an ambiguous send,
 `bind --question-id QUESTION_ID --message-id VERIFIED_ID` resolves only that
-`sending` intent. Do not guess an ID. To adopt a previously sent question, use
+`sending` intent. For a canceled but still unbound sending intent, `bind` records
+verified delivery and schedules Canceled cleanup without reopening the question.
+Do not guess an ID. To adopt a previously sent question, use
 `register --question-id QUESTION_ID` with stdin
 `{"message_id":123,"context":{"checkpoint":"<complete durable task context>"}}`.
 This sends nothing and can match a reply already durably ingested. Verify the
@@ -157,6 +197,16 @@ The successor must verify question/task identity, read the original question and
 exact reply, inspect live issue/PR/document state, and acquire the workflow's
 normal per-task lock before mutations. Treat `delivery_key` as an idempotency key
 in the task workflow too: HTTP receipt deduplication is not exactly-once execution.
+Legacy text events retain their existing `reply` unchanged. New callback events
+use `schema_version=1` and an `answer` object with `source: "callback_query"`,
+`option_id`, `label`, and `text` equal to the exact persisted option description,
+plus `update` containing the original raw Telegram update and `callback_query`
+containing its unchanged callback payload. Never synthesize a text `reply` for a
+button click. Verify the canonical durable event before reading the selected
+answer. The currently
+installed reply.text-only verifier/successor is incompatible with callbacks; see
+operator setup for the authorization-gated upgrade dependencies.
+
 A nonempty answer can still be ambiguous, cancellation, or a request to revise a
 plan. Ask a follow-up when needed. A request to revise/reapprove a plan must go
 back through that approval gate, never directly to implementation.
