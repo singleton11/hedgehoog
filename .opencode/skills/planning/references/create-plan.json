@@ -5,7 +5,485 @@
         "location": {
           "index": 1
         },
-        "text": "Status: \n\n<Feature> implementation plan\n\nGoal\n<Goal>\n\nScope and non-goals\n<Scope>\n\nCurrent behavior\n<Relevant repository paths and observed behavior>\n\nProposed approach\n<Design>\n\nImplementation tasks\n<Ordered tasks and affected files>\n\nVerification\n<Commands and expected outcomes, not fabricated results>\n\nRisks and open questions\n<Decisions needed>\n\nAcceptance criteria\n<Observable completion conditions>\n\nRevision history\nInitial draft submitted for review.\n"
+        "text": "Status: \n\nReadable implementation plans\nGitHub issue: https://github.com/singleton11/hedgehoog/issues/35\n\nGoal\nMake implementation plans easy to scan and review in Google Docs.\nScope and non-goals\nGenerate native title, heading, paragraph, link, and list formatting.\nPreserve the existing review-status dropdown and approval gates.\n\nDo not change application behavior or the review-status workflow.\nCurrent behavior\nThe planning template inserts plain text and a review-status dropdown. Formatting and content offsets must stay aligned.\nProposed approach\nUse build_plan.py to turn structured content into a Google Docs batch request. Compute ranges from rendered text using UTF-16 offsets, then insert the unchanged status chip last.\nImplementation tasks\nAdd the standard-library generator and strict input validation.\nGenerate the example batch from plan-content.json.\nAdd offline tests and document the generation command.\nVerification\nRun python3 -m unittest discover -s .opencode/skills/planning/tests -v. Expect all offline tests to pass; this is a planned check, not a recorded result.\nReview a generated document for readable headings, native lists, clickable links, and the unchanged dropdown.\nRisks and open questions\nGoogle Docs ranges use UTF-16 code units. Non-BMP characters and chip insertion order need explicit regression coverage.\nAcceptance criteria\nRendered text contains no inline Markdown markers.\nLists, links, headings, and the existing status options remain usable.\nChanging plan length never requires hand-editing offsets.\nRevision history\nInitial draft submitted for review.\n"
+      }
+    },
+    {
+      "updateParagraphStyle": {
+        "range": {
+          "startIndex": 11,
+          "endIndex": 1602
+        },
+        "paragraphStyle": {
+          "namedStyleType": "NORMAL_TEXT",
+          "lineSpacing": 115,
+          "spaceAbove": {
+            "magnitude": 0,
+            "unit": "PT"
+          },
+          "spaceBelow": {
+            "magnitude": 6,
+            "unit": "PT"
+          }
+        },
+        "fields": "namedStyleType,lineSpacing,spaceAbove,spaceBelow"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 11,
+          "endIndex": 1602
+        },
+        "textStyle": {
+          "fontSize": {
+            "magnitude": 11,
+            "unit": "PT"
+          }
+        },
+        "fields": "fontSize"
+      }
+    },
+    {
+      "updateParagraphStyle": {
+        "range": {
+          "startIndex": 11,
+          "endIndex": 41
+        },
+        "paragraphStyle": {
+          "namedStyleType": "TITLE",
+          "spaceAbove": {
+            "magnitude": 12,
+            "unit": "PT"
+          },
+          "spaceBelow": {
+            "magnitude": 6,
+            "unit": "PT"
+          }
+        },
+        "fields": "namedStyleType,spaceAbove,spaceBelow"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 11,
+          "endIndex": 40
+        },
+        "textStyle": {
+          "fontSize": {
+            "magnitude": 22,
+            "unit": "PT"
+          }
+        },
+        "fields": "fontSize"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 55,
+          "endIndex": 105
+        },
+        "textStyle": {
+          "link": {
+            "url": "https://github.com/singleton11/hedgehoog/issues/35"
+          }
+        },
+        "fields": "link"
+      }
+    },
+    {
+      "updateParagraphStyle": {
+        "range": {
+          "startIndex": 107,
+          "endIndex": 112
+        },
+        "paragraphStyle": {
+          "namedStyleType": "HEADING_1",
+          "spaceAbove": {
+            "magnitude": 12,
+            "unit": "PT"
+          },
+          "spaceBelow": {
+            "magnitude": 6,
+            "unit": "PT"
+          }
+        },
+        "fields": "namedStyleType,spaceAbove,spaceBelow"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 107,
+          "endIndex": 111
+        },
+        "textStyle": {
+          "fontSize": {
+            "magnitude": 14,
+            "unit": "PT"
+          }
+        },
+        "fields": "fontSize"
+      }
+    },
+    {
+      "updateParagraphStyle": {
+        "range": {
+          "startIndex": 178,
+          "endIndex": 198
+        },
+        "paragraphStyle": {
+          "namedStyleType": "HEADING_1",
+          "spaceAbove": {
+            "magnitude": 12,
+            "unit": "PT"
+          },
+          "spaceBelow": {
+            "magnitude": 6,
+            "unit": "PT"
+          }
+        },
+        "fields": "namedStyleType,spaceAbove,spaceBelow"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 178,
+          "endIndex": 197
+        },
+        "textStyle": {
+          "fontSize": {
+            "magnitude": 14,
+            "unit": "PT"
+          }
+        },
+        "fields": "fontSize"
+      }
+    },
+    {
+      "updateParagraphStyle": {
+        "range": {
+          "startIndex": 400,
+          "endIndex": 417
+        },
+        "paragraphStyle": {
+          "namedStyleType": "HEADING_1",
+          "spaceAbove": {
+            "magnitude": 12,
+            "unit": "PT"
+          },
+          "spaceBelow": {
+            "magnitude": 6,
+            "unit": "PT"
+          }
+        },
+        "fields": "namedStyleType,spaceAbove,spaceBelow"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 400,
+          "endIndex": 416
+        },
+        "textStyle": {
+          "fontSize": {
+            "magnitude": 14,
+            "unit": "PT"
+          }
+        },
+        "fields": "fontSize"
+      }
+    },
+    {
+      "updateParagraphStyle": {
+        "range": {
+          "startIndex": 538,
+          "endIndex": 556
+        },
+        "paragraphStyle": {
+          "namedStyleType": "HEADING_1",
+          "spaceAbove": {
+            "magnitude": 12,
+            "unit": "PT"
+          },
+          "spaceBelow": {
+            "magnitude": 6,
+            "unit": "PT"
+          }
+        },
+        "fields": "namedStyleType,spaceAbove,spaceBelow"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 538,
+          "endIndex": 555
+        },
+        "textStyle": {
+          "fontSize": {
+            "magnitude": 14,
+            "unit": "PT"
+          }
+        },
+        "fields": "fontSize"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 560,
+          "endIndex": 573
+        },
+        "textStyle": {
+          "weightedFontFamily": {
+            "fontFamily": "Roboto Mono"
+          }
+        },
+        "fields": "weightedFontFamily"
+      }
+    },
+    {
+      "updateParagraphStyle": {
+        "range": {
+          "startIndex": 735,
+          "endIndex": 756
+        },
+        "paragraphStyle": {
+          "namedStyleType": "HEADING_1",
+          "spaceAbove": {
+            "magnitude": 12,
+            "unit": "PT"
+          },
+          "spaceBelow": {
+            "magnitude": 6,
+            "unit": "PT"
+          }
+        },
+        "fields": "namedStyleType,spaceAbove,spaceBelow"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 735,
+          "endIndex": 755
+        },
+        "textStyle": {
+          "fontSize": {
+            "magnitude": 14,
+            "unit": "PT"
+          }
+        },
+        "fields": "fontSize"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 852,
+          "endIndex": 869
+        },
+        "textStyle": {
+          "weightedFontFamily": {
+            "fontFamily": "Roboto Mono"
+          }
+        },
+        "fields": "weightedFontFamily"
+      }
+    },
+    {
+      "updateParagraphStyle": {
+        "range": {
+          "startIndex": 926,
+          "endIndex": 939
+        },
+        "paragraphStyle": {
+          "namedStyleType": "HEADING_1",
+          "spaceAbove": {
+            "magnitude": 12,
+            "unit": "PT"
+          },
+          "spaceBelow": {
+            "magnitude": 6,
+            "unit": "PT"
+          }
+        },
+        "fields": "namedStyleType,spaceAbove,spaceBelow"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 926,
+          "endIndex": 938
+        },
+        "textStyle": {
+          "fontSize": {
+            "magnitude": 14,
+            "unit": "PT"
+          }
+        },
+        "fields": "fontSize"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 943,
+          "endIndex": 1009
+        },
+        "textStyle": {
+          "weightedFontFamily": {
+            "fontFamily": "Roboto Mono"
+          }
+        },
+        "fields": "weightedFontFamily"
+      }
+    },
+    {
+      "updateParagraphStyle": {
+        "range": {
+          "startIndex": 1203,
+          "endIndex": 1228
+        },
+        "paragraphStyle": {
+          "namedStyleType": "HEADING_1",
+          "spaceAbove": {
+            "magnitude": 12,
+            "unit": "PT"
+          },
+          "spaceBelow": {
+            "magnitude": 6,
+            "unit": "PT"
+          }
+        },
+        "fields": "namedStyleType,spaceAbove,spaceBelow"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 1203,
+          "endIndex": 1227
+        },
+        "textStyle": {
+          "fontSize": {
+            "magnitude": 14,
+            "unit": "PT"
+          }
+        },
+        "fields": "fontSize"
+      }
+    },
+    {
+      "updateParagraphStyle": {
+        "range": {
+          "startIndex": 1349,
+          "endIndex": 1369
+        },
+        "paragraphStyle": {
+          "namedStyleType": "HEADING_1",
+          "spaceAbove": {
+            "magnitude": 12,
+            "unit": "PT"
+          },
+          "spaceBelow": {
+            "magnitude": 6,
+            "unit": "PT"
+          }
+        },
+        "fields": "namedStyleType,spaceAbove,spaceBelow"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 1349,
+          "endIndex": 1368
+        },
+        "textStyle": {
+          "fontSize": {
+            "magnitude": 14,
+            "unit": "PT"
+          }
+        },
+        "fields": "fontSize"
+      }
+    },
+    {
+      "updateParagraphStyle": {
+        "range": {
+          "startIndex": 1549,
+          "endIndex": 1566
+        },
+        "paragraphStyle": {
+          "namedStyleType": "HEADING_1",
+          "spaceAbove": {
+            "magnitude": 12,
+            "unit": "PT"
+          },
+          "spaceBelow": {
+            "magnitude": 6,
+            "unit": "PT"
+          }
+        },
+        "fields": "namedStyleType,spaceAbove,spaceBelow"
+      }
+    },
+    {
+      "updateTextStyle": {
+        "range": {
+          "startIndex": 1549,
+          "endIndex": 1565
+        },
+        "textStyle": {
+          "fontSize": {
+            "magnitude": 14,
+            "unit": "PT"
+          }
+        },
+        "fields": "fontSize"
+      }
+    },
+    {
+      "createParagraphBullets": {
+        "range": {
+          "startIndex": 198,
+          "endIndex": 333
+        },
+        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"
+      }
+    },
+    {
+      "createParagraphBullets": {
+        "range": {
+          "startIndex": 756,
+          "endIndex": 926
+        },
+        "bulletPreset": "NUMBERED_DECIMAL_ALPHA_ROMAN"
+      }
+    },
+    {
+      "createParagraphBullets": {
+        "range": {
+          "startIndex": 1228,
+          "endIndex": 1349
+        },
+        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"
+      }
+    },
+    {
+      "createParagraphBullets": {
+        "range": {
+          "startIndex": 1369,
+          "endIndex": 1549
+        },
+        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"
       }
     },
     {

@@ -1,0 +1,55 @@
+{
+  "title": "Readable implementation plans",
+  "issue_url": "https://github.com/singleton11/hedgehoog/issues/35",
+  "sections": [
+    {
+      "heading": "Goal",
+      "paragraphs": ["Make implementation plans easy to scan and review in Google Docs."]
+    },
+    {
+      "heading": "Scope and non-goals",
+      "paragraphs": [
+        {"text": "Generate native title, heading, paragraph, link, and list formatting.", "list": "bullet"},
+        {"text": "Preserve the existing review-status dropdown and approval gates.", "list": "bullet"},
+        "",
+        "Do not change application behavior or the review-status workflow."
+      ]
+    },
+    {
+      "heading": "Current behavior",
+      "paragraphs": ["The planning template inserts plain text and a review-status dropdown. Formatting and content offsets must stay aligned."]
+    },
+    {
+      "heading": "Proposed approach",
+      "paragraphs": ["Use `build_plan.py` to turn structured content into a Google Docs batch request. Compute ranges from rendered text using UTF-16 offsets, then insert the unchanged status chip last."]
+    },
+    {
+      "heading": "Implementation tasks",
+      "paragraphs": [
+        {"text": "Add the standard-library generator and strict input validation.", "list": "numbered"},
+        {"text": "Generate the example batch from `plan-content.json`.", "list": "numbered"},
+        {"text": "Add offline tests and document the generation command.", "list": "numbered"}
+      ]
+    },
+    {
+      "heading": "Verification",
+      "paragraphs": ["Run `python3 -m unittest discover -s .opencode/skills/planning/tests -v`. Expect all offline tests to pass; this is a planned check, not a recorded result.", "Review a generated document for readable headings, native lists, clickable links, and the unchanged dropdown."]
+    },
+    {
+      "heading": "Risks and open questions",
+      "paragraphs": [{"text": "Google Docs ranges use UTF-16 code units. Non-BMP characters and chip insertion order need explicit regression coverage.", "list": "bullet"}]
+    },
+    {
+      "heading": "Acceptance criteria",
+      "paragraphs": [
+        {"text": "Rendered text contains no inline Markdown markers.", "list": "bullet"},
+        {"text": "Lists, links, headings, and the existing status options remain usable.", "list": "bullet"},
+        {"text": "Changing plan length never requires hand-editing offsets.", "list": "bullet"}
+      ]
+    },
+    {
+      "heading": "Revision history",
+      "paragraphs": ["Initial draft submitted for review."]
+    }
+  ]
+}
