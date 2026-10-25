@@ -1,3 +1,4 @@
+import PhoneTable from './PhoneTable.jsx';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
 import Icon from './Icon.jsx';
@@ -295,7 +296,7 @@ export default function Indices() {
     {page && <div className="collection-table-card">
       <div className="table-heading"><h3>Index catalogue</h3><span className="table-scroll-hint">Scroll for more →</span></div>
       <div className="acquired-table-scroll" role="region" aria-label="Index market data" tabIndex={0}>
-        <table className="acquired-table"><caption className="sr-only">Indices, metadata, downloaded history and acquisition status</caption>
+        <PhoneTable className="acquired-table"><caption className="sr-only">Indices, metadata, downloaded history and acquisition status</caption>
           <thead><tr><th scope="col">Index</th><th scope="col">Currency / variant</th><th scope="col">Identity</th><th scope="col">Saved quotes</th><th scope="col">Market data</th></tr></thead>
           <tbody>{page.items.map((item) => <tr key={item.instrument_id}>
             <th scope="row"><a href={`#/indices/${encodeURIComponent(item.instrument_id)}`}>{item.name}</a><span className="muted">{item.symbol} · Yahoo Finance</span></th>
@@ -315,7 +316,7 @@ export default function Indices() {
               {item.acquisition?.warning && <span className="muted">{item.acquisition.warning}</span>}
             </td>
           </tr>)}</tbody>
-        </table>
+        </PhoneTable>
       </div>
       {!page.items.length && <p>No indices on this page. Add an index to get started.</p>}
       <div className="section-heading acquired-pagination"><p>{page.total} indices · page {Math.floor(offset / PAGE_SIZE) + 1}</p>

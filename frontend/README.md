@@ -56,6 +56,20 @@ make no market-data provider calls; typing at least two characters in the add fo
 explicitly searches Yahoo after a 350 ms pause. Search never downloads price history. This first scope does not enable benchmarks or ETF
 proxy assignments, and the starter list is not a complete global directory.
 
+## Responsive tables
+
+`PhoneTable` keeps one native table tree and derives phone labels from its rendered
+column headings, including dynamic headings and spans. At widths up to 600px,
+rows become labeled cards with full-width row identities, actions and long prose.
+At 601px and above, existing table layouts remain unchanged. The acquired ETF
+inventory retains its existing specialized cards and statistic grouping.
+
+Keep real captions, header scopes and stable row keys. The helper adds explicit
+roles and unique column/row header associations; visual labels are aria-hidden,
+while clipped column headings remain in the accessibility tree. Do not duplicate
+mobile/desktop data trees or reorder focusable cells with CSS. Revalidate both
+sides of the breakpoint and screen-reader table navigation when changing styles.
+
 ## Build
 
 From `frontend/`:
