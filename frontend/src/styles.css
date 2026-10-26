@@ -650,6 +650,22 @@ main.login-page { display: grid; grid-template-columns: 1fr 1fr; width: min(calc
   .phone-table tbody .goal-progress-bar { margin-left: 0; }
 }
 
+.portfolio-recommendations { margin-block: 1.5rem; }
+.recommendation-list { display: grid; gap: 0.75rem; padding: 0; list-style: none; }
+.recommendation-list > li { display: grid; gap: 0.5rem; padding: 1rem; border: 1px solid var(--line); border-radius: var(--radius); overflow-wrap: anywhere; }
+.recommendation-list button { justify-self: start; }
+.recommendation-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 1rem; background: rgb(0 0 0 / 40%); }
+.recommendation-dialog { width: min(52rem, 100%); max-height: 90dvh; overflow-y: auto; padding: 1.5rem; background: white; border-radius: var(--radius); box-shadow: 0 1rem 4rem rgb(0 0 0 / 20%); }
+.recommendation-review-action { padding-block: 0.75rem; border-bottom: 1px solid var(--line); }
+.recommendation-dialog .goal-fields > label { min-width: 0; }
+.recommendation-dialog input { width: 100%; }
+@media (max-width: 600px) {
+  .recommendation-backdrop { padding: 0.5rem; }
+  .recommendation-dialog { padding: 1rem; max-height: 95dvh; }
+  .portfolio-recommendations .section-heading { flex-wrap: wrap; }
+  .recommendation-dialog button, .recommendation-list button { min-height: 44px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
 }

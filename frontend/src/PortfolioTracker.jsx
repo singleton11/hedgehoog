@@ -7,6 +7,7 @@ import Icon from './Icon.jsx';
 import DegiroImport from './DegiroImport.jsx';
 import PortfolioPerformance from './PortfolioPerformance.jsx';
 import PortfolioPlanTracking from './PortfolioPlanTracking.jsx';
+import PortfolioRecommendations, { clearRecommendationRecovery } from './PortfolioRecommendations.jsx';
 import { formatEuros as formatExactEuros } from './goalProjection.js';
 
 const PAGE_SIZE = 20;
@@ -480,7 +481,7 @@ function Transactions({ request, path, revision, onRemoved }) {
     </>}</>}
   </section>;
 }
-function PortfolioDetail({ request, customerId, portfolioId, plans }) {
+function PortfolioDetail({ request, customerId, portfolioId, plans, recoveryScope }) {
   const [revision, setRevision] = useState(0);
   const [tab, setTab] = useState('positions');
   const [performance, setPerformance] = useState(null);
@@ -511,6 +512,8 @@ function PortfolioDetail({ request, customerId, portfolioId, plans }) {
       <Summary data={resource.data} performance={performance?.request === request && performance.portfolioPath === path && performance.revision === revision ? performance.summary : null} />
       {!resource.loading && !resource.error && <PortfolioPlanTracking request={request} portfolioPath={path} planId={resource.data.portfolio.plan_id} revision={revision}
         equity={resource.data.equity_eur} target={plans.data?.find((plan) => plan.id === resource.data.portfolio.plan_id)?.inputs?.goal_eur} />}
+      {!resource.loading && !resource.error && <PortfolioRecommendations request={request} portfolioPath={path} planId={resource.data.portfolio.plan_id}
+        revision={revision} recoveryScope={recoveryScope} onRefresh={refresh} />}
       <div className="portfolio-section-controls">
         <div className="portfolio-tabs" role="tablist" aria-label="Portfolio sections" onKeyDown={tabKey}>
           {['positions', 'transactions', 'performance'].map((value) => <button key={value} id={`portfolio-${value}-tab`} type="button" role="tab" aria-selected={tab === value} aria-controls={`portfolio-${value}-panel`} tabIndex={tab === value ? 0 : -1} onClick={() => setTab(value)}>{value === 'positions' ? 'Positions' : value === 'transactions' ? 'Transactions' : 'Performance'}</button>)}
@@ -531,7 +534,7 @@ function PortfolioDetail({ request, customerId, portfolioId, plans }) {
     </>}
   </>;
 }
-function PortfolioPage({ request, customerId, portfolioId, isin }) {
+function PortfolioPage({ request, customerId, portfolioId, isin, recoveryScope }) {
   const customer = useRead(request, customerPath(customerId));
   const plans = useRead(request, `${customerPath(customerId)}/plans`, { all: true, validate: validPlan });
   const validCustomer = customer.data?.id === customerId && text(customer.data?.name);
@@ -541,7 +544,7 @@ function PortfolioPage({ request, customerId, portfolioId, isin }) {
         <a href={portfoliosRoute(customerId)}>Portfolios</a></>}
     </nav>
     <ReadStatus resource={customer} label="customer" invalid={!validCustomer} />
-    {validCustomer && (portfolioId ? <PortfolioDetail request={request} customerId={customerId} portfolioId={portfolioId} plans={plans} /> : <>
+    {validCustomer && (portfolioId ? <PortfolioDetail request={request} customerId={customerId} portfolioId={portfolioId} plans={plans} recoveryScope={recoveryScope} /> : <>
       <CustomerTabs customer={customer.data} active="portfolios" isin={isin} />
       <PortfolioList request={request} customerId={customerId} plans={plans} />
     </>)}
@@ -550,10 +553,23 @@ function PortfolioPage({ request, customerId, portfolioId, isin }) {
 export default function PortfolioTracker({ customerId, portfolioId, isin }) {
   const { request, user, status } = useAuth();
   const [identity, setIdentity] = useState({ request, version: 0 });
-  if (identity.request !== request) setIdentity({ request, version: identity.version + 1 });
+  if (identity.request !== request) {
+    clearRecommendationRecovery();
+    setIdentity({ request, version: identity.version + 1 });
+  }
+  useEffect(() => {
+    if (status !== 'authenticated' && status !== 'checking') clearRecommendationRecovery();
+    if (status === 'authenticated') {
+      try {
+        const owner = sessionStorage.getItem('portfolio-recommendation-owner');
+        if (owner && owner !== user?.id) clearRecommendationRecovery();
+        sessionStorage.setItem('portfolio-recommendation-owner', user?.id || '');
+      } catch { /* The review flow reports unavailable retry storage before submitting. */ }
+    }
+  }, [status, user?.id]);
   const key = JSON.stringify([customerId, portfolioId, isin, user?.id, status, identity.version]);
   // Remount the entire route on auth/request changes; cleanup aborts reads and writes.
   if (status !== 'authenticated') return <p role="status">Sign in to view portfolios.</p>;
   if (!identifier(customerId) || (portfolioId && !identifier(portfolioId))) return <p role="alert">Portfolio not found.</p>;
-  return <PortfolioPage key={key} request={request} customerId={customerId} portfolioId={portfolioId} isin={isin} />;
+  return <PortfolioPage key={key} request={request} customerId={customerId} portfolioId={portfolioId} isin={isin} recoveryScope={user?.id} />;
 }

@@ -27,6 +27,76 @@ name to open its ledger. Net worth is that portfolio's cash plus holdings.
 Summary PnL follows the customer accounting below, calculated separately for each
 portfolio (including its own saved-close interval); it is not live market data.
 
+## Plan recommendations
+
+The **Recommendations** panel compares the linked immutable saved plan with this
+portfolio. It keeps three questions separate: whether scheduled funding has been
+recorded, whether holdings match the strategy allocation, and whether the existing
+plan forecast reaches the target probability. Correcting allocation does not
+promise to repair a forecast shortfall or guarantee a goal.
+
+Funding due on UTC date `D` is the saved starting capital, once the simulation
+origin is reached, plus the saved monthly contribution for each saved payment date
+on or before `D`. Future installments are not due. Net funding is active deposits
+minus withdrawals through `D`, including activity before plan assignment. Gains,
+losses and sale proceeds are not contributions. The funding gap is
+`max(0, due - net funding)`; market losses alone never create a deposit debt.
+Each portfolio uses the whole linked plan independently. Editing the original
+goal does not change these saved inputs.
+
+Recommendations use strategy-provided weighted instrument/cash targets. Available
+cash and scheduled contributions reduce underweight positions before sales are
+considered. Remaining material drift can produce an ordered deposit, sell, buy
+group, including sales of off-target holdings. Allocation-driven rebalancing uses
+these versioned defaults, with stricter strategy constraints taking precedence:
+
+- Maximum absolute weight deviation at least **5 percentage points**.
+- At least **30 UTC calendar days** since the last recommendation rebalance.
+- Each rebalance trade at least **EUR 25** gross.
+- Total commissions at most **1%** of gross rebalance turnover.
+
+Equality qualifies. Scheduled-contribution purchases are not held back by the
+rebalance cooldown. Removal of transactions does not reset rebalance history.
+Suppressed groups show their cost, threshold or cooldown reason; there is no force
+bypass. Quantities floor to eight decimal places and settlements round half-up to
+cents. Fees reduce sale proceeds and purchase budgets; residual cash is shown.
+Incomplete valuations, unsupported strategies, missing or mismatched listings and
+invalid saved schedules have explicit blocked/unavailable states, not an implied
+aligned portfolio. Before the saved origin and at or beyond its deadline no
+corrective actions are offered.
+
+Choose **Fulfill** for one eligible action or **Fulfill all** for the eligible
+group. Review the preview before confirming. Every trade starts with its latest
+suitable saved raw EUR last/close, showing the listing, source and date. Derived,
+stale, invalid or foreign-currency marks are not default trade prices. A raw
+close is suitable for the default only within seven UTC calendar days; the
+policy and price provenance are bound to the review token. Where the listing is
+otherwise eligible, supply a positive price override if needed.
+Prices, quantities and per-trade commissions are editable; commissions explicitly
+default to **EUR 0**. Changes require a refreshed preview and must still satisfy
+funding, holdings, dependency and cost rules. Every trade required by a rebalance
+group contributes to its fee cap, including a cash-funded purchase in that group.
+The edited batch must improve maximum allocation drift over the cash/contribution
+purchases alone; reducing buy quantities cannot turn a correction into a worse
+allocation and still start the cooldown. A purchase cannot silently include
+an unselected prerequisite deposit or sale.
+
+Fulfillment records transactions in the Hedgehoog ledger; it does not connect to
+a bank or broker. The server appends the reviewed deposit/sell/buy batch atomically,
+replaying the whole ledger and guarding portfolio revision, plan, UTC date,
+market/listing evidence and policy. A stale preview requires fresh review; a
+failed batch records no partial transactions or cooldown. GET and preview do not
+write ledger activity or download prices. Successful fulfillment refreshes
+balances, positions, history, performance, plan tracking and recommendations.
+
+An operation UUID and durable receipt protect uncertain-response retries. Retry
+the same reviewed operation rather than starting another one: identical retries
+return the original result even after later edits or transaction removal; changed
+inputs under that UUID conflict, and removed transactions are not resurrected.
+Receipts remain bounded by the existing lifetime transaction budget. Manual
+transactions and broker imports retain their own semantics and are not matched
+against recommendation operation IDs.
+
 ## Manual ledger
 
 The detail view has **Positions** and **Transactions** tabs with the same portfolio
@@ -362,6 +432,9 @@ protection. Browser requests use the `/api` prefix.
 | `GET /customers/{cid}/portfolios/{pid}` | Metadata, balances, positions, PnL and warnings |
 | `GET /customers/{cid}/portfolios/{pid}/performance?benchmark_id=idx-UUID` | Read-only cumulative daily TWR and optional saved index comparison; omit `benchmark_id` for TWR only |
 | `PATCH /customers/{cid}/portfolios/{pid}` | `{name, plan_id?: string|null}`; null/omission detaches plan |
+| `GET /customers/{cid}/portfolios/{pid}/recommendations` | Read-only funding, weighted targets, ordered actions, blockers, effective policy and `snapshot_token`; forecast remains on `/plan-tracking` |
+| `POST /customers/{cid}/portfolios/{pid}/recommendations/preview` | `{snapshot_token, action_ids, date, overrides?}`; read-only normalized entries, prices/fees, projected balances and `preview_token` |
+| `POST /customers/{cid}/portfolios/{pid}/recommendations/fulfill` | Same reviewed fields plus `{operation_id: UUID, preview_token}`; atomic ledger append and durable receipt, or original response on an identical retry |
 | `GET /customers/{cid}/portfolios/{pid}/transactions?limit=20&offset=0` | Ledger newest date/entry first |
 | `POST /customers/{cid}/portfolios/{pid}/transactions` | Append a validated transaction |
 | `DELETE /customers/{cid}/portfolios/{pid}/transactions/{tid}` | Remove one entry after validating the remaining timeline; returns `{id, removed: true}` |
