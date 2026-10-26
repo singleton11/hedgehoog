@@ -25,6 +25,39 @@ Never self-approve, infer approval from silence or resolved comments, or start
 implementation before reading `ready for implementation` from the live document.
 Missing, duplicated, malformed, or unknown workflow status means stop and ask.
 
+## Automated GitHub Comment Routing
+
+Follow `docs/automation-comment-routing.md` for plan announcements, revision
+updates, approval records, questions, and blockers posted to GitHub. Use only
+`hub.reply` (also exposed as `hub_reply`) with this arrival's `executionId` and
+`content`, after verifying the provider-native reply target is the exact issue
+(repository, number, and issue kind). Hub cannot choose an arbitrary target.
+Manual monitor/Telegram continuations and cross-target requests fail closed
+unless a separately reviewed supported route exists; do not use personal gh
+comment writes, switch accounts, or assume an installation token is a fallback.
+Report unavailable routing locally and leave dependent handoffs blocked.
+
+Use durable markers: `<!-- paseo-plan:v1:ISSUE_NUMBER -->` for announcement,
+`<!-- paseo-plan-revision:v1:DOCUMENT_ID:REVISION_ID -->` for revision,
+`<!-- paseo-plan-approved:v1:DOCUMENT_ID:REVISION_ID -->` for approval, and
+`<!-- paseo-plan-blocked:v1:ISSUE_NUMBER:DECISION_KEY -->` for a blocker.
+Keep the same marker on retries. Under the existing task lock, record delivery
+intent, paginate all comments, and reuse only a matching bot-authored marker with
+the intended document URL/revision/status. Conflicting or stale records require
+reconciliation, not a duplicate or an unsupported update. On uncertain delivery,
+read back before any retry; never blindly resend. Read back through GitHub REST
+on the exact issue, requiring `user.login == "demik-paseo-bot[bot]"` and
+`user.type == "Bot"`, exact marker, URL, and intended revision/status. Retain the
+comment ID/URL durably. A successful Hub call is not proof of persistence.
+Personal-authored historical comments are not bot evidence; leave them untouched.
+
+This policy does not authorize new labels or implementation. Preserve live
+Google Docs approval, registration, and existing lock/lifecycle gates. A required
+approval-record comment must be verified before a dependent label handoff; an
+unavailable manual reply route is a blocker, not permission to skip the record.
+These are repository instructions only; staged adapter changes and explicit
+operator authorization are required before deployment.
+
 ## 1. Prepare And Draft
 
 1. Read repository instructions and inspect relevant code/tests without changing
