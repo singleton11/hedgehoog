@@ -1,16 +1,8 @@
 --- a/verify_event.py
 +++ b/verify_event.py
-@@ -1,5 +1,6 @@
- #!/usr/bin/env python3
- """Validate a Hub input against the durable receiver outbox, without network I/O."""
+@@ -2,0 +3 @@
 +import hashlib
- import json
- from pathlib import Path
- import re
-@@ -7,21 +8,97 @@
- import sys
- 
- ROOT = Path.home() / '.local/state/paseo-telegram-attention'
+@@ -9,0 +11,78 @@
 +BOT = '8848707126'
 +USER = 169270756
 +INPUT_FIX_SUFFIX = ':input-fix-v1'
@@ -82,21 +74,17 @@
 +                                (BOT, event['question_id'])).fetchone()
 +    if prompt is None:
 +        raise ValueError('callback prompt missing')
-+    options = json.loads(prompt[0]).get('options', [])
++    stored_prompt = json.loads(prompt[0])
++    if not isinstance(stored_prompt, dict) or stored_prompt.get('context_url') != context['issue_url']:
++        raise ValueError('callback prompt task mismatch')
++    options = stored_prompt.get('options', [])
 +    matches = [item for item in options if isinstance(item, dict) and item.get('id') == option[0]]
 +    if len(matches) != 1 or matches[0].get('label') != option[1] or matches[0].get('description') != option[2]:
 +        raise ValueError('callback prompt mapping mismatch')
- 
- 
- def verify(event, connection):
-     if not isinstance(event, dict):
-         raise ValueError('event must be an object')
-     row = connection.execute(
+@@ -16 +95 @@
 -        "SELECT event,status FROM outbox WHERE bot=? AND question=?",
 +        'SELECT event,status FROM outbox WHERE bot=? AND question=?',
-         (event.get('bot_id'), event.get('question_id')),
-     ).fetchone()
-     persisted = json.loads(row[0]) if row is not None else None
+@@ -20,5 +99,6 @@
 -    event_matches = persisted == event
 -    if (not event_matches and persisted is not None and row[1] == 'accepted'
 -            and event.get('delivery_key') == persisted.get('delivery_key') + ':input-fix-v1'):
@@ -108,13 +96,7 @@
 +            and event.get('delivery_key') == persisted['delivery_key'] + INPUT_FIX_SUFFIX):
 +        normalized = {**event, 'delivery_key': persisted['delivery_key']}
 +    if row is None or row[1] not in ('pending', 'accepted') or canonical(normalized) != canonical(persisted):
-         raise ValueError('event does not match a dispatchable durable outbox row')
-     context = event.get('context', {})
-     if context.get('repository') != 'singleton11/hedgehoog':
-@@ -29,16 +106,23 @@
-     url = context.get('issue_url', '')
-     if not re.fullmatch(r'https://github\.com/singleton11/hedgehoog/issues/[1-9][0-9]*', url):
-         raise ValueError('an allowlisted issue URL is required')
+@@ -32,10 +112,17 @@
 -    pending = event['pending']
 -    reply = event['reply']
 -    if (pending.get('user_id') != 169270756 or pending.get('chat_id') != 169270756
@@ -142,6 +124,3 @@
 +                or reply.get('reply_to_message', {}).get('message_id') != pending.get('message_id')
 +                or not isinstance(reply.get('text'), str) or not reply['text'].strip()):
 +            raise ValueError('reply identity mismatch')
-     return event
- 
- 

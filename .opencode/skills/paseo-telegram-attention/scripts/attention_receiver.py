@@ -492,8 +492,9 @@ def manual_adapter(environ, http=json_http):
     token, project, trigger, actor = (required(k) for k in ('HUB_TOKEN', 'PROJECT', 'TRIGGER', 'ACTOR'))
 
     def dispatch(event):
+        # The original Hub renders only string input into the successor prompt.
         payload = {'projectSlug': project, 'trigger': trigger, 'actor': actor,
-                   'deliveryKey': event['delivery_key'], 'input': event}
+                   'deliveryKey': event['delivery_key'], 'input': json.dumps(event, separators=(',', ':'))}
         receipt = http(origin.rstrip('/') + '/api/v1/manual-runs', payload, bearer=token)
         if (not isinstance(receipt, dict) or receipt.get('deliveryKey') != event['delivery_key']
                 or receipt.get('configuredTriggerName') != trigger

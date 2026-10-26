@@ -79,7 +79,10 @@ def verify_callback(event, connection):
                                 (BOT, event['question_id'])).fetchone()
     if prompt is None:
         raise ValueError('callback prompt missing')
-    options = json.loads(prompt[0]).get('options', [])
+    stored_prompt = json.loads(prompt[0])
+    if not isinstance(stored_prompt, dict) or stored_prompt.get('context_url') != context['issue_url']:
+        raise ValueError('callback prompt task mismatch')
+    options = stored_prompt.get('options', [])
     matches = [item for item in options if isinstance(item, dict) and item.get('id') == option[0]]
     if len(matches) != 1 or matches[0].get('label') != option[1] or matches[0].get('description') != option[2]:
         raise ValueError('callback prompt mapping mismatch')

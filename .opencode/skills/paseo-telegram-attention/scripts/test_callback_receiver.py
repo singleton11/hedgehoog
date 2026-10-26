@@ -50,6 +50,32 @@ class CallbackTests(unittest.TestCase):
                 self.assertNotIn('reply', event)
                 self.assertEqual(store.db.execute('SELECT count(*) FROM ui_tasks').fetchone()[0], 2)
 
+    def test_callback_transport_preserves_original_hub_prompt_and_event(self):
+        import json
+        store = self.store()
+        self.reserve_prompt(store)
+        store.ingest([self.callback(option='decline')])
+        event = store.ready(0)[0]
+        before = list(store.db.iterdump())
+        env = {'PASEO_ATTENTION_HUB_ORIGIN': 'https://hub.invalid',
+               'PASEO_ATTENTION_HUB_TOKEN': 'secret', 'PASEO_ATTENTION_PROJECT': 'hedgehoog',
+               'PASEO_ATTENTION_TRIGGER': 'attention-resume', 'PASEO_ATTENTION_ACTOR': 'attention'}
+        calls = []
+
+        def http(url, payload, bearer=None):
+            calls.append(payload)
+            return {'deliveryKey': payload['deliveryKey'], 'configuredTriggerName': 'attention-resume',
+                    'triggerRunId': 'run', 'providerEventReceiptId': 'receipt', 'workflowStatus': 'running'}
+
+        self.r.manual_adapter(env, http)(event)
+        # The original Hub's manual provider uses string input as paseo.prompt.
+        prompt = calls[0]['input'] if isinstance(calls[0]['input'], str) else ''
+        self.assertIsInstance(calls[0]['input'], str)
+        self.assertEqual(json.loads(prompt), event)
+        self.assertEqual(json.loads(prompt)['question_id'], event['question_id'])
+        self.assertEqual(json.loads(prompt)['delivery_key'], event['delivery_key'])
+        self.assertEqual(list(store.db.iterdump()), before)
+
     def test_forgery_malformed_stale_and_inaccessible_callbacks(self):
         store = self.store()
         self.reserve_prompt(store)

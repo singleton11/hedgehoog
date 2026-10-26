@@ -65,6 +65,22 @@ class VerifierTests(unittest.TestCase):
         self.assertEqual(event['answer']['text'], 'Do not implement.')
         self.assertNotIn('reply', event)
 
+    def assert_prompt_target_rejected(self, context_url):
+        self.prompt['context_url'] = context_url
+        event = self.callback_event()
+        before = list(self.store.db.iterdump())
+        with self.assertRaises(ValueError):
+            verifier.verify(event, self.store.db)
+        with self.assertRaises(ValueError):
+            by_key.load_verified(self.store.db, 'q42', event['delivery_key'])
+        self.assertEqual(list(self.store.db.iterdump()), before)
+
+    def test_callback_prompt_context_issue_mismatch(self):
+        self.assert_prompt_target_rejected('https://github.com/singleton11/hedgehoog/issues/31')
+
+    def test_callback_prompt_context_pr_mismatch(self):
+        self.assert_prompt_target_rejected('https://github.com/singleton11/hedgehoog/pull/42')
+
     def test_caller_mutations_rejected_by_canonical_equality(self):
         event = self.callback_event()
         for field, value in [('schema_version', True), ('answer', {'text': 'approve'}),

@@ -1,13 +1,9 @@
 --- a/verify_event_by_key.py
 +++ b/verify_event_by_key.py
-@@ -5,32 +5,41 @@
- import sqlite3
- import sys
- 
+@@ -8 +8 @@
 -from verify_event import verify
 +from verify_event import BOT, INPUT_FIX_SUFFIX, verify
- 
- ROOT = Path.home() / '.local/state/paseo-telegram-attention'
+@@ -10,0 +11,17 @@
 +
 +
 +def load_verified(connection, question_id, delivery_key):
@@ -25,15 +21,10 @@
 +            raise ValueError('delivery key does not match durable outbox')
 +        event = {**event, 'delivery_key': delivery_key}
 +    return verify(event, connection)
- 
- 
- def main():
-     if len(sys.argv) != 3:
-         print('usage: verify_event_by_key.py QUESTION_ID DELIVERY_KEY', file=sys.stderr)
-         return 2
+@@ -17,2 +33,0 @@
 -    question_id, delivery_key = sys.argv[1:]
 -    connection = sqlite3.connect(f'file:{ROOT / "attention.sqlite3"}?mode=ro', uri=True)
-     try:
+@@ -20,9 +35,5 @@
 -        row = connection.execute(
 -            'SELECT event,status FROM outbox WHERE question=?', (question_id,)
 -        ).fetchone()
@@ -48,11 +39,6 @@
 +            event = load_verified(connection, *sys.argv[1:])
 +        finally:
 +            connection.close()
-     except Exception:
-         print('attention event rejected; inspect durable state, do not mutate the task', file=sys.stderr)
-         return 1
+@@ -32,2 +42,0 @@
 -    finally:
 -        connection.close()
-     print(json.dumps({'verified': True, 'event': event}, separators=(',', ':')))
-     return 0
- 

@@ -11,7 +11,10 @@ This is a reviewable repository bundle, not a deployment. Implementation approva
 DOES NOT authorize global skill/service changes, receiver restarts, production
 reply consumption, or live test messages. Request explicit operator authorization
 for rollout and separate permission for live tests. Do not claim the issue's live
-symptoms are resolved from these offline checks.
+symptoms are resolved from these offline checks. Offline code validation and PR
+review do not require deployment or live mutations; record rollout and live
+acceptance separately as pending operator work, not as failures of the offline
+checks. The PR must still meet its independent validation and evidence gates.
 
 Reviewed upstream baseline: `ae984ab` (includes native Docs formatting, Telegram
 prompts/callback routing, and classifier bot identity). Reuse those implementations;

@@ -138,7 +138,9 @@ class DurableTests(unittest.TestCase):
         adapter = self.r.manual_adapter(env, http)
         self.assertEqual(adapter(event)['workflowStatus'], 'running')
         self.assertEqual(calls[0][1]['deliveryKey'], event['delivery_key'])
-        self.assertEqual(calls[0][1]['input'], event)
+        self.assertIsInstance(calls[0][1]['input'], str)
+        self.assertEqual(json.loads(calls[0][1]['input']), event)
+        self.assertEqual(calls[0][1]['input'], json.dumps(event, separators=(',', ':')))
         env['PASEO_ATTENTION_HUB_ORIGIN'] = 'https://user:secret@hub.invalid'
         with self.assertRaises(self.r.AttentionError):
             self.r.manual_adapter(env, http)
