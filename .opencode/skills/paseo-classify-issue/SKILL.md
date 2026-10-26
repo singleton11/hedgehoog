@@ -49,7 +49,7 @@ If registry inspection fails, report a blocker rather than classifying as ready.
 
 For a new decision, compose one short rationale with marker
 `<!-- paseo-classification:v1:ISSUE_NUMBER -->`, naming the selected label and
-scope/uncertainties. Use real newlines, not literal `\\n` sequences.
+scope/uncertainties. Use real newlines, not literal `\n` sequences.
 
 Post the rationale ONLY through Hub's `hub.reply` tool (exposed in some sessions
 as `hub_reply`), passing this arrival's `executionId` and the rationale as
@@ -66,9 +66,12 @@ untouched and post one bot-authored rationale if no bot-authored marker exists.
 After posting (or reusing), read back the persisted comment through GitHub and
 require the exact marker and intended route on the verified issue. For REST
 comments require `user.login == "demik-paseo-bot[bot]"` and `user.type == "Bot"`;
-GraphQL/gh issue-view may normalize the login to `demik-paseo-bot`, so require
-`__typename == "Bot"` when verifying through GraphQL instead. Never accept a
-human account solely because its display name resembles the bot. A successful tool call alone is not proof of authorship.
+GraphQL/gh issue-view may normalize the login, so require both
+`author.login == "demik-paseo-bot"` and `author.__typename == "Bot"` when
+verifying through GraphQL instead. If gh issue-view omits the type, query the
+REST or GraphQL API explicitly. Another bot's matching marker is not evidence.
+Never accept a human account solely because its display name resembles the bot.
+A successful tool call alone is not proof of authorship.
 If Hub reply is unavailable, delivery fails, authorship/route cannot be verified,
 or the marker has conflicting bot-authored routes, stop and report a blocker
 without adding a routing label. On an uncertain delivery, re-read comments before

@@ -17,7 +17,9 @@ class ClassifierSkillTests(unittest.TestCase):
             "hub.reply", "hub_reply", "executionId", "demik-paseo-bot",
             "read back the persisted comment", "exact marker and intended route",
             'user.login == "demik-paseo-bot[bot]"', 'user.type == "Bot"',
-            '__typename == "Bot"',
+            'author.login == "demik-paseo-bot"', 'author.__typename == "Bot"',
+            "Another bot's matching marker is not evidence",
+            "If gh issue-view omits the type",
         ):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, self.text)
