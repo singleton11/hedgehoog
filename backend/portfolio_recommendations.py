@@ -209,6 +209,7 @@ def compute_actions(funding, weights, cash, positions, market, policy, today, es
         suppress.append("Rebalance cooldown is active.")
 
     def trade(kind, isin, amount, rebal, dependencies, suffix):
+        amount = amount.quantize(ledger.CENT, rounding=ROUND_DOWN)
         if amount < Decimal("0.01"):
             return
         mark = market[isin]
@@ -230,6 +231,15 @@ def compute_actions(funding, weights, cash, positions, market, policy, today, es
         if rebalance:
             trade("sell", isin, amount, True, [], "rebalance")
     sale_ids = [a["id"] for a in actions if a["type"] == "sell"]
+    # Dependent buys can spend only executable, cent-settled sale proceeds.
+    # Reserve fees and the cash target before distributing the remaining budget.
+    sale_proceeds = sum(((Decimal(a["quantity"]) * Decimal(a["price_eur"])).quantize(
+        ledger.CENT, rounding=ROUND_HALF_UP) for a in actions if a["type"] == "sell"), ZERO)
+    sale_budget = max(ZERO, cash + gap + sale_proceeds - estimated_fees
+                      - investable * weights.get(None, ZERO) - sum(first_buys.values(), ZERO))
+    total_residual = sum(residual.values(), ZERO)
+    if total_residual > sale_budget:
+        residual = {isin: amount * sale_budget / total_residual for isin, amount in residual.items()}
     for isin in all_isins:
         # Cash/contribution buys remain independently eligible during cooldown.
         deps = ["deposit"] if gap else []

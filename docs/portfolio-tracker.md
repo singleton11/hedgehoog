@@ -93,6 +93,11 @@ An operation UUID and durable receipt protect uncertain-response retries. Retry
 the same reviewed operation rather than starting another one: identical retries
 return the original result even after later edits or transaction removal; changed
 inputs under that UUID conflict, and removed transactions are not resurrected.
+The browser retains uncertain requests for the same authenticated session across
+refresh/navigation; sign-out, authentication expiry or signing in clears local
+recovery details to prevent cross-session disclosure. Server receipts still retain
+the original outcome, but automatic browser retry recovery is unavailable after
+that session boundary.
 Receipts remain bounded by the existing lifetime transaction budget. Manual
 transactions and broker imports retain their own semantics and are not matched
 against recommendation operation IDs.

@@ -23,7 +23,11 @@ function api({ read = snapshot, previewResult = preview, commit } = {}) {
     return read;
   });
 }
-async function openAll() { fireEvent.click(await screen.findByRole('button', { name: 'Fulfill all' })); }
+async function openAll() {
+  const button = await screen.findByRole('button', { name: 'Fulfill all' });
+  await waitFor(() => expect(button).toBeEnabled());
+  fireEvent.click(button);
+}
 async function review() { fireEvent.click(screen.getByRole('button', { name: 'Preview transactions' })); await screen.findByRole('button', { name: 'Confirm fulfillment' }); }
 beforeEach(() => { sessionStorage.clear(); });
 afterEach(() => { vi.restoreAllMocks(); });
@@ -465,6 +469,27 @@ describe('Recommendation error handling and review details', () => {
     expect(first).toHaveFocus();
     fireEvent.keyDown(first, { key: 'Tab' });
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+  it.each(['preview', 'fulfill'])('traps both Tab directions when %s disables every control', async (stage) => {
+    const pending = deferred();
+    const request = vi.fn((path) => {
+      if (path.endsWith(`/${stage}`)) return pending.promise;
+      if (path.endsWith('/preview')) return Promise.resolve(preview);
+      return Promise.resolve(snapshot);
+    });
+    render(<PortfolioRecommendations {...props} request={request} onRefresh={vi.fn()} />);
+    await openAll();
+    if (stage === 'fulfill') await review();
+    fireEvent.click(screen.getByRole('button', { name: stage === 'preview' ? 'Preview transactions' : 'Confirm fulfillment' }));
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.querySelectorAll('button:not(:disabled), input:not(:disabled)')).toHaveLength(0);
+    for (const shiftKey of [false, true]) {
+      const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+      fireEvent(dialog, event);
+      expect(event.defaultPrevented).toBe(true);
+      expect(dialog).toHaveFocus();
+    }
+    await act(async () => pending.reject(new Error('Request failed')));
   });
   it('keeps the pending review open when Escape is pressed, then permits closing after a failure', async () => {
     const pending = deferred();

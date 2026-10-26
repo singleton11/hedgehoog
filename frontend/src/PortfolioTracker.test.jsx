@@ -98,6 +98,38 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); window.history.replaceState(null, '', '#/'); });
 
+describe('recommendation fulfillment refresh', () => {
+  it('preserves and focuses the success confirmation after the detail refresh', async () => {
+    sessionStorage.clear();
+    const server = mockServer(), refreshed = deferred();
+    server.details.set(pid, snapshot(metadata({ plan_id: goal.id })));
+    const handle = server.handle;
+    let fulfilled = false;
+    request.mockImplementation((path, options) => {
+      if (path.endsWith('/recommendations/preview')) return Promise.resolve({ preview_token: 'preview', entries: [{ type: 'deposit', amount_eur: '100.00', date: '2026-09-24' }] });
+      if (path.endsWith('/recommendations/fulfill')) {
+        fulfilled = true;
+        return Promise.resolve({ operation_id: options.body.operation_id, event_ids: ['event'] });
+      }
+      if (path.endsWith('/recommendations')) return Promise.resolve({ plan_id: goal.id, snapshot_token: 'snapshot', date: '2026-09-24', status: 'ready', targets: [], actions: [{ id: 'deposit', type: 'deposit', amount_eur: '100.00', eligible: true }] });
+      if (path === detailPath && fulfilled) return refreshed.promise;
+      return handle(path, options);
+    });
+    await open();
+    fireEvent.click(screen.getByRole('button', { name: 'Fulfill all' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Preview transactions' }));
+    await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm fulfillment' }));
+    await flush();
+    expect(screen.getByText('Refreshing portfolio…')).toBeInTheDocument();
+    expect(screen.getByText('Recommendations fulfilled.')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await act(async () => refreshed.resolve(snapshot(metadata({ plan_id: goal.id, revision: 1 }))));
+    expect(screen.getByText('Recommendations fulfilled.')).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Fulfill all' })).toBeInTheDocument();
+  });
+});
+
 describe('portfolio routes, creation and optional goals', () => {
   it('links from existing customer goals with Customers active, creates multiple portfolios and attaches, changes or detaches a goal later', async () => {
     const server = mockServer(); server.portfolios = [];

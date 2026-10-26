@@ -135,6 +135,9 @@ function Recommendations({ request, portfolioPath, planId, revision, recoverySco
     if (event.key === 'Escape' && !busy) { event.preventDefault(); close(); }
     if (event.key === 'Tab') {
       const nodes = [...dialog.current.querySelectorAll('button:not(:disabled), input:not(:disabled)')];
+      if (!nodes.length) {
+        event.preventDefault(); dialog.current.focus(); return;
+      }
       const first = nodes[0], last = nodes.at(-1);
       if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }

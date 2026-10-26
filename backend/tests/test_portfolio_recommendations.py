@@ -640,6 +640,56 @@ def test_commit_rechecks_market_after_rebuilding_preview(tracker, db, monkeypatc
     assert db.portfolios.find_one({"_id": metadata["id"]})["transactions"] == []
 
 
+@pytest.mark.parametrize("price,quantity,initial", [
+    ("1", "100.004", "300.00"),
+    ("10000000.01", "0.00001001", "300.30"),
+])
+@pytest.mark.parametrize("fee", ["0.00", "1.00"])
+def test_multi_sale_buys_use_executable_settlement(tracker, db, monkeypatch, price, quantity, initial, fee):
+    client, cid, metadata, url = tracker
+    second_instrument(db)
+    extra = ["IE00B3XXRP09", "IE00BK5BQT80"]
+    for index, isin in enumerate(extra):
+        listing = {"symbol": f"ROUND{index}", "exchange": "XETR"}
+        db.instrument_state.insert_one({"_id": isin, "listing": listing})
+        db.instruments.insert_one({"instrument_id": isin, **listing, "collected_at": NOW,
+                                   "job_id": "rounding-target", "data": {}})
+        quote(db, NOW.date().isoformat(), "1", isin=isin, listing=listing)
+    sellers = [ISIN, SECOND_ISIN, extra[0]]
+    for isin in sellers:
+        listing = db.instrument_state.find_one({"_id": isin})["listing"]
+        quote(db, NOW.date().isoformat(), price, isin=isin, listing=listing)
+    saved_plan(client, db, cid, metadata, initial=initial, monthly="0")
+    monkeypatch.setitem(STRATEGIES, "buy_and_hold_single_instrument", replace(
+        STRATEGIES["buy_and_hold_single_instrument"], recommendation_targets=lambda *_: {
+            "version": "rounding-target-v1", "targets": [{"instrument_id": extra[1], "weight": "1"}],
+            "supported_actions": ["deposit", "sell", "buy"], "constraints": {},
+        }))
+    record(client, url, cash(amount=initial))
+    for isin in sellers:
+        record(client, url, trade(quantity=quantity, price=price, instrument_id=isin))
+    snapshot = get(client, url)
+    assert len(snapshot["actions"]) == 4
+    assert all(action["eligible"] for action in snapshot["actions"])
+    sell = next(action for action in snapshot["actions"] if action["type"] == "sell")
+    payload, preview = review(client, url, snapshot, overrides={sell["id"]: {"commission_eur": fee}})
+    sales = [entry for entry in preview["entries"] if entry["type"] == "sell"]
+    buy = next(entry for entry in preview["entries"] if entry["type"] == "buy")
+    proceeds = sum(((Decimal(entry["quantity"]) * Decimal(entry["price_eur"])).quantize(
+        rec.ledger.CENT, rounding=rec.ROUND_HALF_UP) for entry in sales), Decimal(0))
+    purchase = (Decimal(buy["quantity"]) * Decimal(buy["price_eur"])).quantize(rec.ledger.CENT)
+    assert purchase == proceeds - Decimal(fee)
+    assert preview["after"]["cash_eur"] == "0.00"
+    assert preview["total_commission_eur"] == fee
+    assert all(Decimal(entry["quantity"]) <= Decimal(quantity) for entry in sales)
+    _, outcome = commit(client, url, payload, preview)
+    assert len(outcome["event_ids"]) == 4
+    document = db.portfolios.find_one({"_id": metadata["id"]})
+    cash_after, _, holdings = rec.ledger.replay(document["transactions"])
+    assert cash_after == 0
+    assert all(position["quantity"] >= 0 for position in holdings.values())
+
+
 @pytest.mark.parametrize("race", ["committed-identical", "revision-conflict"])
 def test_cas_miss_reconciles_receipt_or_requires_new_review(tracker, db, monkeypatch, race):
     from pymongo.results import UpdateResult

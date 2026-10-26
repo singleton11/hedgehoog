@@ -488,6 +488,7 @@ function PortfolioDetail({ request, customerId, portfolioId, plans, recoveryScop
   const [adding, setAdding] = useState(false);
   const [message, setMessage] = useState(null);
   const addButton = useRef(null), wasAdding = useRef(false);
+  const confirmation = useRef(null), focusConfirmation = useRef(false);
   useEffect(() => {
     if (wasAdding.current && !adding) addButton.current?.focus();
     wasAdding.current = adding;
@@ -504,7 +505,15 @@ function PortfolioDetail({ request, customerId, portfolioId, plans, recoveryScop
   const resource = useRead(request, path, { revision });
   const instruments = useRead(request, '/portfolio-instruments', { all: true, validate: validInstrument, itemKey: 'instrument_id' });
   const valid = validDetail(resource.data, customerId, portfolioId);
+  useEffect(() => {
+    if (focusConfirmation.current && !resource.loading) {
+      confirmation.current?.focus(); focusConfirmation.current = false;
+    }
+  }, [resource.loading]);
   const refresh = () => setRevision((value) => value + 1);
+  function recommendationsFulfilled() {
+    setMessage('Recommendations fulfilled.'); focusConfirmation.current = true; refresh();
+  }
   return <>
     <ReadStatus resource={resource} label="portfolio" invalid={!valid} />
     {valid && <>
@@ -513,14 +522,14 @@ function PortfolioDetail({ request, customerId, portfolioId, plans, recoveryScop
       {!resource.loading && !resource.error && <PortfolioPlanTracking request={request} portfolioPath={path} planId={resource.data.portfolio.plan_id} revision={revision}
         equity={resource.data.equity_eur} target={plans.data?.find((plan) => plan.id === resource.data.portfolio.plan_id)?.inputs?.goal_eur} />}
       {!resource.loading && !resource.error && <PortfolioRecommendations request={request} portfolioPath={path} planId={resource.data.portfolio.plan_id}
-        revision={revision} recoveryScope={recoveryScope} onRefresh={refresh} />}
+        revision={revision} recoveryScope={recoveryScope} onRefresh={recommendationsFulfilled} />}
       <div className="portfolio-section-controls">
         <div className="portfolio-tabs" role="tablist" aria-label="Portfolio sections" onKeyDown={tabKey}>
           {['positions', 'transactions', 'performance'].map((value) => <button key={value} id={`portfolio-${value}-tab`} type="button" role="tab" aria-selected={tab === value} aria-controls={`portfolio-${value}-panel`} tabIndex={tab === value ? 0 : -1} onClick={() => setTab(value)}>{value === 'positions' ? 'Positions' : value === 'transactions' ? 'Transactions' : 'Performance'}</button>)}
         </div>
         <button ref={addButton} type="button" disabled={adding} aria-expanded={adding} aria-controls="transaction-entry" onClick={() => { setAdding(true); setMessage(null); }}>Add transaction</button>
       </div>
-      {message && <p role="status">{message}</p>}
+      {message && <p role="status" ref={confirmation} tabIndex={-1}>{message}</p>}
       <TransactionForm request={request} path={`${path}/transactions`} open={adding} onClose={() => setAdding(false)} instruments={instruments} positions={resource.data.positions}
         onSaved={(success) => { setMessage(success); setAdding(false); refresh(); }} disabled={resource.loading || Boolean(resource.error)} />
       <div id="portfolio-performance-panel" role="tabpanel" aria-labelledby="portfolio-performance-tab" tabIndex={0} hidden={tab !== 'performance'}>
