@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "read_only": true,
+  "components": [
+    {
+      "component": "planning:SKILL.md",
+      "source": ".opencode/skills/planning/SKILL.md",
+      "target": ".config/opencode/skills/paseo-planning/references/planning-skill.md",
+      "source_sha256": "01a8b9ea1ae292a6b41d973aff47f21666c017ef9957f4079a1cb032bdc04d49",
+      "installed_sha256": "8ea363e079679dc6a9b4c302a657601adc0a724e8faa095c32d6dc9c28a019db",
+      "state": "stale"
+    },
+    {
+      "component": "planning:references/create-plan.json",
+      "source": ".opencode/skills/planning/references/create-plan.json",
+      "target": ".config/opencode/skills/paseo-planning/references/create-plan.json",
+      "source_sha256": "6974ac156e437f795a816680191a6bcc26acfcab84ba5304d1988fca9d14cd1c",
+      "installed_sha256": "8d3519238c5db9e13795e61cfc9133116609cb01b2a447dfb752101ef7db0ea2",
+      "state": "stale"
+    },
+    {
+      "component": "planning:references/plan-content.json",
+      "source": ".opencode/skills/planning/references/plan-content.json",
+      "target": ".config/opencode/skills/paseo-planning/references/plan-content.json",
+      "source_sha256": "98e1237311bf3c9bc142357f5912ce473241b0cf3858b2f91d3f6d590b386745",
+      "installed_sha256": null,
+      "state": "missing"
+    },
+    {
+      "component": "planning:scripts/build_plan.py",
+      "source": ".opencode/skills/planning/scripts/build_plan.py",
+      "target": ".config/opencode/skills/paseo-planning/scripts/build_plan.py",
+      "source_sha256": "ed5dbdc49ba3d5bf9a4cf7feb44cdc4fca2beaa03d5ae764cd121a600dee8f52",
+      "installed_sha256": null,
+      "state": "missing"
+    },
+    {
+      "component": "attention-skill:SKILL.md",
+      "source": ".opencode/skills/paseo-telegram-attention/SKILL.md",
+      "target": ".config/opencode/skills/paseo-telegram-attention/SKILL.md",
+      "source_sha256": "5fc8f9b01ff275bf4bd18d32df15bce0bf73f214a51a7874d935c63c4e83f615",
+      "installed_sha256": "7456483ce3503e67361cb6bb9ef5a1b47b34edb1b286160779832d7b82748787",
+      "state": "stale"
+    },
+    {
+      "component": "attention-skill:references/operator-setup.md",
+      "source": ".opencode/skills/paseo-telegram-attention/references/operator-setup.md",
+      "target": ".config/opencode/skills/paseo-telegram-attention/references/operator-setup.md",
+      "source_sha256": "d5aedf67b7f4367323d679cefff6991304eca1ebd2fcad0dedafceb8b0211d01",
+      "installed_sha256": "c1c08d33158fe1c5955b925012cb1f2a1af13d2133309aa3b4d421beec3d2d83",
+      "state": "stale"
+    },
+    {
+      "component": "attention-skill:scripts/attention_prompt.py",
+      "source": ".opencode/skills/paseo-telegram-attention/scripts/attention_prompt.py",
+      "target": ".config/opencode/skills/paseo-telegram-attention/scripts/attention_prompt.py",
+      "source_sha256": "5b9809e26596db11840e3e316f0fc4552946f13112040e2c46785ef8cdc84d92",
+      "installed_sha256": null,
+      "state": "missing"
+    },
+    {
+      "component": "attention-skill:scripts/attention_receiver.py",
+      "source": ".opencode/skills/paseo-telegram-attention/scripts/attention_receiver.py",
+      "target": ".config/opencode/skills/paseo-telegram-attention/scripts/attention_receiver.py",
+      "source_sha256": "a4c950dcdf0a9754b1073f865ce93ac43e6c9bc5cf325405e352ab66ff11c02b",
+      "installed_sha256": "f1846f72943b2aef06d350863e10d63c167451d1566c51ef96275c83fdab69e3",
+      "state": "stale"
+    },
+    {
+      "component": "attention-skill:scripts/telegram_attention.py",
+      "source": ".opencode/skills/paseo-telegram-attention/scripts/telegram_attention.py",
+      "target": ".config/opencode/skills/paseo-telegram-attention/scripts/telegram_attention.py",
+      "source_sha256": "d3e6b424bc5d26f785614e9be506f0144d9897d348d014b60a52434a2bec2525",
+      "installed_sha256": "afa16b5e005eb121db150b96c0c60b5fda0dea55f7b5085213a661886baeb395",
+      "state": "stale"
+    },
+    {
+      "component": "stable-helper:attention_prompt.py",
+      "source": ".opencode/skills/paseo-telegram-attention/scripts/attention_prompt.py",
+      "target": ".local/lib/paseo-telegram-attention/attention_prompt.py",
+      "source_sha256": "5b9809e26596db11840e3e316f0fc4552946f13112040e2c46785ef8cdc84d92",
+      "installed_sha256": null,
+      "state": "missing"
+    },
+    {
+      "component": "stable-helper:attention_receiver.py",
+      "source": ".opencode/skills/paseo-telegram-attention/scripts/attention_receiver.py",
+      "target": ".local/lib/paseo-telegram-attention/attention_receiver.py",
+      "source_sha256": "a4c950dcdf0a9754b1073f865ce93ac43e6c9bc5cf325405e352ab66ff11c02b",
+      "installed_sha256": "ef740fb3dafcae425201b02047107d43b29168e16d243d180855386c33697522",
+      "state": "stale"
+    },
+    {
+      "component": "stable-helper:telegram_attention.py",
+      "source": ".opencode/skills/paseo-telegram-attention/scripts/telegram_attention.py",
+      "target": ".local/lib/paseo-telegram-attention/telegram_attention.py",
+      "source_sha256": "d3e6b424bc5d26f785614e9be506f0144d9897d348d014b60a52434a2bec2525",
+      "installed_sha256": "afa16b5e005eb121db150b96c0c60b5fda0dea55f7b5085213a661886baeb395",
+      "state": "stale"
+    },
+    {
+      "component": "verifier:verify_event.py",
+      "source": "scripts/automation-runtime/verify_event.py",
+      "target": "services/paseo-automations/attention-runtime/verify_event.py",
+      "source_sha256": "996926c02f7490609565dac18daea49d0a13dcbabad23dc2d8ed86c1eade0027",
+      "installed_sha256": "19230dc83d9e1ea94f93a16db208381f96600b704675a5f73e7338039fe9f51c",
+      "state": "stale"
+    },
+    {
+      "component": "verifier:verify_event_by_key.py",
+      "source": "scripts/automation-runtime/verify_event_by_key.py",
+      "target": "services/paseo-automations/attention-runtime/verify_event_by_key.py",
+      "source_sha256": "1feed485e38dcbc32e6c6a95d82acb3e9f32d6ff4711e925ff83cab243b7f9a2",
+      "installed_sha256": "51925eb123db50a8ca71303ddbd28a2ba7839316858b8e83076f8b071aff40cb",
+      "state": "stale"
+    },
+    {
+      "component": "successor",
+      "source": "scripts/automation-runtime/paseo-attention-resume.SKILL.md",
+      "target": ".config/opencode/skills/paseo-attention-resume/SKILL.md",
+      "source_sha256": "8a3309bfc9008872592500a0e182f953c757e117fcfc7a0f2137b2e1911cae0c",
+      "installed_sha256": "11c3f720ea8f39768f19b1559f1112e74f6ecd4869c4b8d9a25b97c41e897af9",
+      "state": "stale"
+    }
+  ],
+  "matching": false
+}

@@ -1,0 +1,14 @@
+{
+  "verify_event.py": {
+    "source": "/home/singleton/services/paseo-automations/attention-runtime/verify_event.py",
+    "sha256": "19230dc83d9e1ea94f93a16db208381f96600b704675a5f73e7338039fe9f51c"
+  },
+  "verify_event_by_key.py": {
+    "source": "/home/singleton/services/paseo-automations/attention-runtime/verify_event_by_key.py",
+    "sha256": "51925eb123db50a8ca71303ddbd28a2ba7839316858b8e83076f8b071aff40cb"
+  },
+  "paseo-attention-resume.SKILL.md": {
+    "source": "/home/singleton/.config/opencode/skills/paseo-attention-resume/SKILL.md",
+    "sha256": "11c3f720ea8f39768f19b1559f1112e74f6ecd4869c4b8d9a25b97c41e897af9"
+  }
+}

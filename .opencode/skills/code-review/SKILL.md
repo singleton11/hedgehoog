@@ -5,6 +5,29 @@ description: Independently review a GitHub pull request and report evidence-back
 
 # Code Review
 
+## Automated Comment Boundary
+
+This repository skill publishes through the check only, not PR comments or
+reviews. Do not add a comment as a credential or publication fallback. The
+installed Paseo adapter's separate findings/remediation-comment routes are
+inventoried for operator review in `docs/automation-comment-routing.md`; they
+are not authorized by this check-only workflow. If an authorized adapter needs
+an automated comment, it must use `hub.reply` (also exposed as `hub_reply`)
+with this arrival's `executionId` and `content` only after verifying the exact
+provider-native target (repository, PR number, and PR kind). Hub cannot choose
+an arbitrary target. Manual/cross-target or unsupported routes fail closed,
+without personal-credential fallback or account switching.
+
+Before a supported adapter comment, retain its durable marker, serialize using
+the existing task lock, and paginate comments to suppress duplicates. On an
+uncertain delivery, read back before any retry; never blindly resend. Require
+GitHub REST readback on the exact PR conversation with the intended marker,
+reviewed SHA, and payload, `user.login == "demik-paseo-bot[bot]"` and
+`user.type == "Bot"`. Record comment ID/URL durably before any dependent
+remediation handoff. Preserve all duplicate-check, independence, reviewed-SHA,
+check-conclusion, and no-self-approval gates below. A failed comment route never
+justifies a successful check or a fabricated findings ID.
+
 ## Mandatory Duplicate-Check Gate
 
 **If the agent has already submitted a check on the GitHub PR, do nothing.**

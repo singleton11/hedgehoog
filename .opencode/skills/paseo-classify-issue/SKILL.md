@@ -53,8 +53,12 @@ scope/uncertainties. Use real newlines, not literal `\n` sequences.
 
 Post the rationale ONLY through Hub's `hub.reply` tool (exposed in some sessions
 as `hub_reply`), passing this arrival's `executionId` and the rationale as
-`content`. This uses Hub's configured GitHub bot identity, not the local GitHub
-CLI login. Never post or edit classifier rationale comments with `gh issue
+`content`. First verify the provider-native reply target is this exact issue
+(repository, number, and issue kind), following
+`docs/automation-comment-routing.md`. Hub cannot choose an arbitrary target;
+manual sessions, cross-target requests, or missing routing evidence fail closed
+without changing labels. This uses Hub's configured GitHub bot identity, not the
+local GitHub CLI login. Never post or edit classifier rationale comments with `gh issue
 comment`, `gh api`, or another client using personal credentials. Do not switch
 the global gh account, copy tokens, or introduce a personal-credential fallback.
 Read-only GitHub inspection and the label command below may still use gh.
@@ -71,7 +75,10 @@ GraphQL/gh issue-view may normalize the login, so require both
 verifying through GraphQL instead. If gh issue-view omits the type, query the
 REST or GraphQL API explicitly. Another bot's matching marker is not evidence.
 Never accept a human account solely because its display name resembles the bot.
-A successful tool call alone is not proof of authorship.
+A successful tool call alone is not proof of authorship. For automated routing
+under this policy, REST readback on the exact issue is mandatory; GraphQL data
+may supplement it but cannot replace it. Record the verified comment ID/URL in
+the durable task record before adding a label.
 If Hub reply is unavailable, delivery fails, authorship/route cannot be verified,
 or the marker has conflicting bot-authored routes, stop and report a blocker
 without adding a routing label. On an uncertain delivery, re-read comments before

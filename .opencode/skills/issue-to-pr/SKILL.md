@@ -254,20 +254,34 @@ After verifying the PR association, post a comment on the originating issue so
 reviewers can find the review artifact directly from the issue. This is required
 in addition to the closing link, not a substitute for it.
 
-- Read all issue comments first (paginate if needed). Reuse an existing comment
-  linking to this exact PR URL rather than posting duplicates on retries. Update
-  your own comment if its validation summary is stale; preserve others' content.
-- Write a comment body to a temporary file outside tracked files. Include the
-  full PR URL, a concise change summary, and validation results or a link to the
-  PR's validation section. State any blockers honestly. Publish with:
-
-  ```sh
-  gh issue comment <issue-number> --repo <issue-owner/issue-repo> --body-file <comment-file>
-  ```
-
-- Read back the issue comments from GitHub and verify a persisted comment
-  contains the exact PR URL. Record the comment URL. A local file, attempted
-  command, chat response, or issue mention in the PR does not prove attachment.
+- Follow `docs/automation-comment-routing.md` for every automated GitHub
+  comment, including progress, blockers, and the final backlink. Use only
+  `hub.reply` (also exposed as `hub_reply`) with this arrival's `executionId`
+  and `content`, after verifying that its provider-native reply target is the
+  exact originating issue (repository, issue number, and issue kind). Hub reply
+  cannot select an arbitrary target: a PR-triggered run cannot attach a comment
+  to its linked issue. Manual sessions, cross-target requests, missing routing
+  evidence, and unavailable Hub reply fail closed; report the attachment blocked
+  locally, with no personal-credential fallback or account switching.
+- Read all issue comments first (paginate if needed). Use durable marker
+  `<!-- paseo-issue-pr:v1 issue=ISSUE_NUMBER pr=FULL_PR_URL -->`. Reuse a
+  bot-authored comment with the exact marker and exact PR URL rather than posting
+  duplicates on retries. Require the current validation evidence too; a stale
+  comment is not a completed attachment. Conflicting markers or an update that
+  Hub cannot explicitly support are blockers, not permission to edit via gh.
+  Preserve historical comments, including personal-authored ones; they do not
+  satisfy bot verification.
+- Include the full PR URL, concise change summary, and validation results or a
+  link to the PR's validation section, plus the marker. State blockers honestly.
+  Record a durable delivery intent and retain the same marker across retries.
+  On uncertain delivery, read back before any retry; never blindly resend.
+- Read back the persisted comment through GitHub REST on the exact issue:
+  `GET /repos/{owner}/{repo}/issues/{issue_number}/comments` (paginate), then
+  verify a persisted comment contains the exact PR URL, marker, and validation
+  evidence. Require `user.login == "demik-paseo-bot[bot]"` and
+  `user.type == "Bot"`; another bot or a human's copied marker is not evidence.
+  Record the comment URL and ID durably. A successful Hub call, local file, chat
+  response, or issue mention in the PR does not prove attachment.
 - If posting or verification fails, report the issue attachment as blocked and
   retry safely; do not report this workflow as complete. Do not manually close
   the issue or change repository settings to work around a missing link.
