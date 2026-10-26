@@ -160,8 +160,13 @@ def balances(events):
     return {"cash_eur": ledger.euros(cash), "holdings": {isin: str(p["quantity"]) for isin, p in sorted(holdings.items())}}
 
 
-def compute_actions(funding, weights, cash, positions, market, policy, today, estimated_fees=ZERO):
+def compute_actions(funding, weights, cash, positions, market, policy, today, estimated_fees=ZERO, sale_overrides=None):
     """Deterministic Decimal allocation; contributions/cash first, then sell-funded buys."""
+    sale_overrides = sale_overrides or {}
+    market = {isin: dict(mark) for isin, mark in market.items()}
+    for isin, override in sale_overrides.items():
+        if override.price_eur is not None:
+            market[isin]["price_eur"] = str(override.price_eur)
     targets, actions, blockers = [], [], []
     gap = Decimal(funding["shortfall_eur"])
     if gap > 0:
@@ -196,7 +201,7 @@ def compute_actions(funding, weights, cash, positions, market, policy, today, es
     first_buys = {isin: min(need, cash_budget * need / total_need) if total_need else ZERO for isin, need in needed.items()}
     sells = {isin: max(ZERO, values.get(isin, ZERO) - investable * weights.get(isin, ZERO)) for isin in all_isins}
     residual = {isin: max(ZERO, needed[isin] - first_buys[isin]) for isin in all_isins}
-    rebalance = any(value >= Decimal(policy["min_trade_eur"]) for value in sells.values())
+    rebalance = any(value >= ledger.CENT for value in sells.values())
     post_cash_values = {isin: values.get(isin, ZERO) + first_buys[isin] for isin in all_isins}
     post_cash = max(ZERO, cash + gap - sum(first_buys.values(), ZERO) - estimated_fees)
     remaining_drift = max([abs((post_cash_values[isin] / investable if investable else ZERO)
@@ -217,9 +222,14 @@ def compute_actions(funding, weights, cash, positions, market, policy, today, es
         if rebal:
             reasons += suppress
             if amount < Decimal(policy["min_trade_eur"]):
-                reasons.append("Trade is below the minimum rebalance gross.")
+                reasons.append("Rebalance trade is below the minimum gross.")
         eligible = mark["eligible"] and not (rebal and (suppress or amount < Decimal(policy["min_trade_eur"])))
         quantity = (amount / Decimal(mark["price_eur"])).quantize(UNIT, rounding=ROUND_DOWN) if mark["price_eur"] else None
+        if kind == "sell" and quantity is not None:
+            quantity = min(quantity, positions[isin]["quantity"])
+            override = sale_overrides.get(isin)
+            if override is not None and override.quantity is not None:
+                quantity = override.quantity
         if quantity == 0:
             return
         actions.append({"id": f"{kind}:{isin}:{suffix}", "type": kind, "instrument_id": isin,
@@ -262,7 +272,7 @@ def recommendation_snapshot(db, owner, customer_id, document, now):
         return _recommendation_snapshot(db, owner, customer_id, document, now)
 
 
-def _recommendation_snapshot(db, owner, customer_id, document, now, estimated_fees=ZERO):
+def _recommendation_snapshot(db, owner, customer_id, document, now, estimated_fees=ZERO, sale_overrides=None):
     day = now.date()
     result = {"plan_id": document.get("plan_id"), "revision": document["revision"], "date": day.isoformat(),
               "status": "blocked", "funding": None, "targets": [], "actions": [], "blockers": [],
@@ -284,7 +294,8 @@ def _recommendation_snapshot(db, owner, customer_id, document, now, estimated_fe
         policy["last_rebalance_date"] = last.get("date") if last else None
         policy["next_eligible_date"] = (Date.fromisoformat(last["date"]) + timedelta(days=policy["cooldown_days"])).isoformat() if last else None
         market = market_snapshot(db, set(positions) | {isin for isin in weights if isin is not None}, positions, now)
-        targets, actions, blockers, allocation = compute_actions(funding, weights, cash, positions, market, policy, day, estimated_fees)
+        targets, actions, blockers, allocation = compute_actions(
+            funding, weights, cash, positions, market, policy, day, estimated_fees, sale_overrides)
         for action in actions:
             if action["type"] not in contract["supported_actions"]:
                 action["eligible"] = False
@@ -295,7 +306,8 @@ def _recommendation_snapshot(db, owner, customer_id, document, now, estimated_fe
             required = action.get("group", []) + action["dependencies"]
             if any(not by_id[key]["eligible"] for key in required):
                 action["eligible"] = False
-                action["blockers"].append("A dependent action is blocked.")
+                reasons = [reason for key in required for reason in by_id[key]["blockers"]]
+                action["blockers"] = list(dict.fromkeys([*action["blockers"], "A dependent action is blocked.", *reasons]))
         result.update(targets=targets, actions=actions, blockers=blockers, policy=policy, allocation=allocation,
                       status="ready" if any(a["eligible"] for a in actions) else "blocked" if blockers or actions else "aligned")
     except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
@@ -377,10 +389,15 @@ def _prepare_preview(db, owner, customer_id, document, body, now):
     if body.date != now.date() or snapshot["snapshot_token"] != body.snapshot_token:
         raise md.DataError(409, "Recommendations changed. Refresh and review again.")
     estimated_fees = sum((override.commission_eur or ZERO for override in body.overrides.values()), ZERO)
-    if estimated_fees:
-        adjusted = _recommendation_snapshot(db, owner, customer_id, document, now, estimated_fees)
+    sale_overrides = {a["instrument_id"]: body.overrides[a["id"]] for a in snapshot["actions"]
+                      if a["type"] == "sell" and a["id"] in body.action_ids and a["id"] in body.overrides}
+    if estimated_fees or sale_overrides:
+        # Revalue edited sales before sizing the group, so holdings bound sales
+        # and cent-settled effective proceeds fund the dependent purchases.
+        adjusted = _recommendation_snapshot(db, owner, customer_id, document, now, estimated_fees, sale_overrides)
         snapshot["actions"] = adjusted["actions"]
-        snapshot["targets"] = adjusted["targets"]
+        saved_prices = {t["instrument_id"]: t["price_eur"] for t in snapshot["targets"]}
+        snapshot["targets"] = [{**t, "price_eur": saved_prices[t["instrument_id"]]} for t in adjusted["targets"]]
     by_id = {a["id"]: a for a in snapshot["actions"]}
     selected = set(body.action_ids)
     if selected - by_id.keys() or body.overrides.keys() - selected:
@@ -415,9 +432,13 @@ def _prepare_preview(db, owner, customer_id, document, body, now):
             budget = Decimal(action["amount_eur"])
             if budget <= 0:
                 raise md.DataError(422, "Fees exceed the available trade budget.")
-            quantity = override.quantity if override.quantity is not None else (budget / price).quantize(UNIT, rounding=ROUND_DOWN)
+            quantity = override.quantity if override.quantity is not None else (
+                Decimal(action["quantity"]) if action["type"] == "sell"
+                else (budget / price).quantize(UNIT, rounding=ROUND_DOWN))
             if quantity <= 0:
                 raise md.DataError(422, "Trade rounds to zero units.")
+            if quantity > ledger.MAX_AMOUNT:
+                raise md.DataError(422, "Computed quantity exceeds the ledger unit limit.")
             gross = (quantity * price).quantize(ledger.CENT, rounding=ROUND_HALF_UP)
             # Quantity edits may reduce, never enlarge, the reviewed server allocation.
             if gross > budget + Decimal("0.005"):

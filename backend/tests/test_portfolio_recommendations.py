@@ -236,6 +236,71 @@ def test_auth_origin_and_owner_scope(tracker, db):
     assert client.post(url + "/recommendations/preview", json=base).status_code == 404
 
 
+def test_subminimum_allocation_correction_is_blocked_not_aligned(tracker, db):
+    client, cid, metadata, url = tracker
+    second_instrument(db)
+    saved_plan(client, db, cid, metadata, initial="400", monthly="0")
+    quote(db, "2026-09-17", "1")
+    quote(db, "2026-09-17", "1", isin=SECOND_ISIN,
+          listing={"symbol": "EUNL.F", "exchange": "XFRA"})
+    record(client, url, cash(amount="400"))
+    record(client, url, trade(quantity="380", price="1"))
+    record(client, url, trade(quantity="20", price="1", instrument_id=SECOND_ISIN))
+    snapshot = get(client, url)
+    assert snapshot["status"] == "blocked"
+    assert Decimal(snapshot["allocation"]["max_deviation"]) == Decimal("0.05")
+    assert len(snapshot["actions"]) == 2
+    assert all(not a["eligible"] for a in snapshot["actions"])
+    assert any("minimum gross" in reason
+               for a in snapshot["actions"] for reason in a["blockers"])
+
+
+def test_computed_quantity_above_ledger_limit_is_422(tracker, db):
+    client, cid, metadata, url = tracker
+    saved_plan(client, db, cid, metadata, initial="20000", monthly="0")
+    record(client, url, cash(amount="20000"))
+    snapshot = get(client, url)
+    buy = next(a for a in snapshot["actions"] if a["type"] == "buy")
+    before = db.portfolios.find_one({"_id": metadata["id"]})
+    response = client.post(url + "/recommendations/preview", json={
+        "snapshot_token": snapshot["snapshot_token"], "date": snapshot["date"],
+        "action_ids": [buy["id"]], "overrides": {buy["id"]: {"price_eur": "0.00000001"}}})
+    assert response.status_code == 422, response.text
+    assert "unit limit" in response.json()["detail"]
+    assert db.portfolios.find_one({"_id": metadata["id"]}) == before
+
+
+@pytest.mark.parametrize("price", ["100", "120"])
+@pytest.mark.parametrize("quantity", [None, "8"])
+@pytest.mark.parametrize("fee", ["0", "1"])
+def test_sale_price_edits_resize_holdings_and_dependent_buys(tracker, db, price, quantity, fee):
+    client, cid, metadata, url = tracker
+    second_instrument(db)
+    quote(db, "2026-09-17", "110", isin=SECOND_ISIN,
+          listing={"symbol": "EUNL.F", "exchange": "XFRA"})
+    saved_plan(client, db, cid, metadata, initial="1100", monthly="0")
+    record(client, url, cash(amount="1100"))
+    record(client, url, trade(quantity="10", price="110", instrument_id=SECOND_ISIN))
+    snapshot = get(client, url)
+    sell = next(a for a in snapshot["actions"] if a["type"] == "sell")
+    buy = next(a for a in snapshot["actions"] if a["type"] == "buy")
+    override = {"price_eur": price, "commission_eur": fee}
+    if quantity is not None:
+        override["quantity"] = quantity
+    payload, preview = review(client, url, snapshot, overrides={
+        sell["id"]: override, buy["id"]: {"commission_eur": fee}})
+    sale, purchase = preview["selection"]
+    assert Decimal(sale["quantity"]) == Decimal(quantity or "10")
+    proceeds = Decimal(quantity or "10") * Decimal(price)
+    assert Decimal(sale["amount_eur"]) == proceeds
+    assert Decimal(purchase["amount_eur"]) == proceeds - 2 * Decimal(fee)
+    assert preview["total_commission_eur"] == str(2 * Decimal(fee)) + ".00"
+    assert preview["after"]["cash_eur"] == "0.00"
+    assert Decimal(preview["after"]["holdings"][SECOND_ISIN]) == 10 - Decimal(quantity or "10")
+    assert sale["price_source"] == "override"
+    commit(client, url, payload, preview)
+
+
 def test_empty_duplicate_and_enlarged_quantity_rejected(tracker, db):
     client, cid, metadata, url = tracker
     saved_plan(client, db, cid, metadata)
@@ -277,9 +342,8 @@ def allocation_fixture(a="275", b="225", cash_amount="0"):
 def test_drift_and_minimum_trade_boundaries(a, b, eligible):
     *_, actions, blockers, allocation = rec.compute_actions(*allocation_fixture(a, b), dict(rec.DEFAULT_POLICY), NOW.date())
     assert not blockers
+    assert len(actions) == 2
     assert all(a["eligible"] == eligible for a in actions)
-    if eligible:
-        assert len(actions) == 2
 
 
 @pytest.mark.parametrize("elapsed,eligible", [(29, False), (30, True), (31, True)])
@@ -580,7 +644,7 @@ def test_subminimum_rebalance_leg_and_unrepresentable_quantity_are_not_eligible(
                                            dict(rec.DEFAULT_POLICY), NOW.date())
     buy = next(a for a in actions if a["type"] == "buy")
     assert buy["amount_eur"] == "20.00" and not buy["eligible"]
-    assert "minimum rebalance gross" in buy["blockers"][0]
+    assert "minimum gross" in buy["blockers"][0]
     market[ISIN]["price_eur"] = "1000000000000"
     _, actions, _, _ = rec.compute_actions(funding, {ISIN: Decimal(1)}, Decimal("0.01"), {}, market,
                                            dict(rec.DEFAULT_POLICY), NOW.date())

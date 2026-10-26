@@ -74,8 +74,14 @@ policy and price provenance are bound to the review token. Where the listing is
 otherwise eligible, supply a positive price override if needed.
 Prices, quantities and per-trade commissions are editable; commissions explicitly
 default to **EUR 0**. Changes require a refreshed preview and must still satisfy
-funding, holdings, dependency and cost rules. Every trade required by a rebalance
-group contributes to its fee cap, including a cash-funded purchase in that group.
+funding, holdings, dependency and cost rules. Editing a sale price revalues that
+holding for batch sizing, caps the default sale at the available shares, and
+resizes dependent purchases using cent-settled proceeds after commissions.
+Reducing a sale quantity also reduces its dependent purchase budget. Projected
+allocation diagnostics still use the saved marks. Derived quantities above the
+ledger unit limit are rejected as invalid execution details.
+Every trade required by a rebalance group contributes to its fee cap, including
+a cash-funded purchase in that group.
 The edited batch must improve maximum allocation drift over the cash/contribution
 purchases alone; reducing buy quantities cannot turn a correction into a worse
 allocation and still start the cooldown. A purchase cannot silently include
