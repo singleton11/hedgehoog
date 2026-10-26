@@ -503,7 +503,16 @@ def fulfill(customer_id: str, portfolio_id: str, body: FulfillRequest, request: 
     previous = prior(document)
     if previous is not None:
         return previous  # Must precede date, plan, revision, quote and policy checks.
-    reviewed, entries = prepare_preview(db, owner, customer_id, document, body, now)
+    try:
+        reviewed, entries = prepare_preview(db, owner, customer_id, document, body, now)
+    except md.DataError as exc:
+        if exc.status != 409:
+            raise
+        # An identical writer may commit before this stale review is rejected.
+        previous = prior(ledger.require_portfolio(db, owner, customer_id, portfolio_id))
+        if previous is not None:
+            return previous
+        raise
     if body.preview_token != reviewed["preview_token"]:
         raise md.DataError(409, "Preview changed. Review again before confirming.")
     for event in entries:
@@ -524,6 +533,9 @@ def fulfill(customer_id: str, portfolio_id: str, body: FulfillRequest, request: 
     # Re-read the entire market/plan identity immediately before the document CAS.
     current = recommendation_snapshot(db, owner, customer_id, document, md.utcnow())
     if current["snapshot_token"] != body.snapshot_token:
+        previous = prior(ledger.require_portfolio(db, owner, customer_id, portfolio_id))
+        if previous is not None:
+            return previous
         raise md.DataError(409, "Market, date, plan or policy changed. Review again.")
     changed = db.portfolios.update_one({**ledger.scope(owner, customer_id, portfolio_id),
                                        "revision": document["revision"], "plan_id": document["plan_id"],

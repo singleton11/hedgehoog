@@ -717,3 +717,60 @@ def test_cas_miss_reconciles_receipt_or_requires_new_review(tracker, db, monkeyp
     else:
         assert response.status_code == 409 and "concurrently" in response.json()["detail"]
         assert document["transactions"] == [] and not document.get("recommendation_receipts")
+
+
+@pytest.mark.parametrize("site,snapshot_call,stale_detail", [
+    ("prepare-preview", 1, "Recommendations changed. Refresh and review again."),
+    ("before-cas", 2, "Market, date, plan or policy changed. Review again."),
+])
+@pytest.mark.parametrize("receipt", ["matching", "changed-payload", "absent"])
+def test_stale_review_reconciles_concurrent_receipt(tracker, db, monkeypatch, site, snapshot_call, stale_detail, receipt):
+    client, cid, metadata, url = tracker
+    saved_plan(client, db, cid, metadata)
+    snapshot = get(client, url)
+    payload, preview = review(client, url, snapshot)
+    body = {**payload, "operation_id": str(uuid4()), "preview_token": preview["preview_token"]}
+    winner_body = body
+    if receipt == "changed-payload":
+        winner_payload, winner_preview = review(client, url, snapshot, ["deposit"])
+        winner_body = {**winner_payload, "operation_id": body["operation_id"],
+                       "preview_token": winner_preview["preview_token"]}
+    before = db.portfolios.find_one({"_id": metadata["id"]})
+    original = rec.recommendation_snapshot
+    calls, committed, after_winner = 0, None, None
+
+    def commit_then_change_market(*args, **kwargs):
+        nonlocal calls, committed, after_winner
+        calls += 1
+        stale_check = calls == snapshot_call
+        if stale_check:
+            # Complete the competing writer after this request's initial receipt
+            # lookup, then dirty the market before its selected stale-state check.
+            if receipt != "absent":
+                winner = client.post(url + "/recommendations/fulfill", json=winner_body)
+                assert winner.status_code == 200, winner.text
+                committed = winner.json()
+            after_winner = db.portfolios.find_one({"_id": metadata["id"]})
+            quote(db, "2026-09-17", "111")
+        result = original(*args, **kwargs)
+        if stale_check:
+            assert result["snapshot_token"] != body["snapshot_token"]
+        return result
+
+    monkeypatch.setattr(rec, "recommendation_snapshot", commit_then_change_market)
+    response = client.post(url + "/recommendations/fulfill", json=body)
+    assert calls == snapshot_call + (2 if receipt != "absent" else 0)
+    if receipt == "matching":
+        assert response.status_code == 200, response.text
+        assert response.json() == committed
+    else:
+        assert response.status_code == 409, response.text
+        expected = "Operation ID was already used with different reviewed inputs." if receipt == "changed-payload" else stale_detail
+        assert response.json()["detail"] == expected
+    assert db.portfolios.find_one({"_id": metadata["id"]}) == after_winner
+    if receipt == "absent":
+        assert after_winner == before
+    else:
+        assert after_winner["revision"] == before["revision"] + 1
+        assert len(after_winner["recommendation_receipts"]) == 1
+        assert client.post(url + "/recommendations/fulfill", json=winner_body).json() == committed
