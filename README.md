@@ -102,6 +102,16 @@ The sweep reuses existing acquisition jobs and their per-instrument active-job g
 
 After sign-in, the workspace shows **Acquired ETFs** with an **Add ETF** button above the table: one entry per ETF with a saved provider profile, newest profile collection first, with the saved listing, grouped **Historical → Annual return / Annual volatility** and **Statistical → Annual return / Annual volatility** columns, distinct quote count and date range. Historical yearly return is the actual trailing 12-month price change ending at the latest saved quote (`latest / year-ago − 1`), not an annualized estimate. Hover over it for the endpoint dates and adjusted/unadjusted price basis. A year-ago quote may be up to seven days before the calendar anniversary; insufficient or incomparable endpoints show **Unavailable**. Historical annual volatility is the sample standard deviation of usable daily log returns in that trailing year, multiplied by √252. It requires year-long saved coverage and at least two usable daily returns; hover for the window, return count, and price basis. Sparse or missing-weekday intervals are excluded, not treated as daily moves. Statistical annual return/volatility retain the same all-history log-based statistics as instrument details. All values are percentages; positive returns have a green **+** sign and negative returns are red with a **−** sign. Zero returns and volatility remain neutral; missing estimates show **Unavailable**. Statistics are refreshed from saved prices for the current page only, without provider requests. Yahoo instruments become visible only after a complete history generation is published; failed refreshes retain the previous published data. Open any ETF from the list or page through results. Returning from instrument details refreshes the list.
 
+The **Saved history** presets (5y+, 15y+, 30y+) use the first-to-last saved
+quote span, not fund inception or age relative to today. The last date must reach
+the first date plus that many calendar years (February 29 clamps to February 28).
+Sparse dates and unusable prices still count as saved coverage. Filtering happens
+before pagination, preserving exact totals. Membership reads compact first/last
+endpoints in bounded batches; only returned page items enumerate distinct dates
+and refresh statistics. Yahoo coverage stays pinned to the published profile's
+exact generation and listing; legacy observations exclude Yahoo rows. Existing
+indexes are reused; real-Mongo performance acceptance remains unverified locally.
+
 Choose **Add ETF** to open the dedicated search page (`#/add`), then search the local ETF catalogue by name, ticker or ISIN. Selecting a result opens its details, where you can explicitly request data. Catalogue search is no longer displayed above the list or instrument details; the goal planner selects instrument parameters from the acquired universe only. Search, acquired-list reads, page reads, polling and charts use MongoDB only: browsing never contacts Yahoo.
 
 1. The default `MARKET_DATA_PROVIDER=yfinance` needs **no API key or paid monthly budget**. `MARKET_DATA_MAX_CALLS_PER_JOB=40` and `MARKET_DATA_TIMEOUT_SECONDS=15` are safety bounds, not subscription limits. Rebuild/restart the worker with `make services-up` after this change. The header identifies Yahoo Finance as experimental.
