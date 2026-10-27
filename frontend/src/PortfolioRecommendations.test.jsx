@@ -66,6 +66,19 @@ describe('Portfolio recommendations', () => {
     expect(request.mock.calls.filter(([path]) => path.endsWith('/fulfill'))).toHaveLength(1);
     expect(sessionStorage.length).toBe(0);
   });
+  it('shows incomplete projected equity as unavailable before and after a deposit', async () => {
+    const projection = { cash_eur: '0.00', holdings: { ALPHA: '10' }, complete: false, equity_eur: null, targets: [] };
+    const request = api({ previewResult: { ...preview, entries: [entries[0]],
+      before: projection, after: { ...projection, cash_eur: '100.00' } } });
+    render(<PortfolioRecommendations {...props} request={request} onRefresh={vi.fn()} />);
+    await openAll(); await review();
+    for (const label of ['Before', 'After']) {
+      const region = within(screen.getByRole('region', { name: label }));
+      expect(region.getByText('Equity').nextElementSibling).toHaveTextContent('Unavailable');
+      expect(region.getByText(/Valuation is incomplete/)).toBeInTheDocument();
+      expect(region.getByText('ALPHA: 10')).toBeInTheDocument();
+    }
+  });
   it('invalidates the review on price, fee and quantity edits and re-previews', async () => {
     const request = api();
     render(<PortfolioRecommendations {...props} request={request} onRefresh={vi.fn()} />);
@@ -209,6 +222,31 @@ describe('Portfolio recommendations', () => {
     fireEvent.change(screen.getByLabelText('Price (EUR) — ALPHA'), { target: { value: '12.00' } });
     await review();
     expect(request.mock.calls.find(([path]) => path.endsWith('/preview'))[1].body.overrides).toEqual({ 'buy-a': { price_eur: '12.00' } });
+  });
+  it('keeps a zero-unit corrective action visible and reviewable without claiming alignment', async () => {
+    const read = { ...snapshot, status: 'blocked', actions: [{ ...snapshot.actions[1], dependencies: [],
+      quantity: '0E-8', price_eur: '1000000000000', eligible: false, reviewable: true,
+      blockers: ['Trade rounds to zero units. Supply a valid execution price override.'] }] };
+    const request = api({ read });
+    render(<PortfolioRecommendations {...props} request={request} onRefresh={vi.fn()} />);
+    expect(await screen.findByText(/Trade rounds to zero units/)).toBeInTheDocument();
+    expect(screen.queryByText('Funding and allocation are aligned.')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Fulfill Buy ALPHA' }));
+    fireEvent.change(screen.getByLabelText('Price (EUR) — ALPHA'), { target: { value: '100' } });
+    await review();
+    expect(request.mock.calls.find(([path]) => path.endsWith('/preview'))[1].body.overrides).toEqual({ 'buy-a': { price_eur: '100' } });
+  });
+  it('displays omitted zero-budget legs while confirming the unchanged reviewed request', async () => {
+    const request = api({ previewResult: { ...preview, omitted_action_ids: ['buy-b'] } });
+    render(<PortfolioRecommendations {...props} request={request} onRefresh={vi.fn()} />);
+    await openAll();
+    fireEvent.change(screen.getByLabelText('Fee (EUR) — ALPHA'), { target: { value: '1' } });
+    await review();
+    expect(screen.getByText(/Adjusted to zero after fees or sale edits/)).toHaveTextContent('not included: Buy BETA');
+    const reviewedBody = request.mock.calls.find(([path]) => path.endsWith('/preview'))[1].body;
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm fulfillment' }));
+    await waitFor(() => expect(request.mock.calls.some(([path]) => path.endsWith('/fulfill'))).toBe(true));
+    expect(request.mock.calls.find(([path]) => path.endsWith('/fulfill'))[1].body).toMatchObject(reviewedBody);
   });
   it('fails closed before sending if durable recovery storage is unavailable', async () => {
     const request = api();

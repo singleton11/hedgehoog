@@ -15,7 +15,7 @@ const reasons = (items = []) => items.map((item) => typeof item === 'string' ? i
 const name = (item) => item.label || item.instrument?.name || item.instrument_id || 'Cash';
 const title = (action) => `${({ deposit: 'Deposit', buy: 'Buy', sell: 'Sell' })[action.type] || action.type}${action.type === 'deposit' ? '' : ` ${name(action)}`}`;
 const percent = (value) => value == null ? 'Unavailable' : `${(Number(value) * 100).toFixed(1)}%`;
-const eligible = (action) => action.eligible === true && !action.blocked;
+const reviewable = (action) => (action.eligible === true || action.reviewable === true) && !action.blocked;
 const listingName = (listing) => typeof listing === 'string' ? listing : listing ? [listing.symbol, listing.exchange, listing.currency].filter(Boolean).join(' / ') : 'Listing unavailable';
 function formatUnitPrice(value) {
   // Keep exact ledger decimals, including prices below one cent, without Number rounding.
@@ -37,7 +37,8 @@ function Balance({ label, value }) {
 function Projection({ label, data }) {
   if (!data) return null;
   return <section aria-label={label}><h4>{label}</h4><dl className="facts"><Balance label="Cash" value={data.cash_eur} />
-    {data.equity_eur != null && <Balance label="Equity" value={data.equity_eur} />}</dl>
+    {(data.equity_eur != null || data.complete === false) && <Balance label="Equity" value={data.equity_eur} />}</dl>
+    {data.complete === false && <p>Valuation is incomplete. Equity and allocation are unavailable until every holding has a valid price.</p>}
     {(Array.isArray(data.holdings) ? data.holdings : data.holdings ? Object.entries(data.holdings).map(([instrument_id, quantity]) => ({ instrument_id, quantity })) : data.positions || []).map((holding) => <p key={holding.instrument_id || holding.instrument?.instrument_id}>{name(holding)}: {holding.quantity}</p>)}
   </section>;
 }
@@ -84,7 +85,7 @@ function Recommendations({ request, portfolioPath, planId, revision, recoverySco
     else if (opener.current) { opener.current.focus(); opener.current = null; }
   }, [selection, recovery, recoveryHidden]);
   const actions = data?.actions || [];
-  const available = actions.filter(eligible);
+  const available = actions.filter(reviewable);
   function clearSaved() { sessionStorage.removeItem(storageKey); setRecovery(null); }
   function close() {
     setSelection(null); setPreview(null); setError(null);
@@ -185,7 +186,7 @@ function Recommendations({ request, portfolioPath, planId, revision, recoverySco
         {action.dependencies?.length > 0 && <span>Requires: {action.dependencies.map((id) => title(actions.find((item) => item.id === id) || { type: id })).join(', ')}. Select prerequisites explicitly in Fulfill all.</span>}
         {action.group?.length > 1 && <span>Rebalance group: {action.group.map((id) => title(actions.find((item) => item.id === id) || { type: id })).join(', ')}. Review the whole group together.</span>}
         {(action.reason || action.blockers?.length > 0) && <span>{action.reason || reasons(action.blockers)}</span>}
-        <button type="button" className="secondary" disabled={!eligible(action) || modal || busy || Boolean(recovery)} onClick={(event) => open([action.id], event.currentTarget)} aria-label={`Fulfill ${title(action)}`}>Fulfill</button>
+        <button type="button" className="secondary" disabled={!reviewable(action) || modal || busy || Boolean(recovery)} onClick={(event) => open([action.id], event.currentTarget)} aria-label={`Fulfill ${title(action)}`}>Fulfill</button>
       </li>)}</ul>
     </>}
     {modal && <div className="recommendation-backdrop"><div role="dialog" aria-modal="true" aria-labelledby="recommendation-review-title" tabIndex={-1} ref={dialog} className="recommendation-dialog goal-form" onKeyDown={dialogKey}>
@@ -202,7 +203,8 @@ function Recommendations({ request, portfolioPath, planId, revision, recoverySco
           </>}
         </div>)}</fieldset>
         {missing.length > 0 && <p role="alert">Missing prerequisites: {[...new Set(missing)].join(', ')}. Cancel and choose Fulfill all, or fulfill the prerequisite first.</p>}
-        {preview && <><EntryList entries={preview.entries} /><ReviewedPrices actions={preview.selection || []} /><Projection label="Before" data={preview.before} /><Projection label="After" data={preview.after} />
+        {preview && <>{preview.omitted_action_ids?.length > 0 && <p>Adjusted to zero after fees or sale edits; not included: {preview.omitted_action_ids.map((id) => title(actions.find((action) => action.id === id) || { type: id })).join(', ')}.</p>}
+          <EntryList entries={preview.entries} /><ReviewedPrices actions={preview.selection || []} /><Projection label="Before" data={preview.before} /><Projection label="After" data={preview.after} />
           {preview.total_commission_eur != null && <p>Total fees: {formatEuros(preview.total_commission_eur)}</p>}
           {preview.residual_eur != null && <p>Residual cash: {formatEuros(preview.residual_eur)}</p>}</>}
         <div className="button-group"><button type="button" disabled={busy || missing.length > 0} onClick={preview ? fulfill : review}>{busy ? 'Preparing…' : preview ? 'Confirm fulfillment' : 'Preview transactions'}</button>

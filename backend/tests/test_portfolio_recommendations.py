@@ -346,6 +346,144 @@ def test_sale_price_edits_resize_holdings_and_dependent_buys(tracker, db, price,
     commit(client, url, payload, preview)
 
 
+@pytest.mark.parametrize("sale_edit", [{"commission_eur": "1"}, {"price_eur": "100", "commission_eur": "1"}])
+def test_fee_adjustment_omits_zero_cash_leg_from_original_group(tracker, db, sale_edit):
+    client, cid, metadata, url = tracker
+    second_instrument(db)
+    quote(db, "2026-09-17", "100", isin=SECOND_ISIN,
+          listing={"symbol": "EUNL.F", "exchange": "XFRA"})
+    saved_plan(client, db, cid, metadata, initial="1001", monthly="0")
+    record(client, url, cash(amount="1001"))
+    record(client, url, trade(quantity="10", price="100", instrument_id=SECOND_ISIN))
+    snapshot = get(client, url)
+    sale, cash_buy, rebalance_buy = snapshot["actions"]
+    assert cash_buy["amount_eur"] == "1.00"
+    assert cash_buy["id"] in sale["group"]
+    before = db.portfolios.find_one({"_id": metadata["id"]})
+    payload, preview = review(client, url, snapshot, overrides={sale["id"]: sale_edit})
+    assert db.portfolios.find_one({"_id": metadata["id"]}) == before
+    assert [a["id"] for a in preview["selection"]] == [sale["id"], rebalance_buy["id"]]
+    assert preview["omitted_action_ids"] == [cash_buy["id"]]
+    assert [e["type"] for e in preview["entries"]] == ["sell", "buy"]
+    assert preview["total_commission_eur"] == "1.00"
+    assert preview["after"]["cash_eur"] == "0.00"
+    assert Decimal(preview["selection"][1]["amount_eur"]) == 1000
+    operation, outcome = commit(client, url, payload, preview)
+    document = db.portfolios.find_one({"_id": metadata["id"]})
+    assert len(document["transactions"]) == len(before["transactions"]) + 2
+    assert len(document["recommendation_receipts"]) == 1
+    assert client.post(url + "/recommendations/fulfill", json=operation).json() == outcome
+    assert db.portfolios.find_one({"_id": metadata["id"]}) == document
+
+
+@pytest.mark.parametrize("mutation", ["unknown-action", "unknown-override", "missing-group", "quantity", "fee", "fee-cap"])
+def test_zero_cash_leg_reconciliation_preserves_selection_guards(tracker, db, mutation):
+    client, cid, metadata, url = tracker
+    second_instrument(db)
+    quote(db, "2026-09-17", "100", isin=SECOND_ISIN,
+          listing={"symbol": "EUNL.F", "exchange": "XFRA"})
+    saved_plan(client, db, cid, metadata, initial="1001", monthly="0")
+    record(client, url, cash(amount="1001"))
+    record(client, url, trade(quantity="10", price="100", instrument_id=SECOND_ISIN))
+    snapshot = get(client, url)
+    sale, cash_buy, rebalance_buy = snapshot["actions"]
+    payload = {"snapshot_token": snapshot["snapshot_token"], "date": snapshot["date"],
+               "action_ids": [a["id"] for a in snapshot["actions"]],
+               "overrides": {sale["id"]: {"commission_eur": "1"}}}
+    if mutation == "unknown-action":
+        payload["action_ids"].append("invented")
+    elif mutation == "unknown-override":
+        payload["overrides"]["invented"] = {"commission_eur": "1"}
+    elif mutation == "missing-group":
+        payload["action_ids"].remove(rebalance_buy["id"])
+    elif mutation == "fee-cap":
+        payload["overrides"][sale["id"]]["commission_eur"] = "21"
+    else:
+        payload["overrides"][cash_buy["id"]] = ({"quantity": "0.01"} if mutation == "quantity"
+                                                  else {"commission_eur": "1"})
+    before = db.portfolios.find_one({"_id": metadata["id"]})
+    response = client.post(url + "/recommendations/preview", json=payload)
+    assert response.status_code == 422, response.text
+    assert db.portfolios.find_one({"_id": metadata["id"]}) == before
+
+
+def test_zero_default_quantity_is_blocked_but_reviewable_with_price_override(tracker, db):
+    client, cid, metadata, url = tracker
+    saved_plan(client, db, cid, metadata, initial="1000", monthly="0")
+    record(client, url, cash(amount="1000"))
+    quote(db, "2026-09-17", "1000000000000")
+    snapshot = get(client, url)
+    assert snapshot["status"] == "blocked"
+    assert Decimal(snapshot["allocation"]["max_deviation"]) == 1
+    buy, = snapshot["actions"]
+    assert buy["quantity"] == "0E-8"
+    assert buy["eligible"] is False
+    assert buy["reviewable"] is True
+    assert any("zero units" in reason for reason in buy["blockers"])
+    before = db.portfolios.find_one({"_id": metadata["id"]})
+    response = client.post(url + "/recommendations/preview", json={
+        "snapshot_token": snapshot["snapshot_token"], "date": snapshot["date"], "action_ids": [buy["id"]]})
+    assert response.status_code == 422
+    assert "zero units" in response.json()["detail"]
+    assert db.portfolios.find_one({"_id": metadata["id"]}) == before
+    payload, preview = review(client, url, snapshot, [buy["id"]], {buy["id"]: {"price_eur": "100"}})
+    assert preview["selection"][0]["quantity"] == "10.00000000"
+    assert preview["after"]["cash_eur"] == "0.00"
+    commit(client, url, payload, preview)
+
+
+@pytest.mark.parametrize("mode", ["cooldown", "unsupported", "listing"])
+def test_price_reviewability_does_not_bypass_hard_blockers(tracker, db, monkeypatch, mode):
+    client, cid, metadata, url = tracker
+    second_instrument(db)
+    saved_plan(client, db, cid, metadata, initial="1100", monthly="0")
+    record(client, url, cash(amount="1100"))
+    record(client, url, trade(quantity="10", price="110", instrument_id=SECOND_ISIN))
+    if mode == "cooldown":
+        db.portfolios.update_one({"_id": metadata["id"]}, {"$set": {
+            "recommendation_last_rebalance": {"date": NOW.date().isoformat()}}})
+    elif mode == "unsupported":
+        strategy = STRATEGIES["buy_and_hold_single_instrument"]
+        adapter = strategy.recommendation_targets
+        def unsupported(*args):
+            return {**adapter(*args), "supported_actions": ["deposit", "sell"]}
+        monkeypatch.setitem(STRATEGIES, strategy.id, replace(strategy, recommendation_targets=unsupported))
+    else:
+        db.instrument_state.delete_one({"_id": ISIN})
+    quote(db, "2026-09-17", "1000000000000")
+    snapshot = get(client, url)
+    assert snapshot["status"] == "blocked"
+    assert all(not a["eligible"] and not a["reviewable"] for a in snapshot["actions"])
+    before = db.portfolios.find_one({"_id": metadata["id"]})
+    response = client.post(url + "/recommendations/preview", json={
+        "snapshot_token": snapshot["snapshot_token"], "date": snapshot["date"],
+        "action_ids": [a["id"] for a in snapshot["actions"]],
+        "overrides": {a["id"]: {"price_eur": "110"} for a in snapshot["actions"]}})
+    assert response.status_code == 422, response.text
+    assert db.portfolios.find_one({"_id": metadata["id"]}) == before
+
+
+def test_zero_unit_rebalance_leg_keeps_group_reviewable(tracker, db):
+    client, cid, metadata, url = tracker
+    second_instrument(db)
+    saved_plan(client, db, cid, metadata, initial="1000", monthly="0")
+    record(client, url, cash(amount="1000"))
+    record(client, url, trade(quantity="10", price="100", instrument_id=SECOND_ISIN))
+    quote(db, "2026-09-17", "100", isin=SECOND_ISIN,
+          listing={"symbol": "EUNL.F", "exchange": "XFRA"})
+    quote(db, "2026-09-17", "1000000000000")
+    snapshot = get(client, url)
+    assert snapshot["status"] == "blocked"
+    assert len(snapshot["actions"]) == 2
+    assert all(not a["eligible"] and a["reviewable"] for a in snapshot["actions"])
+    buy = next(a for a in snapshot["actions"] if a["type"] == "buy")
+    payload, preview = review(client, url, snapshot, [a["id"] for a in snapshot["actions"]],
+                              {buy["id"]: {"price_eur": "100"}})
+    assert all(a["eligible"] and not a["blockers"] for a in preview["selection"])
+    assert preview["after"]["cash_eur"] == "0.00"
+    commit(client, url, payload, preview)
+
+
 def test_empty_duplicate_and_enlarged_quantity_rejected(tracker, db):
     client, cid, metadata, url = tracker
     saved_plan(client, db, cid, metadata)
@@ -469,6 +607,44 @@ def test_incomplete_valuation_never_sells_but_retains_funding(tracker, db):
     snapshot = get(client, url)
     assert snapshot["allocation"]["complete"] is False
     assert [a["type"] for a in snapshot["actions"]] == ["deposit"]
+
+
+@pytest.mark.parametrize("mode", ["missing", "stale"])
+def test_funding_preview_preserves_incomplete_valuation(tracker, db, mode):
+    client, cid, metadata, url = tracker
+    saved_plan(client, db, cid, metadata)
+    record(client, url, cash(amount="1000"))
+    record(client, url, trade(quantity="10", price="100"))
+    db.quotes.delete_many({})
+    quote(db, "2026-09-01" if mode == "stale" else "2026-09-17",
+          "100" if mode == "stale" else None)
+    snapshot = get(client, url)
+    assert snapshot["allocation"]["complete"] is False
+    before = db.portfolios.find_one({"_id": metadata["id"]})
+    _, preview = review(client, url, snapshot, ["deposit"])
+    assert db.portfolios.find_one({"_id": metadata["id"]}) == before
+    for projection, expected_cash in ((preview["before"], "0.00"), (preview["after"], "200.00")):
+        assert projection["cash_eur"] == expected_cash
+        assert Decimal(projection["holdings"][ISIN]) == 10
+        assert projection["complete"] is False
+        assert projection["equity_eur"] is None
+        assert projection["targets"] == []
+        assert projection["max_deviation"] is None
+        assert projection["residual_cash_eur"] is None
+
+
+def test_projection_requires_prices_for_every_nonzero_holding():
+    targets = [{"instrument_id": ISIN, "weight": "1", "price_eur": "100"}]
+    balance = {"cash_eur": "5.00", "holdings": {ISIN: "2", SECOND_ISIN: "1"}}
+    incomplete = rec.projected_allocation(balance, targets, [])
+    assert incomplete["complete"] is False
+    assert incomplete["equity_eur"] is None  # Not the partial EUR205 valuation.
+    complete = rec.projected_allocation(balance, targets, [
+        {"type": "sell", "instrument_id": SECOND_ISIN, "price_eur": "30"}])
+    assert complete["complete"] is True
+    assert complete["equity_eur"] == "235.00"
+    balance["holdings"][SECOND_ISIN] = "0"
+    assert rec.projected_allocation(balance, targets, [])["equity_eur"] == "205.00"
 
 
 def test_failed_future_history_batch_has_no_receipt_or_append(tracker, db):
@@ -693,7 +869,9 @@ def test_subminimum_rebalance_leg_and_unrepresentable_quantity_are_not_eligible(
     market[ISIN]["price_eur"] = "1000000000000"
     _, actions, _, _ = rec.compute_actions(funding, {ISIN: Decimal(1)}, Decimal("0.01"), {}, market,
                                            dict(rec.DEFAULT_POLICY), NOW.date())
-    assert actions == []  # Dust must never turn into a zero-quantity ledger event.
+    assert len(actions) == 1
+    assert not actions[0]["eligible"] and actions[0]["reviewable"]
+    assert Decimal(actions[0]["quantity"]) == 0  # Keep the correction visible, never append zero units.
 
 
 @pytest.mark.parametrize("mode", ["zero-quantity", "all-fees"])
@@ -826,6 +1004,55 @@ def test_cas_miss_reconciles_receipt_or_requires_new_review(tracker, db, monkeyp
     else:
         assert response.status_code == 409 and "concurrently" in response.json()["detail"]
         assert document["transactions"] == [] and not document.get("recommendation_receipts")
+
+
+@pytest.mark.parametrize("receipt", ["matching", "changed-payload", "absent"])
+def test_fee_adjusted_preview_mismatch_reconciles_concurrent_receipt(tracker, db, monkeypatch, receipt):
+    client, cid, metadata, url = tracker
+    saved_plan(client, db, cid, metadata)
+    snapshot = get(client, url)
+    buy = next(a for a in snapshot["actions"] if a["type"] == "buy")
+    payload, preview = review(client, url, snapshot, overrides={buy["id"]: {"commission_eur": "1"}})
+    body = {**payload, "operation_id": str(uuid4()), "preview_token": preview["preview_token"]}
+    winner_body = body
+    if receipt == "changed-payload":
+        winner_payload, winner_preview = review(client, url, snapshot, ["deposit"])
+        winner_body = {**winner_payload, "operation_id": body["operation_id"],
+                       "preview_token": winner_preview["preview_token"]}
+    before = db.portfolios.find_one({"_id": metadata["id"]})
+    original = rec._recommendation_snapshot
+    calls, committed, after_winner = 0, None, None
+
+    def commit_then_change_adjusted_price(*args, **kwargs):
+        nonlocal calls, committed, after_winner
+        calls += 1
+        # Only the fee-adjusted read changes; the initial snapshot check succeeds.
+        if calls == 2:
+            if receipt != "absent":
+                winner = client.post(url + "/recommendations/fulfill", json=winner_body)
+                assert winner.status_code == 200, winner.text
+                committed = winner.json()
+            after_winner = db.portfolios.find_one({"_id": metadata["id"]})
+            quote(db, "2026-09-17", "111")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(rec, "_recommendation_snapshot", commit_then_change_adjusted_price)
+    response = client.post(url + "/recommendations/fulfill", json=body)
+    if receipt == "matching":
+        assert response.status_code == 200, response.text
+        assert response.json() == committed
+    else:
+        assert response.status_code == 409, response.text
+        expected = ("Operation ID was already used with different reviewed inputs." if receipt == "changed-payload"
+                    else "Preview changed. Review again before confirming.")
+        assert response.json()["detail"] == expected
+    assert db.portfolios.find_one({"_id": metadata["id"]}) == after_winner
+    if receipt == "absent":
+        assert after_winner == before
+    else:
+        assert after_winner["revision"] == before["revision"] + 1
+        assert len(after_winner["recommendation_receipts"]) == 1
+        assert client.post(url + "/recommendations/fulfill", json=winner_body).json() == committed
 
 
 @pytest.mark.parametrize("site,snapshot_call,stale_detail", [

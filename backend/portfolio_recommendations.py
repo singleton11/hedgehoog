@@ -232,13 +232,17 @@ def compute_actions(funding, weights, cash, positions, market, policy, today, es
             override = sale_overrides.get(isin)
             if override is not None and override.quantity is not None:
                 quantity = override.quantity
+        reviewable = eligible
         if quantity == 0:
-            return
+            reasons.append("Trade rounds to zero units. Supply a valid execution price override.")
+            eligible = False
         actions.append({"id": f"{kind}:{isin}:{suffix}", "type": kind, "instrument_id": isin,
-                        "amount_eur": format(amount.quantize(ledger.CENT, rounding=ROUND_DOWN), ".2f"), "quantity": str(quantity) if quantity else None,
+                        "amount_eur": format(amount.quantize(ledger.CENT, rounding=ROUND_DOWN), ".2f"),
+                        "quantity": str(quantity) if quantity is not None else None,
                         "price_eur": mark["price_eur"], "commission_eur": "0.00", "price_date": mark.get("price_date"),
                         "price_source": mark.get("price_source"), "listing": mark.get("listing"),
-                        "dependencies": dependencies, "rebalance": rebal, "eligible": eligible, "blockers": reasons})
+                        "dependencies": dependencies, "rebalance": rebal, "eligible": eligible,
+                        "reviewable": reviewable, "blockers": reasons})
     for isin, amount in sells.items():
         if rebalance:
             trade("sell", isin, amount, True, [], "rebalance")
@@ -301,11 +305,14 @@ def _recommendation_snapshot(db, owner, customer_id, document, now, estimated_fe
         for action in actions:
             if action["type"] not in contract["supported_actions"]:
                 action["eligible"] = False
+                action["reviewable"] = False
                 action["blockers"].append("Action is unsupported by the strategy.")
         # Only independently valid groups may be fulfilled by a default all selection.
         by_id = {a["id"]: a for a in actions}
+        reviewable_ids = {a["id"] for a in actions if a.get("reviewable", a["eligible"])}
         for action in actions:
             required = action.get("group", []) + action["dependencies"]
+            action["reviewable"] = action["id"] in reviewable_ids and all(key in reviewable_ids for key in required)
             if any(not by_id[key]["eligible"] for key in required):
                 action["eligible"] = False
                 reasons = [reason for key in required for reason in by_id[key]["blockers"]]
@@ -328,6 +335,9 @@ def projected_allocation(balance, targets, selection):
     for action in selection:
         if action["type"] in ("buy", "sell") and not prices.get(action["instrument_id"]):
             prices[action["instrument_id"]] = action["price_eur"]
+    if any(Decimal(quantity) and not prices.get(isin) for isin, quantity in balance["holdings"].items()):
+        return {**balance, "complete": False, "equity_eur": None, "targets": [],
+                "max_deviation": None, "residual_cash_eur": None}
     values = {isin: Decimal(quantity) * Decimal(prices[isin]) for isin, quantity in balance["holdings"].items()
               if Decimal(quantity) and prices.get(isin)}
     equity = cash + sum(values.values(), ZERO)
@@ -335,7 +345,7 @@ def projected_allocation(balance, targets, selection):
              "target_eur": ledger.euros(equity * weight), "weight": str(weight),
              "deviation": str(((cash if isin is None else values.get(isin, ZERO)) / equity if equity else ZERO) - weight)}
             for isin, weight in weights.items()]
-    return {**balance, "equity_eur": ledger.euros(equity), "targets": rows,
+    return {**balance, "complete": True, "equity_eur": ledger.euros(equity), "targets": rows,
             "max_deviation": str(max((abs(Decimal(t["deviation"])) for t in rows), default=ZERO)),
             "residual_cash_eur": ledger.euros(cash - equity * weights.get(None, ZERO))}
 
@@ -390,9 +400,17 @@ def _prepare_preview(db, owner, customer_id, document, body, now):
     snapshot = recommendation_snapshot(db, owner, customer_id, document, now)
     if body.date != now.date() or snapshot["snapshot_token"] != body.snapshot_token:
         raise md.DataError(409, "Recommendations changed. Refresh and review again.")
+    original = {a["id"]: a for a in snapshot["actions"]}
+    selected = set(body.action_ids)
+    if selected - original.keys() or body.overrides.keys() - selected:
+        raise md.DataError(422, "Unknown selection or override.")
+    for action_id in selected:
+        action = original[action_id]
+        if set(action["dependencies"] + action.get("group", [])) - selected:
+            raise md.DataError(422, "Select every prerequisite and all trades in the rebalance group.")
     estimated_fees = sum((override.commission_eur or ZERO for override in body.overrides.values()), ZERO)
     sale_overrides = {a["instrument_id"]: body.overrides[a["id"]] for a in snapshot["actions"]
-                      if a["type"] == "sell" and a["id"] in body.action_ids and a["id"] in body.overrides}
+                      if a["type"] == "sell" and a["id"] in selected and a["id"] in body.overrides}
     if estimated_fees or sale_overrides:
         # Revalue edited sales before sizing the group, so holdings bound sales
         # and cent-settled effective proceeds fund the dependent purchases.
@@ -401,12 +419,22 @@ def _prepare_preview(db, owner, customer_id, document, body, now):
         saved_prices = {t["instrument_id"]: t["price_eur"] for t in snapshot["targets"]}
         snapshot["targets"] = [{**t, "price_eur": saved_prices[t["instrument_id"]]} for t in adjusted["targets"]]
     by_id = {a["id"]: a for a in snapshot["actions"]}
-    selected = set(body.action_ids)
-    if selected - by_id.keys() or body.overrides.keys() - selected:
-        raise md.DataError(422, "Unknown selection or override.")
+    omitted = sorted(selected - by_id.keys())
+    resized_group = {key for a in snapshot["actions"] if a["rebalance"] and a["id"] in selected
+                     for key in original[a["id"]].get("group", [])}
+    for action_id in omitted:
+        action = original[action_id]
+        override = body.overrides.get(action_id, Override())
+        # Fee sizing may consume a cash leg, but cannot silently discard an
+        # explicit quantity or charge a commission for a trade that will not run.
+        if (action_id not in resized_group or action["type"] != "buy" or action["rebalance"]
+                or not action["eligible"] or override.quantity is not None or override.commission_eur):
+            raise md.DataError(422, "Selected trade has no remaining budget after adjustments.")
     selection = [dict(a) for a in snapshot["actions"] if a["id"] in selected]
+    if not selection:
+        raise md.DataError(422, "No executable actions remain after adjustments.")
     for action in selection:
-        if not action["eligible"]:
+        if not action["eligible"] and not action.get("reviewable"):
             raise md.DataError(422, "Selected action is blocked: " + "; ".join(action["blockers"]))
         required = set(action["dependencies"] + action.get("group", []))
         if required - selected:
@@ -456,8 +484,9 @@ def _prepare_preview(db, owner, customer_id, document, body, now):
                 fees += fee
             transaction = ledger.TradeRequest(**common, instrument_id=action["instrument_id"],
                                                quantity=quantity, price_eur=price, commission_eur=fee)
-            action.update(quantity=str(quantity), price_eur=str(price), commission_eur=ledger.euros(fee),
-                          amount_eur=ledger.euros(gross), price_source="override" if override.price_eur is not None else action["price_source"])
+            action.update(quantity=str(quantity), price_eur=str(price), commission_eur=ledger.euros(fee), eligible=True,
+                          blockers=[], amount_eur=ledger.euros(gross),
+                          price_source="override" if override.price_eur is not None else action["price_source"])
         event = ledger.build_event(db, transaction, events, now, cache)
         event["recommendation"] = {"action_id": action_id, "plan_id": snapshot["plan_id"],
                                     "snapshot_token": body.snapshot_token, "price_source": action.get("price_source"),
@@ -487,7 +516,7 @@ def _prepare_preview(db, owner, customer_id, document, body, now):
     result = {**review, "entries": public_entries,
               "before": projected_allocation(before, snapshot["targets"], selection),
               "after": projected,
-              "selection": selection, "policy": snapshot["policy"],
+              "selection": selection, "omitted_action_ids": omitted, "policy": snapshot["policy"],
               "total_commission_eur": ledger.euros(sum((Decimal(e.get("commission_eur", "0")) for e in entries), ZERO)),
               "residual_eur": after["cash_eur"]}
     result["preview_token"] = digest({"review": review, "entries": normalized_entries, "before": before,
@@ -540,6 +569,9 @@ def fulfill(customer_id: str, portfolio_id: str, body: FulfillRequest, request: 
             return previous
         raise
     if body.preview_token != reviewed["preview_token"]:
+        previous = prior(ledger.require_portfolio(db, owner, customer_id, portfolio_id))
+        if previous is not None:
+            return previous
         raise md.DataError(409, "Preview changed. Review again before confirming.")
     for event in entries:
         event["id"] = str(uuid5(body.operation_id, event["recommendation"]["action_id"]))
