@@ -17,6 +17,20 @@ const title = (action) => `${({ deposit: 'Deposit', buy: 'Buy', sell: 'Sell' })[
 const percent = (value) => value == null ? 'Unavailable' : `${(Number(value) * 100).toFixed(1)}%`;
 const eligible = (action) => action.eligible === true && !action.blocked;
 const listingName = (listing) => typeof listing === 'string' ? listing : listing ? [listing.symbol, listing.exchange, listing.currency].filter(Boolean).join(' / ') : 'Listing unavailable';
+function formatUnitPrice(value) {
+  // Keep exact ledger decimals, including prices below one cent, without Number rounding.
+  const match = typeof value === 'string' && value.match(/^(\d{1,13})(?:\.(\d{1,20}))?(?:e([+-]?\d{1,2}))?$/i);
+  if (!match) return 'Unavailable';
+  const [, integer, fraction = '', exponent = '0'] = match;
+  const shift = Number(exponent);
+  if (shift < -8 || shift > 12) return 'Unavailable';
+  const digits = integer + fraction;
+  const point = integer.length + shift;
+  const whole = point <= 0 ? '0' : digits.padEnd(point, '0').slice(0, point);
+  const decimals = (point <= 0 ? '0'.repeat(-point) + digits : digits.slice(point)).replace(/0+$/, '');
+  if (decimals.length > 8) return 'Unavailable';
+  return `€${BigInt(whole).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${decimals.padEnd(2, '0')}`;
+}
 function Balance({ label, value }) {
   return <div><dt>{label}</dt><dd>{formatEuros(value)}</dd></div>;
 }
@@ -167,7 +181,7 @@ function Recommendations({ request, portfolioPath, planId, revision, recoverySco
       {!actions.length && <p>{data.status === 'aligned' ? 'Funding and allocation are aligned.' : 'No eligible corrective actions.'}</p>}
       <ul className="recommendation-list">{actions.map((action) => <li key={action.id}>
         <strong>{title(action)}</strong><span>{formatEuros(action.amount_eur)}{action.quantity && ` · ${action.quantity} units`}</span>
-        {action.type !== 'deposit' && <span>Price {formatEuros(action.price_eur)} · {action.price_date || 'Date unavailable'} · {action.price_source || 'Source unavailable'} · {listingName(action.listing)} · Fee {formatEuros(action.commission_eur ?? '0.00')}</span>}
+        {action.type !== 'deposit' && <span>Price {formatUnitPrice(action.price_eur)} · {action.price_date || 'Date unavailable'} · {action.price_source || 'Source unavailable'} · {listingName(action.listing)} · Fee {formatEuros(action.commission_eur ?? '0.00')}</span>}
         {action.dependencies?.length > 0 && <span>Requires: {action.dependencies.map((id) => title(actions.find((item) => item.id === id) || { type: id })).join(', ')}. Select prerequisites explicitly in Fulfill all.</span>}
         {action.group?.length > 1 && <span>Rebalance group: {action.group.map((id) => title(actions.find((item) => item.id === id) || { type: id })).join(', ')}. Review the whole group together.</span>}
         {(action.reason || action.blockers?.length > 0) && <span>{action.reason || reasons(action.blockers)}</span>}
@@ -183,7 +197,7 @@ function Recommendations({ request, portfolioPath, planId, revision, recoverySco
         <p>Transaction date (UTC): {data.date}</p>
         <fieldset disabled={busy}>{selectedActions.map((action) => <div key={action.id} className="recommendation-review-action"><h4>{title(action)}</h4>
           {action.type === 'deposit' ? <p>{formatEuros(action.amount_eur)}</p> : <>
-            <p>Saved price: {formatEuros(action.price_eur)} · {action.price_date || 'Date unavailable'} · {action.price_source || 'Source unavailable'} · {listingName(action.listing)}</p>
+            <p>Saved price: {formatUnitPrice(action.price_eur)} · {action.price_date || 'Date unavailable'} · {action.price_source || 'Source unavailable'} · {listingName(action.listing)}</p>
             <div className="goal-fields">{[['price_eur', 'Price (EUR)', action.price_eur], ['commission_eur', 'Fee (EUR)', action.commission_eur ?? '0.00'], ['quantity', 'Quantity', action.quantity]].map(([key, label, value]) => <label key={key}>{label} — {name(action)}<input inputMode="decimal" maxLength={100} value={overrides[action.id]?.[key] ?? value ?? ''} onChange={(event) => edit(action.id, key, event.target.value)} /></label>)}</div>
           </>}
         </div>)}</fieldset>
@@ -200,7 +214,7 @@ function Recommendations({ request, portfolioPath, planId, revision, recoverySco
 }
 function ReviewedPrices({ actions }) {
   return actions.filter((action) => action.type !== 'deposit').map((action) => <p key={action.id}>
-    {title(action)}: {action.price_source === 'override' ? 'Edited price' : 'Saved last/close'} {formatEuros(action.price_eur)} · {action.price_date || 'Date unavailable'} · {action.price_source || 'Source unavailable'} · {listingName(action.listing)}
+    {title(action)}: {action.price_source === 'override' ? 'Edited price' : 'Saved last/close'} {formatUnitPrice(action.price_eur)} · {action.price_date || 'Date unavailable'} · {action.price_source || 'Source unavailable'} · {listingName(action.listing)}
   </p>);
 }
 function EntryList({ entries }) {
@@ -209,5 +223,5 @@ function EntryList({ entries }) {
     return /^\d+\.\d{2}$/.test(value) ? sum + BigInt(value.replace('.', '')) : sum;
   }, 0n);
   const fees = `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}`;
-  return <section aria-label="Reviewed transactions"><h4>Transactions</h4><ol>{entries.map((entry, index) => <li key={entry.id || index}>{title(entry)} · {entry.date} · {entry.type === 'deposit' ? formatEuros(entry.amount_eur) : `${entry.quantity} at ${formatEuros(entry.price_eur)} · Fee ${formatEuros(entry.commission_eur ?? '0.00')}`}</li>)}</ol><p>Total fees: {formatEuros(fees)}</p></section>;
+  return <section aria-label="Reviewed transactions"><h4>Transactions</h4><ol>{entries.map((entry, index) => <li key={entry.id || index}>{title(entry)} · {entry.date} · {entry.type === 'deposit' ? formatEuros(entry.amount_eur) : `${entry.quantity} at ${formatUnitPrice(entry.price_eur)} · Fee ${formatEuros(entry.commission_eur ?? '0.00')}`}</li>)}</ol><p>Total fees: {formatEuros(fees)}</p></section>;
 }

@@ -97,6 +97,47 @@ describe('Portfolio recommendations', () => {
     expect(retry.mock.calls.find(([path]) => path.endsWith('/fulfill'))[1].body).toEqual(body);
     expect(body.operation_id).toMatch(/^[0-9a-f-]{36}$/);
   });
+  it.each([
+    ['0.004', '€0.004'],
+    ['10.0049', '€10.0049'],
+    ['0.00000001', '€0.00000001', '1E-8'],
+    ['1000000000000', '€1,000,000,000,000.00', '1E+12'],
+    ['999999999999.12345678', '€999,999,999,999.12345678'],
+  ])('preserves exact unit price %s in defaults, preview and recovered reviews', async (price, formatted, wirePrice = price) => {
+    const read = { ...snapshot, actions: snapshot.actions.map((action) => action.id === 'buy-a' ? { ...action, price_eur: wirePrice } : action) };
+    const exactEntries = entries.map((entry) => entry.type === 'buy' ? { ...entry, price_eur: price } : entry);
+    const selection = [{ ...read.actions[1], price_source: 'override' }];
+    const request = api({ read, previewResult: { ...preview, entries: exactEntries, selection },
+      commit: () => { throw new Error('Lost response'); } });
+    const view = render(<PortfolioRecommendations {...props} request={request} onRefresh={vi.fn()} />);
+    expect(await screen.findByText(/Price .*raw close/)).toHaveTextContent(`Price ${formatted}`);
+    await openAll();
+    expect(screen.getByText(/Saved price: .*raw close/)).toHaveTextContent(`Saved price: ${formatted}`);
+    fireEvent.change(screen.getByLabelText('Price (EUR) — ALPHA'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('Price (EUR) — ALPHA'), { target: { value: price } });
+    await review();
+    expect(screen.getByText(/Edited price/)).toHaveTextContent(`Edited price ${formatted}`);
+    expect(within(screen.getByRole('region', { name: 'Reviewed transactions' })).getByText(/6 at/)).toHaveTextContent(`6 at ${formatted} · Fee €0.00`);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm fulfillment' }));
+    await screen.findByText(/The result is uncertain/);
+    const body = request.mock.calls.find(([path]) => path.endsWith('/fulfill'))[1].body;
+    view.unmount();
+    const retry = api();
+    render(<PortfolioRecommendations {...props} request={retry} onRefresh={vi.fn()} />);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).queryByLabelText('Price (EUR) — ALPHA')).not.toBeInTheDocument();
+    expect(within(dialog).getByText(/Edited price/)).toHaveTextContent(`Edited price ${formatted}`);
+    expect(within(dialog).getByText(/6 at/)).toHaveTextContent(`6 at ${formatted} · Fee €0.00`);
+    expect(within(dialog).getByText('Total fees: €0.00')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry saved operation' }));
+    await waitFor(() => expect(retry.mock.calls.find(([path]) => path.endsWith('/fulfill'))[1].body).toEqual(body));
+    expect(body.overrides['buy-a'].price_eur).toBe(price);
+  });
+  it.each([null, 'invalid', '1E-9', '1E+13', '0.000000001'])('marks unsupported unit price %s unavailable without rounding it', async (price) => {
+    const read = { ...snapshot, actions: [{ ...snapshot.actions[1], price_eur: price }] };
+    render(<PortfolioRecommendations {...props} request={api({ read })} onRefresh={vi.fn()} />);
+    expect(await screen.findByText(/Price Unavailable/)).toHaveTextContent('Fee €0.00');
+  });
   it('discards a stale 409 review and requires new selection', async () => {
     const request = api({ commit: () => { throw Object.assign(new Error('Stale snapshot'), { status: 409 }); } });
     render(<PortfolioRecommendations {...props} request={request} onRefresh={vi.fn()} />);

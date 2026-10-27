@@ -79,7 +79,9 @@ holding for batch sizing, caps the default sale at the available shares, and
 resizes dependent purchases using cent-settled proceeds after commissions.
 Reducing a sale quantity also reduces its dependent purchase budget. Projected
 allocation diagnostics still use the saved marks. Derived quantities above the
-ledger unit limit are rejected as invalid execution details.
+ledger unit limit are rejected as invalid execution details. Saved and reviewed
+unit prices retain up to eight decimal places in the UI, including recovered
+reviews after an uncertain submission; cash totals and fees remain cent-formatted.
 Every trade required by a rebalance group contributes to its fee cap, including
 a cash-funded purchase in that group.
 The edited batch must improve maximum allocation drift over the cash/contribution
