@@ -67,6 +67,51 @@ def test_funding_immutable_schedule_withdrawals_and_no_reads_write(tracker, db):
     assert result["targets"][0]["weight"] == "1"
 
 
+@pytest.mark.parametrize("initial,blocked", [("1000000000000", True), ("999999999999.98", False)])
+def test_cumulative_funding_ledger_limit(tracker, db, initial, blocked):
+    client, cid, metadata, url = tracker
+    # Two due payments: each input is valid, but their cumulative sum may not be.
+    saved_plan(client, db, cid, metadata, initial=initial, monthly="0.01")
+    before = db.portfolios.find_one({"_id": metadata["id"]})
+    snapshot = get(client, url)
+    expected = Decimal(initial) + Decimal("0.02")
+    assert Decimal(snapshot["funding"]["scheduled_due_eur"]) == expected
+    assert Decimal(snapshot["funding"]["shortfall_eur"]) == expected
+    assert snapshot["status"] == ("blocked" if blocked else "ready")
+    deposit = next(a for a in snapshot["actions"] if a["type"] == "deposit")
+    assert deposit["eligible"] is not blocked
+    assert bool(deposit["blockers"]) is blocked
+    if blocked:
+        assert "ledger limit" in deposit["blockers"][0]
+        assert not any(a["eligible"] for a in snapshot["actions"])
+        buy = next(a for a in snapshot["actions"] if a["type"] == "buy")
+        assert "deposit" in buy["dependencies"]
+        assert any("ledger limit" in reason for reason in buy["blockers"])
+    response = client.post(url + "/recommendations/preview", json={
+        "snapshot_token": snapshot["snapshot_token"], "date": snapshot["date"], "action_ids": ["deposit"]})
+    assert response.status_code == (422 if blocked else 200), response.text
+    if blocked:
+        assert "ledger limit" in response.json()["detail"]
+    else:
+        assert Decimal(response.json()["entries"][0]["amount_eur"]) == rec.ledger.MAX_AMOUNT
+    assert db.portfolios.find_one({"_id": metadata["id"]}) == before
+
+
+@pytest.mark.parametrize("amount", ["1000000000000.01", "0", "1.001"])
+def test_preview_defensively_rejects_invalid_generated_deposit(tracker, db, monkeypatch, amount):
+    client, cid, metadata, url = tracker
+    saved_plan(client, db, cid, metadata)
+    snapshot = get(client, url)
+    # Exercise the model-validation boundary even if eligibility regresses later.
+    snapshot["actions"] = [{**snapshot["actions"][0], "amount_eur": amount}]
+    monkeypatch.setattr(rec, "recommendation_snapshot", lambda *args: snapshot)
+    response = client.post(url + "/recommendations/preview", json={
+        "snapshot_token": snapshot["snapshot_token"], "date": snapshot["date"], "action_ids": ["deposit"]})
+    assert response.status_code == 422, response.text
+    assert "deposit ledger limits" in response.json()["detail"]
+    assert not db.portfolios.find_one({"_id": metadata["id"]})["transactions"]
+
+
 def test_default_price_preview_atomic_fulfill_retry_after_removal_and_edit(tracker, db, monkeypatch):
     client, cid, metadata, url = tracker
     saved_plan(client, db, cid, metadata)

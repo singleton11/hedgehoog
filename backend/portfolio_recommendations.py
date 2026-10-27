@@ -11,7 +11,7 @@ import re
 from uuid import UUID, uuid5
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from auth import CurrentUser
 from customer_planner import _plan
@@ -170,8 +170,10 @@ def compute_actions(funding, weights, cash, positions, market, policy, today, es
     targets, actions, blockers = [], [], []
     gap = Decimal(funding["shortfall_eur"])
     if gap > 0:
+        funding_blockers = (["Scheduled funding exceeds the per-deposit ledger limit."]
+                            if gap > ledger.MAX_AMOUNT else [])
         actions.append({"id": "deposit", "type": "deposit", "amount_eur": str(gap), "dependencies": [],
-                        "eligible": True, "rebalance": False, "blockers": []})
+                        "eligible": not funding_blockers, "rebalance": False, "blockers": funding_blockers})
     values = {}
     for isin, position in positions.items():
         if not position["quantity"]:
@@ -423,7 +425,10 @@ def _prepare_preview(db, owner, customer_id, document, body, now):
         if action["type"] == "deposit":
             if action_id in body.overrides:
                 raise md.DataError(422, "Funding amounts are server generated and cannot be overridden.")
-            transaction = ledger.CashRequest(**common, amount_eur=action["amount_eur"])
+            try:
+                transaction = ledger.CashRequest(**common, amount_eur=action["amount_eur"])
+            except ValidationError as exc:
+                raise md.DataError(422, "Computed funding amount violates the deposit ledger limits.") from exc
         else:
             price = override.price_eur if override.price_eur is not None else (Decimal(action["price_eur"]) if action["price_eur"] else None)
             if price is None:
