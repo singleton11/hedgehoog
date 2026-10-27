@@ -504,7 +504,12 @@ excluded from history, pagination totals, balances, positions and PnL. Removal i
 not physical erasure from storage. History is paginated at the API boundary.
 
 Each portfolio is capped at **5,000 recorded transactions**, including removed
-entries, to keep the atomic document below MongoDB's 16 MB limit. Removal does not
-free capacity. Further additions return 409; existing balances, history and
-removal remain available. Large-ledger storage and corporate actions need a later
-version.
+entries, as a lifetime replay/work bound. Every recommendation, manual and import
+append also checks the encoded BSON size of the complete candidate document,
+including durable receipts, duplicated response entries and provenance. Capacity
+reserves all future removal markers plus 64 KiB for metadata edits below MongoDB's
+16 MiB limit, so large snapshots can reach capacity before the count cap. Removal
+does not free capacity. Further additions return 409 without writing any part of
+the batch; identical committed retries still return their original result.
+Existing balances, history and removal remain available. Large-ledger storage and
+corporate actions need a later version.

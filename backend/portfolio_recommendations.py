@@ -556,6 +556,7 @@ def fulfill(customer_id: str, portfolio_id: str, body: FulfillRequest, request: 
     if any(a["rebalance"] for a in reviewed["selection"]):
         update["$set"] = {"recommendation_last_rebalance": {"date": body.date.isoformat(),
                            "policy": reviewed["policy"], "operation_id": operation_id}}
+    ledger.ensure_append_capacity(document, entries, receipt=receipt, fields=update.get("$set"))
     # Re-read the entire market/plan identity immediately before the document CAS.
     current = recommendation_snapshot(db, owner, customer_id, document, md.utcnow())
     if current["snapshot_token"] != body.snapshot_token:

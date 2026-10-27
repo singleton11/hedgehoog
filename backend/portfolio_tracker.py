@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 from typing import Annotated, Literal
 from uuid import UUID
 
-from bson import Decimal128, ObjectId
+from bson import BSON, Decimal128, Int64, ObjectId
 from fastapi import APIRouter, Body, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -20,7 +20,9 @@ import market_data as md
 
 router = APIRouter(tags=["portfolios"])
 BASE = "/customers/{customer_id}/portfolios"
-MAX_TRANSACTIONS = 5000  # Keeps the single-document atomic ledger below BSON's 16 MB limit.
+MAX_TRANSACTIONS = 5000  # Lifetime replay/work bound; BSON capacity is checked separately.
+MAX_BSON_BYTES = 16 * 1024 * 1024
+PORTFOLIO_METADATA_RESERVE = 64 * 1024
 MAX_AMOUNT = Decimal("1000000000000")
 CENT = Decimal("0.01")
 ZERO = Decimal(0)
@@ -602,6 +604,22 @@ def normalized_request(body):
     return normalized
 
 
+def ensure_append_capacity(document, entries, *, receipt=None, fields=None):
+    """Bound the whole CAS candidate, not just its active ledger or event count."""
+    candidate = {**document, **(fields or {}), "revision": Int64(document["revision"] + 1)}
+    # Removal retains the event and receipts. Reserve every future tombstone now,
+    # including BSON field/string overhead, so a full ledger remains removable.
+    candidate["transactions"] = [
+        {"_removed_at": "9999-12-31T23:59:59.999999Z", **event}
+        for event in [*document["transactions"], *entries]
+    ]
+    if receipt is not None:
+        candidate["recommendation_receipts"] = [*document.get("recommendation_receipts", []), receipt]
+    # Leave ample space for legal name/plan edits and future revision growth.
+    if len(BSON.encode(candidate)) > MAX_BSON_BYTES - PORTFOLIO_METADATA_RESERVE:
+        raise md.DataError(409, "Portfolio document capacity reached. Nothing was saved.")
+
+
 def build_event(db, body, events, now, instrument_cache=None):
     """Shared manual/batch validation. Caller replays and atomically saves events."""
     normalized = normalized_request(body)
@@ -656,6 +674,7 @@ def add_transaction(customer_id: str, portfolio_id: str, body: TransactionReques
                 raise md.DataError(409, f"This portfolio has reached the {MAX_TRANSACTIONS}-transaction limit.")
             event = build_event(db, body, events, now)
             replay([*events, event])
+            ensure_append_capacity(document, [event])
             result = db.portfolios.update_one({**scope(owner, customer_id, portfolio_id), "revision": document["revision"]},
                                                {"$push": {"transactions": event}, "$inc": {"revision": 1}})
             if result.modified_count:
