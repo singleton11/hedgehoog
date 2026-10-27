@@ -385,6 +385,59 @@ def test_acquired_history_filter_uses_published_yahoo_generation(db, monkeypatch
     assert md.acquired_instruments(db, min_history_years=15)["total"] == 0
 
 
+def test_history_filter_accepts_publication_during_profile_selection(db, clock, monkeypatch):
+    import return_statistics
+
+    def publish(generation, days):
+        db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "collected_at": clock[0],
+                                   "job_id": generation, "provider": "yfinance", "published": True})
+        db.acquisition_jobs.insert_one({"_id": generation, "instrument_id": ISIN, "listing": LISTING,
+                                        "provider": "yfinance", "published": True, "published_at": clock[0]})
+        for day in days:
+            db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "job_id": generation,
+                                  "provider": "yfinance", "date": day, "collected_at": clock[0],
+                                  "data": {"close": "100", "price_basis": "provider_split_adjusted"}})
+
+    publish("previous", ("2024-01-01", "2025-01-01"))
+    db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
+    aggregate = db.instruments.aggregate
+
+    def select_with_refresh(pipeline, *args, **kwargs):
+        if not any("$group" in stage for stage in pipeline):
+            return aggregate(pipeline, *args, **kwargs)
+
+        def cursor():
+            # A refresh becomes visible while the inventory cursor is consumed.
+            clock[0] += timedelta(seconds=1)
+            publish("refreshed", ("2020-01-01", "2025-01-01"))
+            yield from aggregate(pipeline, *args, **kwargs)
+
+        return cursor()
+
+    bounds = Mock(wraps=md.saved_history_bounds)
+    dates = Mock(wraps=md.quote_dates)
+    statistics = Mock(wraps=return_statistics.refresh_statistics)
+    monkeypatch.setattr(db.instruments, "aggregate", select_with_refresh)
+    monkeypatch.setattr(md, "saved_history_bounds", bounds)
+    monkeypatch.setattr(md, "quote_dates", dates)
+    monkeypatch.setattr(return_statistics, "refresh_statistics", statistics)
+
+    result = md.acquired_instruments(db, min_history_years=5)
+    assert result["total"] == len(result["items"]) == 1
+    item = result["items"][0]
+    assert item["instrument_id"] == ISIN
+    assert item["collected_at"] == md.public(clock[0])
+    assert (item["first_date"], item["last_date"], item["quote_count"]) == ("2020-01-01", "2025-01-01", 2)
+    assert bounds.call_args.args[2] == clock[0] == NOW + timedelta(seconds=1)
+    dates.assert_called_once_with(db, ISIN, LISTING, generation="refreshed", publication_as_of=clock[0])
+    statistics.assert_called_once_with(db, ISIN, generation="refreshed", as_of=clock[0])
+    print({"scenario": "publication during saved-profile selection", "total": result["total"],
+           "instrument_id": item["instrument_id"], "generation": "refreshed",
+           "publication_cutoff": md.public(clock[0]), "first_date": item["first_date"],
+           "last_date": item["last_date"], "quote_count": item["quote_count"],
+           "limitation": "synthetic mongomock data; no real-Mongo concurrency or performance evidence"})
+
+
 def test_history_endpoint_pipeline_and_batch_operation_bounds(db, monkeypatch, history_lookup_calls):
     from bson import BSON
     import return_statistics

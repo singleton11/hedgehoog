@@ -297,12 +297,13 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None):
         {"$sort": {"collected_at": -1, "_id": 1}},
     ]
     bounds = {}
-    publication_cutoff = utcnow()
     if min_history_years is None:
         pipeline.append({"$facet": {"count": [{"$count": "total"}], "items": [{"$skip": offset}, {"$limit": limit}]}})
         result = list(db.instruments.aggregate(pipeline))[0]
     else:
         observations = list(db.instruments.aggregate(pipeline))
+        # Profiles published while the cursor is consumed must pass validation.
+        publication_cutoff = utcnow()
         bounds = saved_history_bounds(db, observations, publication_cutoff)
         matching = []
         for observation in observations:
