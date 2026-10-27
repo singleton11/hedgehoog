@@ -1055,6 +1055,63 @@ def test_fee_adjusted_preview_mismatch_reconciles_concurrent_receipt(tracker, db
         assert client.post(url + "/recommendations/fulfill", json=winner_body).json() == committed
 
 
+@pytest.mark.parametrize("receipt", ["matching", "changed-payload", "absent"])
+def test_validation_failure_reconciles_concurrent_receipt(tracker, db, monkeypatch, receipt):
+    client, cid, metadata, url = tracker
+    saved_plan(client, db, cid, metadata)
+    snapshot = get(client, url)
+    payload, preview = review(client, url, snapshot)
+    body = {**payload, "operation_id": str(uuid4()), "preview_token": preview["preview_token"]}
+    winner_body = body
+    if receipt == "changed-payload":
+        winner_payload, winner_preview = review(client, url, snapshot, ["deposit"])
+        winner_body = {**winner_payload, "operation_id": body["operation_id"],
+                       "preview_token": winner_preview["preview_token"]}
+    before = db.portfolios.find_one({"_id": metadata["id"]})
+    original = rec.ledger.build_event
+    reached_buy, committed, after_winner = False, None, None
+    validation_errors = []
+
+    def commit_then_remove_acquired_data(database, transaction, events, now, instrument_cache=None):
+        nonlocal reached_buy, committed, after_winner
+        if transaction.type == "buy" and not reached_buy:
+            reached_buy = True
+            # Both requests passed the initial receipt and snapshot checks. The
+            # winner commits before acquired-listing validation fails for the loser.
+            if receipt != "absent":
+                winner = client.post(url + "/recommendations/fulfill", json=winner_body)
+                assert winner.status_code == 200, winner.text
+                committed = winner.json()
+            after_winner = db.portfolios.find_one({"_id": metadata["id"]})
+            assert db.instruments.delete_many({"instrument_id": ISIN}).deleted_count > 0
+        try:
+            return original(database, transaction, events, now, instrument_cache)
+        except md.DataError as exc:
+            validation_errors.append((exc.status, str(exc)))
+            raise
+
+    monkeypatch.setattr(rec.ledger, "build_event", commit_then_remove_acquired_data)
+    response = client.post(url + "/recommendations/fulfill", json=body)
+    detail = "Acquire the selected instrument listing before trading."
+    assert reached_buy
+    assert validation_errors == [(422, detail)]
+    if receipt == "matching":
+        assert response.status_code == 200, response.text
+        assert response.json() == committed
+    else:
+        assert response.status_code == (409 if receipt == "changed-payload" else 422), response.text
+        expected = "Operation ID was already used with different reviewed inputs." if receipt == "changed-payload" else detail
+        assert response.json()["detail"] == expected
+    assert db.portfolios.find_one({"_id": metadata["id"]}) == after_winner
+    if receipt == "absent":
+        assert after_winner == before
+    else:
+        assert after_winner["revision"] == before["revision"] + 1
+        assert len(after_winner["recommendation_receipts"]) == 1
+        assert len(after_winner["transactions"]) == (2 if receipt == "matching" else 1)
+        assert client.post(url + "/recommendations/fulfill", json=winner_body).json() == committed
+
+
 @pytest.mark.parametrize("site,snapshot_call,stale_detail", [
     ("prepare-preview", 1, "Recommendations changed. Refresh and review again."),
     ("before-cas", 2, "Market, date, plan or policy changed. Review again."),

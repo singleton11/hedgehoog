@@ -560,10 +560,8 @@ def fulfill(customer_id: str, portfolio_id: str, body: FulfillRequest, request: 
         return previous  # Must precede date, plan, revision, quote and policy checks.
     try:
         reviewed, entries = prepare_preview(db, owner, customer_id, document, body, now)
-    except md.DataError as exc:
-        if exc.status != 409:
-            raise
-        # An identical writer may commit before this stale review is rejected.
+    except md.DataError:
+        # A concurrent writer may commit before stale-state or ledger validation fails.
         previous = prior(ledger.require_portfolio(db, owner, customer_id, portfolio_id))
         if previous is not None:
             return previous
