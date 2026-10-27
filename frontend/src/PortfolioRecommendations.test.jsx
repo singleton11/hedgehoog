@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PortfolioRecommendations, { clearRecommendationRecovery } from './PortfolioRecommendations.jsx';
 
@@ -549,26 +550,40 @@ describe('Recommendation error handling and review details', () => {
     fireEvent.keyDown(first, { key: 'Tab' });
     expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
-  it.each(['preview', 'fulfill'])('traps both Tab directions when %s disables every control', async (stage) => {
-    const pending = deferred();
+  it.each(['preview', 'fulfill', 'retry'])('retains actual focus and traps both Tab directions while %s is pending', async (stage) => {
+    const user = userEvent.setup(), pending = deferred();
+    if (stage === 'retry') sessionStorage.setItem(recoveryKey, JSON.stringify(savedOperation()));
     const request = vi.fn((path) => {
-      if (path.endsWith(`/${stage}`)) return pending.promise;
+      if (path.endsWith(stage === 'preview' ? '/preview' : '/fulfill')) return pending.promise;
       if (path.endsWith('/preview')) return Promise.resolve(preview);
       return Promise.resolve(snapshot);
     });
-    render(<PortfolioRecommendations {...props} request={request} onRefresh={vi.fn()} />);
-    await openAll();
+    render(<><button type="button">Before recommendations</button>
+      <PortfolioRecommendations {...props} request={request} onRefresh={vi.fn()} />
+      <button type="button">After recommendations</button></>);
+    await screen.findByText('ALPHA');
+    if (stage !== 'retry') await openAll();
     if (stage === 'fulfill') await review();
-    fireEvent.click(screen.getByRole('button', { name: stage === 'preview' ? 'Preview transactions' : 'Confirm fulfillment' }));
+    const trigger = screen.getByRole('button', { name: ({ preview: 'Preview transactions', fulfill: 'Confirm fulfillment', retry: 'Retry saved operation' })[stage] });
+    trigger.focus();
+    expect(trigger).toHaveFocus();
+    await user.keyboard('{Enter}');
     const dialog = screen.getByRole('dialog');
     expect(dialog.querySelectorAll('button:not(:disabled), input:not(:disabled)')).toHaveLength(0);
-    for (const shiftKey of [false, true]) {
-      const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
-      fireEvent(dialog, event);
-      expect(event.defaultPrevented).toBe(true);
+    // Start at the actual active element, not an event artificially sent to the dialog.
+    expect(dialog).toHaveFocus();
+    for (const shift of [false, true]) {
+      await user.tab({ shift });
       expect(dialog).toHaveFocus();
     }
     await act(async () => pending.reject(new Error('Request failed')));
+    expect(dialog).toHaveFocus();
+    await user.tab();
+    expect(stage === 'preview' ? screen.getByLabelText('Price (EUR) — ALPHA')
+      : screen.getByRole('button', { name: 'Retry saved operation' })).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    if (stage === 'preview') expect(screen.getByRole('button', { name: 'Fulfill all' })).toHaveFocus();
   });
   it('keeps the pending review open when Escape is pressed, then permits closing after a failure', async () => {
     const pending = deferred();

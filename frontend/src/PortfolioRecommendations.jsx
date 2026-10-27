@@ -81,9 +81,10 @@ function Recommendations({ request, portfolioPath, planId, revision, recoverySco
     return () => abort.abort();
   }, [request, portfolioPath, planId, revision, attempt]);
   useEffect(() => {
+    // Disabling the focused control can move browser focus outside the modal.
     if (selection || (recovery && !recoveryHidden)) dialog.current?.focus();
     else if (opener.current) { opener.current.focus(); opener.current = null; }
-  }, [selection, recovery, recoveryHidden]);
+  }, [selection, recovery, recoveryHidden, busy]);
   const actions = data?.actions || [];
   const available = actions.filter(reviewable);
   function clearSaved() { sessionStorage.removeItem(storageKey); setRecovery(null); }
