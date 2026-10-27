@@ -1,0 +1,147 @@
+{
+  "prompt": {
+    "kind": "approval",
+    "context_label": "Issue #42 <synthetic> & review",
+    "context_url": "https://github.com/singleton11/hedgehoog/issues/42",
+    "question": "Keep <synthetic> & review paused?",
+    "recommended": "review",
+    "options": [
+      {
+        "id": "decline",
+        "label": "Decline",
+        "description": "Stop this synthetic request."
+      },
+      {
+        "id": "review",
+        "label": "Review offline",
+        "description": "Keep this paused for human review."
+      }
+    ]
+  },
+  "tokens": {
+    "review": "a1:synthetic_review",
+    "decline": "a1:synthetic_decline",
+    "__other__": "a1:synthetic_other"
+  },
+  "rendered": {
+    "text": "<b>Approval needed</b>\n<a href=\"https://github.com/singleton11/hedgehoog/issues/42\">Issue #42 &lt;synthetic&gt; &amp; review</a>\n\nKeep &lt;synthetic&gt; &amp; review paused?\n\n1. <b>Review offline (Recommended)</b> - Keep this paused for human review.\n2. <b>Decline</b> - Stop this synthetic request.\n\nChoose a button, or use Reply to write a different answer. Task paused.",
+    "parse_mode": "HTML",
+    "reply_markup": {
+      "inline_keyboard": [
+        [
+          {
+            "text": "Review offline (Recommended)",
+            "callback_data": "a1:synthetic_review"
+          }
+        ],
+        [
+          {
+            "text": "Decline",
+            "callback_data": "a1:synthetic_decline"
+          }
+        ],
+        [
+          {
+            "text": "Other / write a reply",
+            "callback_data": "a1:synthetic_other"
+          }
+        ]
+      ]
+    }
+  },
+  "callback": {
+    "question_id": "synthetic-question-42",
+    "bot_id": "123",
+    "delivery_key": "telegram:123:synthetic-question-42:1",
+    "pending": {
+      "chat_id": 42,
+      "user_id": 42,
+      "message_id": 10
+    },
+    "context": {
+      "repository": "singleton11/hedgehoog",
+      "issue_number": 42
+    },
+    "update_id": 1,
+    "schema_version": 1,
+    "callback_query": {
+      "data": "a1:synthetic_review",
+      "from": {
+        "id": 42,
+        "is_bot": false
+      },
+      "id": "synthetic-click",
+      "message": {
+        "chat": {
+          "id": 42,
+          "type": "private"
+        },
+        "date": 100,
+        "from": {
+          "id": 123,
+          "is_bot": true
+        },
+        "message_id": 10
+      }
+    },
+    "update": {
+      "callback_query": {
+        "data": "a1:synthetic_review",
+        "from": {
+          "id": 42,
+          "is_bot": false
+        },
+        "id": "synthetic-click",
+        "message": {
+          "chat": {
+            "id": 42,
+            "type": "private"
+          },
+          "date": 100,
+          "from": {
+            "id": 123,
+            "is_bot": true
+          },
+          "message_id": 10
+        }
+      },
+      "update_id": 1
+    },
+    "answer": {
+      "source": "callback_query",
+      "option_id": "review",
+      "label": "Review offline",
+      "text": "Keep this paused for human review."
+    }
+  },
+  "text": {
+    "question_id": "synthetic-question-42",
+    "bot_id": "123",
+    "delivery_key": "telegram:123:synthetic-question-42:2",
+    "pending": {
+      "chat_id": 42,
+      "user_id": 42,
+      "message_id": 10
+    },
+    "context": {
+      "repository": "singleton11/hedgehoog",
+      "issue_number": 42
+    },
+    "update_id": 2,
+    "reply": {
+      "chat": {
+        "id": 42,
+        "type": "private"
+      },
+      "from": {
+        "id": 42,
+        "is_bot": false
+      },
+      "message_id": 11,
+      "reply_to_message": {
+        "message_id": 10
+      },
+      "text": "Keep this paused for human review."
+    }
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "runtime": "temporal",
+  "source_sha256": {
+    ".opencode/skills/paseo-telegram-attention/scripts/attention_prompt.py": "5b9809e26596db11840e3e316f0fc4552946f13112040e2c46785ef8cdc84d92",
+    ".opencode/skills/paseo-telegram-attention/scripts/attention_receiver.py": "a4c950dcdf0a9754b1073f865ce93ac43e6c9bc5cf325405e352ab66ff11c02b",
+    ".opencode/skills/paseo-telegram-attention/scripts/telegram_attention.py": "d3e6b424bc5d26f785614e9be506f0144d9897d348d014b60a52434a2bec2525",
+    ".opencode/skills/paseo-telegram-attention/scripts/test_attention_prompt.py": "d68160d0ba7c5bf5a5661a014a551d3e8fa977981cd58fced8d56a8246d46faa",
+    ".opencode/skills/paseo-telegram-attention/scripts/test_attention_receiver.py": "57d78b47af9485b57c7619a98bcd54cec780534d5cc666154161e2fdead14753",
+    ".opencode/skills/paseo-telegram-attention/scripts/test_callback_receiver.py": "c44cf353210bcd302aee1f65a85f27c985cdb3c115f1b12061fb20af8978758b",
+    ".opencode/skills/paseo-telegram-attention/scripts/test_telegram_attention.py": "518be7e983a510899fe0b149a32e57b6cfc6352660cec1ce0cc522e581e1e709",
+    ".opencode/skills/planning/references/create-plan.json": "6974ac156e437f795a816680191a6bcc26acfcab84ba5304d1988fca9d14cd1c",
+    ".opencode/skills/planning/references/plan-content.json": "98e1237311bf3c9bc142357f5912ce473241b0cf3858b2f91d3f6d590b386745",
+    ".opencode/skills/planning/scripts/build_plan.py": "ed5dbdc49ba3d5bf9a4cf7feb44cdc4fca2beaa03d5ae764cd121a600dee8f52",
+    ".opencode/skills/planning/tests/test_build_plan.py": "a440a11f4cd6a452562227ebf14b2b24138f8ba4e3584f530d21aca38096f305",
+    "scripts/fixtures/automation-formatting.json": "6560df2a0c14ca31d7c8c02740eaa3f68f7278d12f9d79470c4296e6a5d7f2cc",
+    "scripts/tests/test_classifier_skill.py": "4377467bceb10f8b9455f326fa18c10308a287645652172cb1763e4f539af645",
+    "scripts/tests/test_issue_to_pr_skill.py": "af325d47a8ae7d99c7b51dfbd0cd465505da4bef01e5ce8d583e67f27e0d0454"
+  },
+  "components": {
+    "docs": {
+      "path": "successor/docs.py",
+      "contracts": [
+        "native_title_headings_spacing",
+        "utf16_ranges_lists_links_code",
+        "exact_three_state_dropdown",
+        "revision_guarded_human_review"
+      ],
+      "references": [
+        ".opencode/skills/planning/scripts/build_plan.py",
+        ".opencode/skills/planning/references/plan-content.json",
+        ".opencode/skills/planning/references/create-plan.json",
+        ".opencode/skills/planning/tests/test_build_plan.py"
+      ]
+    },
+    "attention": {
+      "path": "successor/attention.py",
+      "contracts": [
+        "escaped_html_recommended_first",
+        "two_to_five_options_decline_reply",
+        "canonical_callback_and_legacy_text",
+        "other_is_not_an_answer",
+        "persisted_identity_and_token_binding"
+      ],
+      "references": [
+        ".opencode/skills/paseo-telegram-attention/scripts/attention_prompt.py",
+        ".opencode/skills/paseo-telegram-attention/scripts/telegram_attention.py",
+        ".opencode/skills/paseo-telegram-attention/scripts/test_attention_prompt.py",
+        ".opencode/skills/paseo-telegram-attention/scripts/test_telegram_attention.py",
+        ".opencode/skills/paseo-telegram-attention/scripts/test_callback_receiver.py",
+        "scripts/fixtures/automation-formatting.json"
+      ]
+    },
+    "github": {
+      "path": "successor/github.py",
+      "contracts": [
+        "installation_app_only",
+        "target_marker_bot_readback",
+        "durable_idempotency_no_blind_retry",
+        "no_historical_rewrites"
+      ],
+      "references": [
+        "scripts/tests/test_classifier_skill.py",
+        "scripts/tests/test_issue_to_pr_skill.py"
+      ]
+    },
+    "service": {
+      "path": "successor/service.py",
+      "contracts": [
+        "sole_receiver_and_task_worker",
+        "canonical_first_answer_once",
+        "ui_retry_independent_of_dispatch",
+        "native_approval_and_task_locks"
+      ],
+      "references": [
+        ".opencode/skills/paseo-telegram-attention/scripts/attention_receiver.py",
+        ".opencode/skills/paseo-telegram-attention/scripts/test_attention_receiver.py",
+        ".opencode/skills/paseo-telegram-attention/scripts/test_callback_receiver.py",
+        "scripts/fixtures/automation-formatting.json"
+      ]
+    }
+  }
+}
