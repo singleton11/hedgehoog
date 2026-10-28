@@ -249,6 +249,55 @@ describe('Portfolio recommendations', () => {
     await waitFor(() => expect(request.mock.calls.some(([path]) => path.endsWith('/fulfill'))).toBe(true));
     expect(request.mock.calls.find(([path]) => path.endsWith('/fulfill'))[1].body).toMatchObject(reviewedBody);
   });
+  it('stores only linear price display data under quota and retries the exact grouped request after remount', async () => {
+    const sales = Array.from({ length: 100 }, (_, index) => ({
+      id: `sell:OFF${index}:rebalance`, type: 'sell', instrument_id: `OFF${index}`, label: `Synthetic holding ${index}`,
+      amount_eur: '25.00', quantity: '25', price_eur: '1.00', commission_eur: '0.00',
+      price_date: snapshot.date, price_source: 'saved_raw_close', listing: { symbol: `OFF${index}`, exchange: 'XETR', currency: 'EUR' },
+      dependencies: [], rebalance: true, eligible: true,
+    }));
+    const buy = { ...snapshot.actions[1], id: 'buy-a', dependencies: sales.map((action) => action.id), rebalance: true };
+    const group = [...sales, buy].map((action) => action.id);
+    const actions = [...sales, buy].map((action) => ({ ...action, group }));
+    const groupedEntries = actions.map(({ type, instrument_id, quantity, price_eur, commission_eur }) => ({
+      type, instrument: { instrument_id, name: instrument_id }, quantity, price_eur, commission_eur, date: snapshot.date,
+    }));
+    const previewResult = { ...preview, entries: groupedEntries, selection: actions };
+    const quota = 128 * 1024;
+    expect(JSON.stringify(previewResult.selection).length * 2).toBeGreaterThan(quota);
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (key, value) {
+      if (value.length * 2 > quota) throw new DOMException('Quota exceeded', 'QuotaExceededError');
+      return setItem.call(this, key, value);
+    });
+    const read = { ...snapshot, actions };
+    const request = api({ read, previewResult, commit: () => { throw new Error('Lost reply'); } });
+    const view = render(<PortfolioRecommendations {...props} request={request} onRefresh={vi.fn()} />);
+    await openAll(); await review();
+    fireEvent.change(screen.getByLabelText('Quantity — ALPHA'), { target: { value: '5' } });
+    await review();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm fulfillment' }));
+    await screen.findByText(/The result is uncertain/);
+    const stored = sessionStorage.getItem(recoveryKey), saved = JSON.parse(stored);
+    const body = request.mock.calls.find(([path]) => path.endsWith('/fulfill'))[1].body;
+    expect(stored.length * 2).toBeLessThan(quota);
+    expect(saved.body).toEqual(body);
+    expect(saved.body.action_ids).toEqual(group);
+    expect(saved.body.overrides).toEqual({ 'buy-a': { quantity: '5' } });
+    expect(saved.entries).toEqual(groupedEntries);
+    expect(saved.selection).toHaveLength(actions.length);
+    expect(saved.selection.every((action) => !('group' in action) && !('dependencies' in action))).toBe(true);
+    view.unmount();
+    const retry = api({ read }), onRefresh = vi.fn();
+    render(<PortfolioRecommendations {...props} request={retry} onRefresh={onRefresh} />);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(/Sell Synthetic holding 0: Saved last\/close/)).toHaveTextContent('€1.00');
+    expect(within(dialog).getByText(/Sell Synthetic holding 0: Saved last\/close/)).toHaveTextContent('OFF0 / XETR / EUR');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry saved operation' }));
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledOnce());
+    expect(retry.mock.calls.find(([path]) => path.endsWith('/fulfill'))[1].body).toEqual(body);
+    expect(sessionStorage.getItem(recoveryKey)).toBeNull();
+  }, 15000);
   it('fails closed before sending if durable recovery storage is unavailable', async () => {
     const request = api();
     render(<PortfolioRecommendations {...props} request={request} onRefresh={vi.fn()} />);

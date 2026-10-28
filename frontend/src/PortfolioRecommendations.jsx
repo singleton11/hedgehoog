@@ -123,7 +123,11 @@ function Recommendations({ request, portfolioPath, planId, revision, recoverySco
     try {
       if (!saved) {
         saved = { body: { ...payload(), preview_token: preview.preview_token, operation_id: secureUuid() }, entries: preview.entries,
-          selection: preview.selection, before: preview.before, after: preview.after };
+          // Recovery only displays prices; duplicated dependency groups can exceed storage quotas.
+          selection: (preview.selection || []).filter((action) => action.type !== 'deposit').map((action) => ({
+            id: action.id, type: action.type, label: name(action), price_eur: action.price_eur,
+            price_date: action.price_date, price_source: action.price_source, listing: action.listing,
+          })), before: preview.before, after: preview.after };
         // Persist the exact reviewed request before sending: a lost reply must never create a new operation.
         sessionStorage.setItem(storageKey, JSON.stringify(saved));
         if (sessionStorage.getItem(storageKey) !== JSON.stringify(saved)) throw new Error('Storage unavailable');

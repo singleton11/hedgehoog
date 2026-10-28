@@ -504,12 +504,17 @@ def _prepare_preview(db, owner, customer_id, document, body, now):
     after = balances([e for e in events if e["date"] <= body.date.isoformat()])
     projected = projected_allocation(after, snapshot["targets"], selection)
     if rebalance_ids:
-        # Check edited trades against the cash/contribution-only alternative.
-        ordinary_ids = {a["id"] for a in selection if not a["rebalance"]}
-        baseline_events = [*document["transactions"], *[e for e in entries
-            if e["recommendation"]["action_id"] in ordinary_ids]]
-        baseline = projected_allocation(balances([e for e in baseline_events
-            if e["date"] <= body.date.isoformat()]), snapshot["targets"], selection)
+        # Size the cash-only alternative independently: quantity edits to mandatory
+        # cash buys must not weaken the comparator, nor may sale fees reduce its budget.
+        ordinary_ids = [a["id"] for a in original.values() if not a["rebalance"]]
+        baseline = projected_allocation(before, snapshot["targets"], selection)
+        if ordinary_ids:
+            ordinary_overrides = {key: override.model_copy(update={"quantity": None})
+                                  for key, override in body.overrides.items() if key in ordinary_ids}
+            baseline_request = PreviewRequest(snapshot_token=body.snapshot_token, date=body.date.isoformat(),
+                                              action_ids=ordinary_ids, overrides=ordinary_overrides)
+            baseline_review, _ = _prepare_preview(db, owner, customer_id, document, baseline_request, now)
+            baseline = baseline_review["after"]
         if Decimal(projected["max_deviation"]) >= Decimal(baseline["max_deviation"]):
             raise md.DataError(422, "Rebalance must improve allocation over cash and contribution purchases alone.")
     review = normalized_review(body)
