@@ -157,6 +157,33 @@ uses the same contribution solver as the planner, then estimates funded success
 on an independent simulation stream and scores historical outcomes. Selecting
 block bootstrap in the goal planner does not change calibration runs.
 
+## Strategy targets and portfolio recommendations
+
+A saved plan supplies the immutable origin, deadline, payment dates, starting
+capital, monthly contribution and strategy arguments used by the portfolio's
+[recommendations](portfolio-tracker.md#plan-recommendations). Current goal edits
+and recalculated stochastic trajectories are not substitutes for the saved
+funding schedule. Existing plan tracking remains a separate probabilistic forecast;
+allocation drift measures actual versus strategy target weights, not probability.
+
+Strategies may supply an optional **versioned recommendation-target contract** in
+`backend/goal_strategies.py`. An adapter consumes validated saved parameters, UTC
+evaluation date and explicit snapshots, returning instrument/cash weights,
+supported actions and rebalance constraints. Weights must be finite and
+nonnegative and sum to one within a Decimal tolerance of `0.00000001` (`1e-8`);
+only deviations within that tolerance may normalize. An instrument may occur only once. The
+buy-and-hold adapter targets 100% of its saved instrument; an absent adapter is
+explicitly unsupported, never inferred from arbitrary parameter names.
+
+To add a strategy, register an adapter with its contract version and unit tests,
+including multi-instrument allocation, malformed weights, listing/price failures,
+cost and frequency constraints, then exercise preview and fulfillment. The engine,
+API and panel process target/action arrays generically, so an adapter does not
+require another instrument-specific fulfillment flow. Constraints can tighten,
+but never weaken, the versioned default rebalance policy. See the portfolio guide
+for thresholds, last/close price and zero-commission defaults, reviewed overrides,
+atomic ledger-only fulfillment and durable retry semantics.
+
 ## Derived statistics
 
 `backend/return_statistics.py` calculates estimates after every successful EOD

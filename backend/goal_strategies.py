@@ -39,6 +39,8 @@ class StrategyDefinition(Generic[Parameters]):
     simulate: Callable[[Parameters, GoalInputs, Database, date], dict[str, Any]]
     calibrate: Callable[[Parameters, RandomCalibrationInputs, Database], dict[str, Any]] | None = None
     track: Callable[..., dict[str, Any]] | None = None
+    # Versioned allocation contract; snapshots and date are explicit, never live goal inputs.
+    recommendation_targets: Callable[..., dict[str, Any]] | None = None
 
     def resolve_parameters(self, values: dict[str, Any], db: Database) -> Parameters:
         parameters = self.parameters_model.model_validate(values)
@@ -84,6 +86,12 @@ def calibrate_buy_and_hold(parameters: BuyAndHoldParameters, inputs: RandomCalib
     return calibrate_instrument(db, parameters.instrument, inputs, evaluate=evaluate_random_history)
 
 
+def single_instrument_targets(parameters, today, snapshot):
+    return {"version": "single-instrument-v1", "targets": [
+        {"instrument_id": parameters.instrument, "weight": "1"}],
+        "supported_actions": ["deposit", "buy", "sell"], "constraints": {}}
+
+
 STRATEGIES = {
     "buy_and_hold_single_instrument": StrategyDefinition(
         id="buy_and_hold_single_instrument",
@@ -93,6 +101,7 @@ STRATEGIES = {
         simulate=buy_and_hold_single_instrument,
         calibrate=calibrate_buy_and_hold,
         track=buy_and_hold_single_instrument,
+        recommendation_targets=single_instrument_targets,
     ),
 }
 

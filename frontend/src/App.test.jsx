@@ -26,6 +26,31 @@ function mockServer(initialUser = null) {
   return { fetch, expire: () => { user = null; } };
 }
 
+describe('recommendation retry session isolation', () => {
+  afterEach(() => { sessionStorage.clear(); window.history.replaceState(null, '', '/'); });
+
+  it('clears saved recommendations on logout even outside the portfolio route', async () => {
+    mockServer(admin);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('No acquired ETFs yet');
+    sessionStorage.setItem('portfolio-recommendation:sensitive-operation', '{"operation_id":"demo"}');
+    sessionStorage.setItem('unrelated-setting', 'keep');
+    await user.click(screen.getByRole('button', { name: 'Sign out' }));
+    await screen.findByRole('heading', { name: 'Sign in' });
+    expect(sessionStorage.getItem('portfolio-recommendation:sensitive-operation')).toBeNull();
+    expect(sessionStorage.getItem('unrelated-setting')).toBe('keep');
+  });
+
+  it('clears saved recommendations when session restoration is unauthorized', async () => {
+    mockServer();
+    sessionStorage.setItem('portfolio-recommendation:expired-operation', '{}');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Sign in' });
+    expect(sessionStorage.getItem('portfolio-recommendation:expired-operation')).toBeNull();
+  });
+});
+
 describe('logo navigation', () => {
   afterEach(() => window.history.replaceState(null, '', '/'));
 
