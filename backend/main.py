@@ -31,6 +31,7 @@ from market_data import DataError
 from manual_splits import ensure_indexes as ensure_manual_split_indexes
 from portfolio_tracker import ensure_indexes as ensure_portfolio_indexes, router as portfolio_router
 from portfolio_performance import router as portfolio_performance_router
+from portfolio_recommendations import router as portfolio_recommendations_router
 from performance_settings import router as performance_settings_router
 from market_data_settings import router as market_data_settings_router
 from degiro_import import router as degiro_import_router
@@ -66,6 +67,7 @@ def create_app(settings: Settings | None = None, client_factory=MongoClient) -> 
     app.include_router(customer_planner_router)
     app.include_router(portfolio_router)
     app.include_router(portfolio_performance_router)
+    app.include_router(portfolio_recommendations_router)
     app.include_router(performance_settings_router)
     app.include_router(market_data_settings_router)
     app.include_router(degiro_import_router)

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { api, validateUser } from './api.js';
+import { clearRecommendationRecovery } from './PortfolioRecommendations.jsx';
 
 const AuthContext = createContext(null);
 
@@ -18,6 +19,7 @@ export function AuthProvider({ children }) {
       }
     } catch (error) {
       if (!signal?.aborted && revision.current === current) {
+        if (error.status === 401) clearRecommendationRecovery();
         setSession({
           status: error.status === 401 ? 'anonymous' : 'error',
           user: null,
@@ -47,7 +49,10 @@ export function AuthProvider({ children }) {
     const current = ++revision.current;
     try {
       const user = validateUser(await api('/auth/login', { method: 'POST', body: { login, password } }));
-      if (revision.current === current) setSession({ status: 'authenticated', user, error: null });
+      if (revision.current === current) {
+        clearRecommendationRecovery();
+        setSession({ status: 'authenticated', user, error: null });
+      }
     } finally {
       changingSession.current = false;
     }
@@ -58,7 +63,10 @@ export function AuthProvider({ children }) {
     const current = ++revision.current;
     try {
       await api('/auth/logout', { method: 'POST' });
-      if (revision.current === current) setSession({ status: 'anonymous', user: null, error: null });
+      if (revision.current === current) {
+        clearRecommendationRecovery();
+        setSession({ status: 'anonymous', user: null, error: null });
+      }
     } finally {
       changingSession.current = false;
     }
@@ -71,6 +79,7 @@ export function AuthProvider({ children }) {
     } catch (error) {
       if (error.status === 401 && revision.current === current) {
         revision.current += 1;
+        clearRecommendationRecovery();
         setSession({ status: 'anonymous', user: null, error: null });
       }
       throw error;

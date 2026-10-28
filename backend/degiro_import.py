@@ -371,6 +371,7 @@ def import_statement(customer_id: str, portfolio_id: str, body: ImportRequest, r
             return counts  # Lost response/reupload: all events already exist, no write.
         if body.preview_token != result["preview_token"]:
             raise md.DataError(409, "The portfolio or import preview changed. Preview again before confirming.")
+        ledger.ensure_append_capacity(document, additions)
         saved = db.portfolios.update_one(
             {**ledger.scope(owner, customer_id, portfolio_id), "revision": document["revision"]},
             {"$push": {"transactions": {"$each": additions}}, "$inc": {"revision": 1}},
