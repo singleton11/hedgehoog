@@ -14,6 +14,46 @@ def automatic_refresh_producer(monkeypatch):
     return producer
 
 
+@pytest.fixture(autouse=True)
+def history_lookup_calls(monkeypatch):
+    """Emulate the small endpoint pipeline unsupported by mongomock.
+
+    This checks result semantics only, never Mongo index use or performance.
+    Real Mongo tests run the unmodified aggregation implementation.
+    """
+    from copy import deepcopy
+    import mongomock
+
+    original = mongomock.collection.Collection.aggregate
+    calls = []
+
+    def aggregate(collection, pipeline, *args, **kwargs):
+        if not (len(pipeline) == 7 and pipeline[0] == {"$limit": 1}
+                and "candidate" in pipeline[1].get("$project", {})):
+            return original(collection, pipeline, *args, **kwargs)
+        calls.append(deepcopy(pipeline))
+        if not collection.find_one():
+            return iter([])
+        results = []
+        for seed in pipeline[1]["$project"]["candidate"]["$literal"]:
+            row = dict(seed)
+            for stage, field in zip(pipeline[4:6], ("first_date", "last_date")):
+                probe = stage["$lookup"]["pipeline"]
+                match = probe[0]["$match"]
+                query = {key: value for key, value in match.items() if key != "$expr"}
+                for comparison in match["$expr"]["$and"]:
+                    left, right = comparison["$eq"]
+                    query[left[1:]] = seed[right[2:]]
+                endpoint = next(collection.database.quotes.find(query).sort(list(probe[1]["$sort"].items())).limit(1), None)
+                if endpoint:
+                    row[field] = endpoint["date"]
+            results.append(row)
+        return iter(results)
+
+    monkeypatch.setattr(mongomock.collection.Collection, "aggregate", aggregate)
+    return calls
+
+
 @pytest.fixture
 def etf_records():
     return [

@@ -1,5 +1,5 @@
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import math
 from statistics import mean, variance
 from unittest.mock import Mock
@@ -383,6 +383,287 @@ def test_acquired_history_filter_uses_published_yahoo_generation(db, monkeypatch
             db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "date": day, "collected_at": NOW, "job_id": generation, "provider": "yfinance"})
     assert md.acquired_instruments(db, min_history_years=5)["total"] == 1
     assert md.acquired_instruments(db, min_history_years=15)["total"] == 0
+
+
+def test_history_filter_accepts_publication_during_profile_selection(db, clock, monkeypatch):
+    import return_statistics
+
+    def publish(generation, days):
+        db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "collected_at": clock[0],
+                                   "job_id": generation, "provider": "yfinance", "published": True})
+        db.acquisition_jobs.insert_one({"_id": generation, "instrument_id": ISIN, "listing": LISTING,
+                                        "provider": "yfinance", "published": True, "published_at": clock[0]})
+        for day in days:
+            db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "job_id": generation,
+                                  "provider": "yfinance", "date": day, "collected_at": clock[0],
+                                  "data": {"close": "100", "price_basis": "provider_split_adjusted"}})
+
+    publish("previous", ("2024-01-01", "2025-01-01"))
+    db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
+    aggregate = db.instruments.aggregate
+
+    def select_with_refresh(pipeline, *args, **kwargs):
+        if not any("$group" in stage for stage in pipeline):
+            return aggregate(pipeline, *args, **kwargs)
+
+        def cursor():
+            # A refresh becomes visible while the inventory cursor is consumed.
+            clock[0] += timedelta(seconds=1)
+            publish("refreshed", ("2020-01-01", "2025-01-01"))
+            yield from aggregate(pipeline, *args, **kwargs)
+
+        return cursor()
+
+    bounds = Mock(wraps=md.saved_history_bounds)
+    dates = Mock(wraps=md.quote_dates)
+    statistics = Mock(wraps=return_statistics.refresh_statistics)
+    monkeypatch.setattr(db.instruments, "aggregate", select_with_refresh)
+    monkeypatch.setattr(md, "saved_history_bounds", bounds)
+    monkeypatch.setattr(md, "quote_dates", dates)
+    monkeypatch.setattr(return_statistics, "refresh_statistics", statistics)
+
+    result = md.acquired_instruments(db, min_history_years=5)
+    assert result["total"] == len(result["items"]) == 1
+    item = result["items"][0]
+    assert item["instrument_id"] == ISIN
+    assert item["collected_at"] == md.public(clock[0])
+    assert (item["first_date"], item["last_date"], item["quote_count"]) == ("2020-01-01", "2025-01-01", 2)
+    assert bounds.call_args.args[2] == clock[0] == NOW + timedelta(seconds=1)
+    dates.assert_called_once_with(db, ISIN, LISTING, generation="refreshed", publication_as_of=clock[0])
+    statistics.assert_called_once_with(db, ISIN, generation="refreshed", as_of=clock[0])
+    print({"scenario": "publication during saved-profile selection", "total": result["total"],
+           "instrument_id": item["instrument_id"], "generation": "refreshed",
+           "publication_cutoff": md.public(clock[0]), "first_date": item["first_date"],
+           "last_date": item["last_date"], "quote_count": item["quote_count"],
+           "limitation": "synthetic mongomock data; no real-Mongo concurrency or performance evidence"})
+
+
+def test_history_endpoint_pipeline_and_batch_operation_bounds(db, monkeypatch, history_lookup_calls):
+    from bson import BSON
+    import return_statistics
+
+    for index in range(123):
+        isin = f"IE{index:010d}"
+        db.instruments.insert_one({"instrument_id": isin, **LISTING, "collected_at": NOW})
+        for day in ("1990-01-01", "2020-01-01"):
+            db.quotes.insert_one({"instrument_id": isin, **LISTING, "date": day})
+    dates = Mock(wraps=md.quote_dates)
+    distinct = Mock(wraps=db.quotes.distinct)
+    refresh = Mock(return_value=({}, {"listing": LISTING}))
+    monkeypatch.setattr(md, "quote_dates", dates)
+    monkeypatch.setattr(db.quotes, "distinct", distinct)
+    monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
+    result = md.acquired_instruments(db, limit=2, offset=100, min_history_years=30)
+    assert result["total"] == 123
+    assert [item["instrument_id"] for item in result["items"]] == ["IE0000000100", "IE0000000101"]
+    assert dates.call_count == distinct.call_count == refresh.call_count == 2
+    assert [len(p[1]["$project"]["candidate"]["$literal"]) for p in history_lookup_calls] == [50, 50, 23]
+    probes = 0
+    for pipeline in history_lookup_calls:
+        assert len(BSON.encode({"aggregate": "instruments", "pipeline": pipeline, "cursor": {}})) < md.HISTORY_COMMAND_BYTES
+        for stage, direction in zip(pipeline[4:6], (1, -1)):
+            lookup = stage["$lookup"]
+            assert lookup["from"] == "quotes"
+            assert lookup["pipeline"][1:] == [{"$sort": {"date": direction}}, {"$limit": 1}, {"$project": {"_id": 0, "date": 1}}]
+            assert lookup["pipeline"][0]["$match"]["provider"] == {"$ne": "yfinance"}
+            assert len(lookup["pipeline"][0]["$match"]["$expr"]["$and"]) == 3
+            probes += len(pipeline[1]["$project"]["candidate"]["$literal"])
+    assert probes == 246  # Internal probes, not client commands or examined keys.
+    print({"scenario": "synthetic saved-history 30y filter, page after 100 matches",
+           "total": result["total"], "items": [item["instrument_id"] for item in result["items"]],
+           "endpoint_batch_commands": len(history_lookup_calls), "internal_endpoint_probes": probes,
+           "page_date_calls": dates.call_count, "page_statistics_calls": refresh.call_count,
+           "limitation": "mongomock endpoint emulator; no real-Mongo index or latency evidence"})
+    for offset, years in ((123, 30), (0, 40)):
+        dates.reset_mock()
+        distinct.reset_mock()
+        refresh.reset_mock()
+        assert md.acquired_instruments(db, offset=offset, min_history_years=years)["items"] == []
+        dates.assert_not_called()
+        distinct.assert_not_called()
+        refresh.assert_not_called()
+
+
+def test_history_seed_size_bound_and_disappearing_carrier(db, monkeypatch):
+    from bson import BSON
+
+    observations = [{"_id": f"IE{index:010d}", "listing": {"symbol": "$" + "X" * 2000, "exchange": "XETR"}}
+                    for index in range(5)]
+    seeds = [{"instrument_id": row["_id"], **row["listing"], "generation": "legacy"} for row in observations]
+    command = lambda batch: {"aggregate": "instruments", "pipeline": md.history_bounds_pipeline(batch), "cursor": {}}
+    # A deliberately low cap exercises BSON splitting before the count cap.
+    monkeypatch.setattr(md, "HISTORY_COMMAND_BYTES", len(BSON.encode(command(seeds[:2]))) + md.HISTORY_COMMAND_OVERHEAD)
+    batches = list(md._history_batches(seeds, command))
+    assert [len(batch) for batch in batches] == [2, 2, 1]
+    assert all(len(BSON.encode(command(batch))) + md.HISTORY_COMMAND_OVERHEAD <= md.HISTORY_COMMAND_BYTES for batch in batches)
+    monkeypatch.setattr(md, "HISTORY_COMMAND_BYTES", 100)
+    with pytest.raises(md.DataError, match="size limit") as error:
+        list(md._history_batches(seeds, command))
+    assert error.value.status == 413
+    monkeypatch.setattr(md, "HISTORY_COMMAND_BYTES", 512 * 1024)
+    assert md.saved_history_bounds(db, []) == {}
+    assert md.acquired_instruments(db, min_history_years=30)["total"] == 0
+    with pytest.raises(md.DataError, match="inventory changed") as error:
+        md.saved_history_bounds(db, observations)
+    assert error.value.status == 409
+
+
+@pytest.mark.parametrize("years", [5, 15, 30])
+@pytest.mark.parametrize("provider", ["legacy", "yfinance"])
+def test_history_filter_full_payload_equivalence(db, years, provider):
+    # The previous distinct-date implementation is the fixed-fixture oracle.
+    leap_end = date(1992 + years, 2, 28).isoformat()
+    cases = [("1990-01-01", f"{1990 + years}-01-01"),
+             ("1990-01-01", f"{1989 + years}-12-31"),
+             ("1992-02-29", leap_end), ("2020-01-01",), ()]
+    for index, days in enumerate(cases):
+        isin = f"IE{index:010d}"
+        metadata = {"provider": "yfinance", "job_id": isin} if provider == "yfinance" else {}
+        db.instruments.insert_one({"instrument_id": isin, **LISTING, "collected_at": NOW, "published": True, **metadata})
+        if metadata:
+            db.acquisition_jobs.insert_one({"_id": isin, "instrument_id": isin, "listing": LISTING,
+                                            "published": True, "published_at": NOW, "provider": "yfinance"})
+        db.instrument_state.insert_one({"_id": isin, "listing": LISTING})
+        for day in days:
+            # Sparse, unusable prices count; duplicate observations do not inflate count.
+            for close in (None, "100"):
+                db.quotes.insert_one({"instrument_id": isin, **LISTING, "date": day, "collected_at": NOW,
+                                      **metadata, "data": {"date": day, "close": close}})
+        db.quotes.insert_one({"instrument_id": isin, **LISTING, "symbol": "OLD", "date": "1800-01-01"})
+        db.quotes.insert_one({"instrument_id": isin, **LISTING, "provider": "yfinance", "date": "1800-01-01"})
+    db.instruments.insert_one({"instrument_id": "idx-excluded", **LISTING, "collected_at": NOW})
+    all_items = md.acquired_instruments(db)["items"]
+    matching = []
+    for item in all_items:
+        if item["first_date"] is None:
+            continue
+        start, end = date.fromisoformat(item["first_date"]), date.fromisoformat(item["last_date"])
+        try:
+            anniversary = start.replace(year=start.year + years)
+        except ValueError:
+            anniversary = date(start.year + years, 2, 28)
+        if end >= anniversary:
+            matching.append(item)
+    assert len(matching) == 2
+    for offset in (0, 1, 2, 20):
+        assert md.acquired_instruments(db, limit=1, offset=offset, min_history_years=years) == {
+            "items": matching[offset:offset + 1], "total": len(matching), "limit": 1, "offset": offset,
+        }
+
+
+@pytest.mark.parametrize("invalid", ["unpublished", "instrument", "listing", "cutoff"])
+def test_history_filter_rejects_invalid_pinned_publication(db, invalid):
+    db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "provider": "yfinance", "published": True,
+                               "job_id": "pinned", "collected_at": NOW})
+    publication = {"_id": "pinned", "instrument_id": ISIN, "listing": LISTING, "provider": "yfinance",
+                   "published": True, "published_at": NOW}
+    if invalid == "unpublished":
+        publication["published"] = False
+    elif invalid == "instrument":
+        publication["instrument_id"] = "OTHER"
+    elif invalid == "listing":
+        publication["listing"] = {**LISTING, "exchange": "OTHER"}
+    else:
+        publication["published_at"] = NOW + timedelta(seconds=1)
+    db.acquisition_jobs.insert_one(publication)
+    with pytest.raises(md.DataError, match="not published") as error:
+        md.acquired_instruments(db, min_history_years=5)
+    assert error.value.status == 409
+
+
+def test_history_publications_are_batched_pinned_and_keep_request_cutoff(db, monkeypatch, history_lookup_calls):
+    import return_statistics
+
+    observations = []
+    for index in range(105):
+        isin, generation = f"IE{index:010d}", f"current-{index}"
+        observations.append({"_id": isin, "listing": LISTING, "provider": "yfinance", "job_id": generation})
+        db.instruments.insert_one({"instrument_id": isin, **LISTING, "collected_at": NOW,
+                                   "provider": "yfinance", "published": True, "job_id": generation})
+        db.acquisition_jobs.insert_one({"_id": generation, "instrument_id": isin, "listing": LISTING,
+                                        "published": True, "published_at": NOW, "provider": "yfinance"})
+        for job, provider, symbol, exchange, days in [
+            (generation, "yfinance", LISTING["symbol"], LISTING["exchange"], ("2020-01-01", "2025-01-01")),
+            (generation, "marketstack", LISTING["symbol"], LISTING["exchange"], ("1800-01-01",)),
+            (generation, "yfinance", "OTHER", LISTING["exchange"], ("1800-01-01",)),
+            (generation, "yfinance", LISTING["symbol"], "OTHER", ("1800-01-01",)),
+            ("superseded", "yfinance", LISTING["symbol"], LISTING["exchange"], ("1800-01-01", "2100-01-01")),
+        ]:
+            for day in days:
+                db.quotes.insert_one({"instrument_id": isin, "symbol": symbol, "exchange": exchange,
+                                      "job_id": job, "provider": provider, "date": day})
+    find = Mock(wraps=db.acquisition_jobs.find)
+    monkeypatch.setattr(db.acquisition_jobs, "find", find)
+    bounds = md.saved_history_bounds(db, observations, NOW)
+    assert find.call_count == 3
+    assert all(call.args[0]["published_at"] == {"$lte": NOW} for call in find.call_args_list)
+    assert len(history_lookup_calls) == 3
+    assert all((row["first_date"], row["last_date"]) == ("2020-01-01", "2025-01-01") for row in bounds.values())
+    for pipeline in history_lookup_calls:
+        assert len(pipeline[4]["$lookup"]["pipeline"][0]["$match"]["$expr"]["$and"]) == 5
+    refresh = Mock(return_value=({}, {"listing": LISTING}))
+    monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
+    quote_dates = Mock(wraps=md.quote_dates)
+    monkeypatch.setattr(md, "quote_dates", quote_dates)
+    original = md.saved_history_bounds
+
+    def after_membership(*args, **kwargs):
+        result = original(*args, **kwargs)
+        monkeypatch.setattr(md, "utcnow", lambda: NOW + timedelta(days=1))
+        return result
+
+    monkeypatch.setattr(md, "saved_history_bounds", after_membership)
+    page = md.acquired_instruments(db, limit=1, min_history_years=5)
+    assert page["items"][0]["quote_count"] == 2
+    assert quote_dates.call_args.kwargs == {"generation": "current-0", "publication_as_of": NOW}
+    assert refresh.call_args.kwargs == {"generation": "current-0", "as_of": NOW}
+
+
+def test_history_filter_keeps_previous_publication_after_failed_refresh(db):
+    db.instruments.insert_many([
+        {"instrument_id": ISIN, **LISTING, "job_id": "current", "provider": "yfinance",
+         "published": True, "collected_at": NOW},
+        {"instrument_id": ISIN, **LISTING, "job_id": "failed", "provider": "yfinance",
+         "published": False, "collected_at": NOW + timedelta(hours=1)},
+    ])
+    db.acquisition_jobs.insert_many([
+        {"_id": "current", "instrument_id": ISIN, "listing": LISTING,
+         "published": True, "published_at": NOW, "provider": "yfinance"},
+        {"_id": "failed", "instrument_id": ISIN, "listing": LISTING, "status": "failed"},
+    ])
+    for isin, generation, days in [
+        (ISIN, "current", ("2020-01-01", "2025-01-01")),
+        (ISIN, "failed", ("1800-01-01", "2200-01-01")),
+        ("IE9999999999", "current", ("1800-01-01", "2200-01-01")),
+    ]:
+        for day in days:
+            db.quotes.insert_one({"instrument_id": isin, **LISTING, "job_id": generation,
+                                  "provider": "yfinance", "date": day})
+    item = md.acquired_instruments(db, min_history_years=5)["items"][0]
+    assert (item["first_date"], item["last_date"], item["quote_count"]) == ("2020-01-01", "2025-01-01", 2)
+    assert md.acquired_instruments(db, min_history_years=15)["total"] == 0
+
+
+def test_history_latest_profile_ties_missing_job_and_legacy_fallback(db):
+    from bson import ObjectId
+
+    old, new = {**LISTING, "symbol": "OLD"}, {**LISTING, "symbol": "$NEW"}
+    for identity, listing in [(ObjectId("000000000000000000000001"), old),
+                              (ObjectId("000000000000000000000002"), new)]:
+        db.instruments.insert_one({"_id": identity, "instrument_id": ISIN, **listing,
+                                   "provider": "yfinance", "published": True, "collected_at": NOW})
+    # No pinned job: preserve published_history's lookup and legacy fallback.
+    for listing, days in [(old, ("1800-01-01", "2025-01-01")), (new, ("2000-01-01", "2020-01-01"))]:
+        for day in days:
+            db.quotes.insert_one({"instrument_id": ISIN, **listing, "date": day})
+    assert md.acquired_instruments(db, min_history_years=30)["total"] == 0
+    assert md.acquired_instruments(db, min_history_years=15)["items"][0]["listing"] == new
+    db.acquisition_jobs.insert_one({"_id": "resolved", "instrument_id": ISIN, "listing": new,
+                                    "provider": "yfinance", "published": True, "published_at": NOW})
+    for day in ("2020-01-01", "2025-01-01"):
+        db.quotes.insert_one({"instrument_id": ISIN, **new, "job_id": "resolved", "provider": "yfinance", "date": day})
+    assert md.acquired_instruments(db, min_history_years=15)["total"] == 0
+    assert md.acquired_instruments(db, min_history_years=5)["items"][0]["quote_count"] == 2
 
 
 def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(db, config, clock, monkeypatch):

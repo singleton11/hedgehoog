@@ -192,6 +192,59 @@ uv run pytest  # Includes provider MockTransport, acquisition and API tests; no 
 # Optional: set TEST_MONGODB_URI and TEST_CELERY_BROKER_URL for isolated real-service tests.
 ```
 
+## Saved-history filtering
+
+`GET /instruments/acquired?min_history_years=5|15|30` preserves latest-profile
+ordering and exact totals before pagination. `saved_history_bounds` validates
+publications at one request cutoff, separates legacy/pinned seeds, and runs two
+correlated endpoint lookups (date ascending/descending, limit 1) per candidate.
+Each aggregation carries literal selected identities through a single instruments
+row; it does not reselect profiles. An inventory emptied during the read returns
+409 rather than an incorrect total. Batches cap at 50 candidates and 512 KiB BSON
+including conservative command overhead; oversized identities return 413.
+
+The query reuses `(job_id,date)` and
+`(instrument_id,symbol,exchange,date,collected_at)` indexes without new storage or
+write costs. Provider/listing predicates remain mandatory residual filters, so
+internal probes can examine extra keys, especially legacy histories surrounded by
+retained Yahoo generations. Client batch count is not total internal probe count.
+No history grouping, durable coverage cache, acquisition change or provider call
+is introduced. Full distinct dates/counts and statistics remain page-only.
+
+Focused offline verification (using preinstalled dependencies, no downloads):
+
+```sh
+python -m pytest tests/test_market_data.py tests/test_yfinance_acquisition.py tests/test_incremental_acquisition.py
+python -m pytest tests/test_acquired_history_integration.py
+```
+
+For opt-in real-Mongo verification, set `TEST_MONGODB_URI` to an isolated
+disposable test server, then run:
+
+```sh
+python -m pytest -s tests/test_acquired_history_integration.py
+```
+
+The opt-in tests run the actual correlated lookup and print endpoint results,
+keys/documents examined, indexes used, batch commands and internal probe counts
+for pinned and adversarial legacy histories in both directions. Server-dependent
+inner-plan visibility can limit blocking-sort evidence. Mongomock's explicitly
+labelled test emulator verifies payload semantics only, never index correctness.
+The supplied environment has no Mongo server/container runtime, so real-Mongo 7.0
+query compatibility, selective index access and timings are **not verified**.
+
+The historical checkpoints/benchmark script referenced by issue 40 are absent
+from this source snapshot; they were not reconstructed or replaced with a weaker
+baseline. No new real-Mongo benchmark ran. Warm p95 <= 2 seconds and membership
+speedup >= 5x versus the original pre-optimization baseline remain **unverified
+targets**, not results. Before accepting the optimization, compare the original,
+grouped and endpoint variants on identical deterministic 1,000-ETF fixtures,
+including 5/15/30 presets, first/next pages and empty 30-year results, with at least
+20 alternating warm samples per case, initial cold latency, full payload equality,
+and actual per-lookup executionStats. If residual filters prevent selective access
+or either target fails, return evidence for plan review; do not add indexes/caches
+or widen the acquisition scope without a revised bounded task.
+
 ## Automatic market-data refresh
 
 Startup queues `marketdata.refresh_stale` for saved ETFs and all active indices; the API does not wait for downloads. Once the catalogue import completes (including a same-day skip), its worker queues an additional sweep covering **every catalogue ETF**, deduplicated by ISIN across snapshots. Unacquired ETFs download since-inception history and existing Yahoo histories refresh incrementally. Invalid metadata is skipped and failed mappings remain failed jobs; the initial catalogue-wide download may take a long time or encounter provider throttling. Failed import/sweep dispatches retry with bounded backoff.

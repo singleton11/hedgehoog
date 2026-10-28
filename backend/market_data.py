@@ -9,7 +9,7 @@ from decimal import Decimal
 import re
 from uuid import uuid4
 
-from bson import Decimal128, ObjectId
+from bson import BSON, Decimal128, ObjectId
 from pymongo import ASCENDING, DESCENDING, ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
@@ -155,6 +155,123 @@ def acquired_universe(db):
     return public({"items": items, "total": len(items)})
 
 
+HISTORY_BATCH_SIZE = 50
+HISTORY_COMMAND_BYTES = 512 * 1024
+HISTORY_COMMAND_OVERHEAD = 4096  # Projection, sort and driver command metadata.
+
+
+def _history_batches(records, command):
+    """Bound literal payloads and validation queries well below Mongo's BSON cap."""
+    batch = []
+    for record in records:
+        proposed = [*batch, record]
+        if len(proposed) > HISTORY_BATCH_SIZE or len(BSON.encode(command(proposed))) + HISTORY_COMMAND_OVERHEAD > HISTORY_COMMAND_BYTES:
+            if batch:
+                yield batch
+            batch = [record]
+            if len(BSON.encode(command(batch))) + HISTORY_COMMAND_OVERHEAD > HISTORY_COMMAND_BYTES:
+                raise DataError(413, "A saved history identity exceeds the filter query size limit.")
+        else:
+            batch = proposed
+    if batch:
+        yield batch
+
+
+def _history_publication_query(seeds, cutoff):
+    queries = []
+    for seed in seeds:
+        query = {"instrument_id": seed["instrument_id"],
+                 "listing": {"symbol": seed["symbol"], "exchange": seed["exchange"]}}
+        if seed["generation"] is not None:
+            query["_id"] = seed["generation"]
+        queries.append(query)
+    return {"published": True, "published_at": {"$lte": cutoff}, "$or": queries}
+
+
+def history_bounds_pipeline(seeds):
+    """Two correlated, index-ordered endpoint probes per literal candidate.
+
+    Separate legacy and pinned batches keep job_id equality usable by the
+    existing (job_id, date) index; legacy uses the listing/date index instead.
+    The initial row is only a carrier, never a mutable profile reselection.
+    """
+    if not seeds:
+        raise ValueError("History endpoint probes require a nonempty batch")
+    legacy = seeds[0]["generation"] == "legacy"
+    if any((seed["generation"] == "legacy") != legacy for seed in seeds):
+        raise ValueError("Legacy and pinned history probes need separate batches")
+    comparisons = [{"$eq": [f"${field}", f"$${field}"]}
+                   for field in ("instrument_id", "symbol", "exchange")]
+    if not legacy:
+        comparisons += [{"$eq": ["$job_id", "$$generation"]}, {"$eq": ["$provider", "$$provider"]}]
+    match = {"$expr": {"$and": comparisons}}
+    if legacy:
+        # Query $ne (unlike expression $ne) also accepts missing provider metadata.
+        match["provider"] = {"$ne": "yfinance"}
+    pipeline = [
+        {"$limit": 1},
+        {"$project": {"_id": 0, "candidate": {"$literal": seeds}}},
+        {"$unwind": "$candidate"},
+        {"$replaceRoot": {"newRoot": "$candidate"}},
+    ]
+    for name, direction in (("first", ASCENDING), ("last", DESCENDING)):
+        pipeline.append({"$lookup": {
+            "from": "quotes", "let": {field: f"${field}" for field in seeds[0]},
+            "pipeline": [{"$match": match}, {"$sort": {"date": direction}},
+                         {"$limit": 1}, {"$project": {"_id": 0, "date": 1}}],
+            "as": name,
+        }})
+    pipeline.append({"$project": {
+        "_id": 0, **{field: 1 for field in seeds[0]},
+        "first_date": {"$arrayElemAt": ["$first.date", 0]},
+        "last_date": {"$arrayElemAt": ["$last.date", 0]},
+    }})
+    return pipeline
+
+
+def saved_history_bounds(db, observations, as_of=None):
+    """Resolve publication visibility in batches, returning only compact extrema.
+
+    Membership never enumerates quote dates. Publication time is shared across
+    batches, but legacy quote observations retain their existing live semantics.
+    """
+    cutoff = as_of or utcnow()
+    seeds = [{"instrument_id": row["_id"], **row["listing"],
+              "generation": row.get("job_id") if row.get("provider") == "yfinance" else "legacy"}
+             for row in observations if row["listing"]]
+    publications = {}
+    needs_publication = [seed for seed in seeds if seed["generation"] != "legacy"]
+    validation_command = lambda batch: {"find": "acquisition_jobs", "filter": _history_publication_query(batch, cutoff)}
+    for batch in _history_batches(needs_publication, validation_command):
+        records = db.acquisition_jobs.find(
+            _history_publication_query(batch, cutoff),
+            {"instrument_id": 1, "listing": 1, "provider": 1, "requested_at": 1, "published_at": 1},
+        ).sort([("requested_at", DESCENDING), ("published_at", DESCENDING), ("_id", DESCENDING)])
+        for publication in records:
+            publications.setdefault(publication["instrument_id"], publication)
+        for seed in batch:
+            publication = publications.get(seed["instrument_id"])
+            if publication is None:
+                if seed["generation"] is not None:
+                    raise DataError(409, "This history generation is not published for this instrument and cutoff. Refresh instrument details.")
+                seed["generation"] = "legacy"
+            else:
+                seed.update(generation=publication["_id"], provider=publication["provider"])
+    bounds = {}
+    for legacy in (True, False):
+        candidates = [seed for seed in seeds if (seed["generation"] == "legacy") == legacy]
+        command = lambda batch: {"aggregate": "instruments", "pipeline": history_bounds_pipeline(batch), "cursor": {}}
+        for batch in _history_batches(candidates, command):
+            records = list(db.instruments.aggregate(history_bounds_pipeline(batch)))
+            # If the carrier vanished after inventory selection, do not return a
+            # plausible but incorrect empty total. The caller can retry the read.
+            if len(records) != len(batch) or {row["instrument_id"] for row in records} != {seed["instrument_id"] for seed in batch}:
+                raise DataError(409, "Saved instrument inventory changed during filtering. Refresh the acquired list.")
+            for row in records:
+                bounds[row["instrument_id"]] = row
+    return bounds
+
+
 def acquired_instruments(db, limit=20, offset=0, min_history_years=None):
     """One row per saved ETF profile, including partial/failed acquisitions.
 
@@ -179,19 +296,21 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None):
         }},
         {"$sort": {"collected_at": -1, "_id": 1}},
     ]
-    coverage = {}
+    bounds = {}
     if min_history_years is None:
         pipeline.append({"$facet": {"count": [{"$count": "total"}], "items": [{"$skip": offset}, {"$limit": limit}]}})
         result = list(db.instruments.aggregate(pipeline))[0]
     else:
+        observations = list(db.instruments.aggregate(pipeline))
+        # Profiles published while the cursor is consumed must pass validation.
+        publication_cutoff = utcnow()
+        bounds = saved_history_bounds(db, observations, publication_cutoff)
         matching = []
-        for observation in db.instruments.aggregate(pipeline):
-            isin = observation["_id"]
-            generation = observation.get("job_id") if observation.get("provider") == "yfinance" else "legacy"
-            dates = quote_dates(db, isin, observation["listing"], generation=generation)
-            if not dates:
+        for observation in observations:
+            span = bounds.get(observation["_id"], {})
+            if not span.get("first_date") or not span.get("last_date"):
                 continue
-            start, end = date.fromisoformat(dates[0]), date.fromisoformat(dates[-1])
+            start, end = date.fromisoformat(span["first_date"]), date.fromisoformat(span["last_date"])
             # Calendar anniversaries, clamping leap day to February 28.
             anniversary_year = start.year + min_history_years
             try:
@@ -200,7 +319,6 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None):
                 anniversary = date(anniversary_year, 2, 28)
             if end >= anniversary:
                 matching.append(observation)
-                coverage[isin] = dates
         result = {"items": matching[offset:offset + limit], "count": [{"total": len(matching)}]}
     items = []
     for observation in result["items"]:
@@ -210,8 +328,13 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None):
             sort=[("import_date", DESCENDING)],
         ) or {}
         generation = observation.get("job_id") if observation.get("provider") == "yfinance" else "legacy"
-        dates = coverage[isin] if isin in coverage else quote_dates(db, isin, observation["listing"], generation=generation)
-        statistics, state = refresh_statistics(db, isin, generation=generation)
+        if min_history_years is not None:
+            generation = bounds[isin]["generation"]
+            dates = quote_dates(db, isin, observation["listing"], generation=generation, publication_as_of=publication_cutoff)
+            statistics, state = refresh_statistics(db, isin, generation=generation, as_of=publication_cutoff)
+        else:
+            dates = quote_dates(db, isin, observation["listing"], generation=generation)
+            statistics, state = refresh_statistics(db, isin, generation=generation)
         # Never attach another listing's returns to the displayed profile.
         if state.get("listing") != observation["listing"]:
             statistics = {}
@@ -397,10 +520,10 @@ def observation_filter(db, isin, listing, as_of=None, generation=None):
     return query
 
 
-def quote_dates(db, isin, listing, as_of=None, generation=None):
+def quote_dates(db, isin, listing, as_of=None, generation=None, *, publication_as_of=None):
     if not listing:
         return []
-    query = observation_filter(db, isin, listing, as_of, generation)
+    query = observation_filter(db, isin, listing, publication_as_of or as_of, generation)
     if as_of:
         query["collected_at"] = {"$lte": as_of}
     return sorted(db.quotes.distinct("date", query))
