@@ -6,6 +6,7 @@ not historical effective dates. At-least-once execution is not exactly-once HTTP
 
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import math
 import re
 from uuid import uuid4
 
@@ -272,13 +273,26 @@ def saved_history_bounds(db, observations, as_of=None):
     return bounds
 
 
-def acquired_instruments(db, limit=20, offset=0, min_history_years=None):
+def _nonnegative_returns(statistics):
+    for field in ("historical_year_return", "annualized_mean_log_return"):
+        value = statistics.get(field)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return False
+        try:
+            if not math.isfinite(value) or value < 0:
+                return False
+        except OverflowError:
+            return False
+    return True
+
+
+def acquired_instruments(db, limit=20, offset=0, min_history_years=None, *, hide_negative_returns=False):
     """One row per saved ETF profile, including partial/failed acquisitions.
 
     The worker saves tickerinfo before any EOD pages, so profiles are the
     acquisition inventory. A queued job or cached listing alone is not data.
-    Filter saved quote spans before pagination when a minimum is requested.
-    Refresh cached return statistics only for the resulting page.
+    Apply saved-history and optional return membership before counting/paging.
+    Without return filtering, refresh statistics only for the resulting page.
     """
     from return_statistics import refresh_statistics
 
@@ -297,29 +311,57 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None):
         {"$sort": {"collected_at": -1, "_id": 1}},
     ]
     bounds = {}
-    if min_history_years is None:
+    page_statistics = {}
+    page_generations = {}
+    if min_history_years is None and not hide_negative_returns:
         pipeline.append({"$facet": {"count": [{"$count": "total"}], "items": [{"$skip": offset}, {"$limit": limit}]}})
         result = list(db.instruments.aggregate(pipeline))[0]
     else:
         observations = list(db.instruments.aggregate(pipeline))
         # Profiles published while the cursor is consumed must pass validation.
         publication_cutoff = utcnow()
-        bounds = saved_history_bounds(db, observations, publication_cutoff)
-        matching = []
-        for observation in observations:
-            span = bounds.get(observation["_id"], {})
-            if not span.get("first_date") or not span.get("last_date"):
-                continue
-            start, end = date.fromisoformat(span["first_date"]), date.fromisoformat(span["last_date"])
-            # Calendar anniversaries, clamping leap day to February 28.
-            anniversary_year = start.year + min_history_years
-            try:
-                anniversary = start.replace(year=anniversary_year)
-            except ValueError:
-                anniversary = date(anniversary_year, 2, 28)
-            if end >= anniversary:
+        if min_history_years is not None:
+            bounds = saved_history_bounds(db, observations, publication_cutoff)
+            matching = []
+            for observation in observations:
+                span = bounds.get(observation["_id"], {})
+                if not span.get("first_date") or not span.get("last_date"):
+                    continue
+                start, end = date.fromisoformat(span["first_date"]), date.fromisoformat(span["last_date"])
+                # Calendar anniversaries, clamping leap day to February 28.
+                anniversary_year = start.year + min_history_years
+                try:
+                    anniversary = start.replace(year=anniversary_year)
+                except ValueError:
+                    anniversary = date(anniversary_year, 2, 28)
+                if end >= anniversary:
+                    matching.append(observation)
+            observations = matching
+        if hide_negative_returns:
+            matching = []
+            for observation in observations:
+                isin = observation["_id"]
+                if min_history_years is not None:
+                    generation = bounds[isin]["generation"]
+                elif observation.get("provider") == "yfinance":
+                    publication = published_history(db, isin, observation["listing"], publication_cutoff, observation.get("job_id"))
+                    generation = publication["_id"] if publication else "legacy"
+                else:
+                    generation = "legacy"
+                # A published generation belongs to the selected profile, not a
+                # concurrently changed state listing. Missing state is unavailable.
+                state = db.instrument_state.find_one({"_id": isin}) or {}
+                if state.get("listing") != observation["listing"]:
+                    continue
+                statistics, state = refresh_statistics(db, isin, generation=generation, as_of=publication_cutoff)
+                if state.get("listing") != observation["listing"] or not _nonnegative_returns(statistics):
+                    continue
+                if offset <= len(matching) < offset + limit:
+                    page_statistics[isin] = statistics
+                    page_generations[isin] = generation
                 matching.append(observation)
-        result = {"items": matching[offset:offset + limit], "count": [{"total": len(matching)}]}
+            observations = matching
+        result = {"items": observations[offset:offset + limit], "count": [{"total": len(observations)}]}
     items = []
     for observation in result["items"]:
         isin = observation["_id"]
@@ -328,16 +370,21 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None):
             sort=[("import_date", DESCENDING)],
         ) or {}
         generation = observation.get("job_id") if observation.get("provider") == "yfinance" else "legacy"
-        if min_history_years is not None:
-            generation = bounds[isin]["generation"]
+        if hide_negative_returns:
+            generation = page_generations[isin]
             dates = quote_dates(db, isin, observation["listing"], generation=generation, publication_as_of=publication_cutoff)
-            statistics, state = refresh_statistics(db, isin, generation=generation, as_of=publication_cutoff)
+            statistics = page_statistics[isin]
         else:
-            dates = quote_dates(db, isin, observation["listing"], generation=generation)
-            statistics, state = refresh_statistics(db, isin, generation=generation)
-        # Never attach another listing's returns to the displayed profile.
-        if state.get("listing") != observation["listing"]:
-            statistics = {}
+            if min_history_years is not None:
+                generation = bounds[isin]["generation"]
+                dates = quote_dates(db, isin, observation["listing"], generation=generation, publication_as_of=publication_cutoff)
+                statistics, state = refresh_statistics(db, isin, generation=generation, as_of=publication_cutoff)
+            else:
+                dates = quote_dates(db, isin, observation["listing"], generation=generation)
+                statistics, state = refresh_statistics(db, isin, generation=generation)
+            # Never attach another listing's returns to the displayed profile.
+            if state.get("listing") != observation["listing"]:
+                statistics = {}
         items.append({
             "instrument_id": isin, "isin": isin,
             "name": catalogue.get("name"), "ticker": catalogue.get("ticker"),
