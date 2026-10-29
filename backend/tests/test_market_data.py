@@ -349,6 +349,8 @@ def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config
     (0, 0, True), (-0.0, 0.0, True), (0.1, -0.0, True), (-1e-12, 0.2, False), (0.1, -1e-12, False),
     (None, 0.2, False), (0.1, None, False), (None, None, False),
     (float("nan"), 0.2, False), (0.1, float("inf"), False), (float("-inf"), 0.2, False),
+    pytest.param(10**400, 0.2, False, id="oversized-historical-return"),
+    pytest.param(0.1, 10**400, False, id="oversized-statistical-return"),
     ("0", 0.2, False), (0.1, "0.2", False), (True, 0.2, False), (0.1, False, False),
     ({}, 0.2, False), (0.1, [], False),
 ])
