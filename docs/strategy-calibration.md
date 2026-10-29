@@ -97,22 +97,22 @@ case IDs and reasons. UI pagination limits rendered rows, not metric inputs.
 
 ## Historical calculation
 
-- Read saved quotes for the selected symbol/MIC, latest per date at the calculation
-  cutoff, breaking collection-time ties by descending `_id`. Ignore later price
-  and collection dates. Never acquire data or spend provider quota.
+- Read only the latest complete published Yahoo generation for the selected
+  symbol/MIC. Date cutoffs bound quote dates, not collection/publication time;
+  superseded generations and Marketstack data are not calculation fallbacks.
+  Never acquire data or spend provider quota.
 - Forecast at the first recorded weekday of each month. Origin-date bounds do not
   filter training or outcome dates. Fit only the trailing window ending at the
   origin, with a full calendar lookback and at least 60 usable daily returns.
-- Saved provider split snapshots plus [manual split corrections](on-demand-market-data.md#manual-splits)
-  supply a separate `split_adjusted_close` series for both training and realized
-  cash-flow ratios. Manual-only legacy histories explicitly warn about incomplete
-  coverage; conflicting manual/provider factors block calculations. Multiply raw closes by
-  cumulative effective split factors; future actions do not alter earlier prefixes.
-  Cash distributions are not reinvested. Legacy history without splits retains
-  training-selected adjusted/raw basis with a download warning. The training
-  prefix determines currency eligibility. Never use cached full-history statistics
-  or change basis because later prices are missing. A current EUR override fills missing currency only, not
-  explicit foreign currencies.
+- Yahoo Close is already provider split-adjusted. Copy it to the separate
+  `split_adjusted_close` series for both training and realized cash-flow ratios,
+  without another split multiplication, manual split overlay or Adj Close fallback.
+  Saved split actions are audit evidence and cash distributions are not reinvested.
+  Retained `manual_splits` are excluded from cleanup, not applied to this basis.
+  The training prefix determines currency eligibility. Never use cached
+  full-history statistics or change basis because later prices are missing.
+  A current EUR override fills missing currency only, not explicit foreign
+  currencies. See [price semantics](on-demand-market-data.md#prices-actions-and-analytics).
 - Standard Monte Carlo uses the planner's independent normal log-return model.
   Block bootstrap draws complete contiguous blocks of observed daily log returns
   **only from each origin's trailing training prefix**, preserving within-block
@@ -133,9 +133,14 @@ case IDs and reasons. UI pagination limits rendered rows, not metric inputs.
 
 ### Interpretation
 
-Walk-forward fitting on downloaded data is not strict historical-vintage data:
-provider revisions, adjustments, current instrument selection and currency labels
-can embed later information. Overlapping horizons, reused market paths and
+Walk-forward fitting uses the latest complete Yahoo snapshot, not knowledge-time
+or historical-vintage replay. Quote-date cutoffs do not exclude later provider
+revisions or adjustments to those dates, so historical calculations can contain
+**look-ahead bias**. Current instrument selection and currency labels can also
+embed later information. Superseded payloads can be pruned while audit/tombstones
+remain; saved calibration reports are excluded from market-data retention and
+stay immutable, but repeating a run need not reproduce an old source vintage.
+Overlapping horizons, reused market paths and
 shared simulations mean scenarios are not independent observations. The distinct
 historical-origin count reports the available date support; generating more cases
 improves coverage, not independent evidence. Missing outcomes can bias the scored

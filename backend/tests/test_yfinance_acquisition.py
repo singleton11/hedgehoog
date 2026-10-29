@@ -5,24 +5,21 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
+from pydantic import ValidationError
 from pymongo.errors import ConnectionFailure
 
 import market_data as md
-from config import Settings
+from config import Settings, TaskSettings
 from main import create_app
 from manual_splits import ManualSplitRequest, add_split
 from return_statistics import refresh_statistics
 from split_adjustments import BASIS, adjusted_rows
-from test_market_data import ISIN, LISTING, Provider, bar, clock, config as legacy_config, db, page
+from test_market_data import ISIN, LISTING, Provider, bar, clock, db, page
 
 
 @pytest.fixture
-def config(legacy_config):
-    legacy_config.market_data_provider = "yfinance"
-    legacy_config.marketstack_api_key = SecretStr("")
-    legacy_config.marketstack_monthly_budget = 0
-    return legacy_config
+def config():
+    return Settings(_env_file=None, market_data_provider="yfinance", jwt_secret="test-secret-" * 5)
 
 
 class Yahoo(Provider):
@@ -78,15 +75,51 @@ def test_every_yahoo_request_is_globally_paced_and_counted(db, config, monkeypat
         assert callable(call.args[2])
 
 
-def test_legacy_requests_do_not_use_yahoo_pacing(db, legacy_config, monkeypatch):
-    pacer = Mock()
+@pytest.mark.parametrize("settings_class", [TaskSettings, Settings])
+def test_settings_only_allow_yahoo_without_marketstack_fields(settings_class):
+    settings = settings_class(_env_file=None, jwt_secret="s" * 48)
+    assert settings.market_data_provider == "yfinance"
+    assert not any(field.startswith("marketstack_") for field in settings_class.model_fields)
+    with pytest.raises(ValidationError):
+        settings_class(_env_file=None, jwt_secret="s" * 48, market_data_provider="marketstack")
+
+
+def test_marketstack_is_retired_not_configured(db, config, monkeypatch):
+    from marketstack import MarketstackClient
+
+    retired = config.model_copy(update={"market_data_provider": "marketstack"})
+    assert md.configured(retired) is False
+    assert md.instrument_detail(db, retired, ISIN)["provider_configured"] is False
+    pacer, publish = Mock(), Mock()
     monkeypatch.setattr(md, "wait_for_yahoo_request", pacer)
-    job = md.request_acquisition(db, legacy_config, ISIN, LISTING, "update", "user", Mock())
-    provider = Provider()
-    result = md.run_acquisition(db, legacy_config, job["id"], provider.factory)
-    assert result["status"] == "succeeded"
+    with pytest.raises(md.DataError, match="retired") as error:
+        md.request_acquisition(db, retired, ISIN, LISTING, "update", "user", publish)
+    assert error.value.status == 422
+    publish.assert_not_called()
     pacer.assert_not_called()
-    assert db.marketstack_usage.count_documents({}) == 1
+    assert db.acquisition_jobs.count_documents({}) == 0
+    assert db.marketstack_usage.count_documents({}) == 0
+    with pytest.raises(md.MarketDataError, match="retired") as error:
+        MarketstackClient()
+    assert error.value.code == "provider_retired"
+
+
+@pytest.mark.parametrize("stored_provider", [None, "marketstack"])
+def test_retired_job_deliveries_do_not_construct_provider_or_use_yahoo_pacing(db, config, monkeypatch, stored_provider):
+    job = {"_id": "retired-job", "instrument_id": ISIN, "active": True, "status": "queued"}
+    if stored_provider is not None:
+        job["provider"] = stored_provider
+    db.acquisition_jobs.insert_one(job)
+    factory, pacer = Mock(side_effect=AssertionError("Retired provider must not run")), Mock()
+    monkeypatch.setattr(md, "wait_for_yahoo_request", pacer)
+    result = md.run_acquisition(db, config, job["_id"], factory)
+    assert result["status"] == result["phase"] == "retired"
+    assert "retired" in result["error"]
+    assert db.acquisition_jobs.find_one({"_id": job["_id"]})["active"] is False
+    factory.assert_not_called()
+    pacer.assert_not_called()
+    assert db.marketstack_usage.count_documents({}) == 0
+    assert db.market_data_publications.count_documents({}) == 0
 
 
 def test_default_free_provider_requires_no_key_or_monthly_budget(db, config):
@@ -185,8 +218,8 @@ def test_symbol_only_rejects_mismatch_unknown_exchange_and_quote_lock(db, config
     unknown = md.request_acquisition(db, config, ISIN, {"symbol": "UNKNOWN.DE"}, "update", "user", Mock())
     assert md.run_acquisition(db, config, unknown["id"], Yahoo().factory)["status"] == "failed"
     assert db.acquisition_jobs.find_one({"_id": unknown["id"]})["error_code"] == "unknown_exchange"
-    db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
-    db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "job_id": "old", "date": "2026-09-15", "collected_at": md.utcnow(), "data": quote()})
+    acquired, _ = run(db, config)
+    assert acquired["status"] == "succeeded"
     with pytest.raises(md.DataError, match="cannot be changed"):
         md.request_acquisition(db, config, ISIN, {"symbol": "SPYI.DE"}, "update", "user", Mock())
 
@@ -203,9 +236,13 @@ def test_stale_listing_cache_write_cannot_replace_a_newer_job(db, config, clock,
     def paused(self, query, update, **kwargs):
         if self.full_name == collection.full_name and update.get("$set", {}).get("listing") == LISTING and not takeover:
             takeover.append(True)
-            # Pause after the original worker's final checkpoint, then let a
-            # new explicitly requested job publish and cache another listing.
+            # Publication locks the listing even before its cache write lands.
             clock[0] += timedelta(seconds=md.LEASE_SECONDS + 1)
+            if replacement != LISTING:
+                with pytest.raises(md.DataError) as error:
+                    md.request_acquisition(db, config, ISIN, replacement, "update", "user", Mock())
+                assert error.value.status == 409
+                return original_update(self, query, update, **kwargs)
             next_job = md.request_acquisition(db, config, ISIN, replacement, "update", "user", Mock())
             takeover.append(next_job["id"])
             if newer_first:
@@ -222,9 +259,17 @@ def test_stale_listing_cache_write_cannot_replace_a_newer_job(db, config, clock,
     md.run_acquisition(db, config, job["id"], Yahoo().factory)
     assert takeover
     cached = db.instrument_state.find_one({"_id": ISIN})
-    assert cached["listing"] == replacement
-    assert cached["listing_job_id"] == takeover[1]
-    assert cached["last_complete_quote_date"] == "2026-09-15"
+    if replacement != LISTING:
+        assert len(takeover) == 1
+        assert db.acquisition_jobs.count_documents({"provider": "yfinance"}) == 1
+        assert cached["listing"] == LISTING
+        assert cached["listing_job_id"] == job["id"]
+        assert cached["last_complete_quote_date"] is None
+        assert db.acquisition_jobs.find_one({"_id": job["id"]})["status"] == "failed"
+    else:
+        assert cached["listing"] == replacement
+        assert cached["listing_job_id"] == takeover[1]
+        assert cached["last_complete_quote_date"] == "2026-09-15"
     assert md.read_quotes(db, ISIN)["total"] == 1
 
 
@@ -256,29 +301,61 @@ def test_every_update_requests_full_history_and_publishes_one_generation(db, con
     assert next(call for call in source.calls if call[0] == "eod")[3:5] == ("2010-05-19", "2026-09-17")
     latest = md.read_quotes(db, ISIN)
     assert [(row["date"], row["close"]) for row in latest["items"]] == [("2026-09-15", "55")]
-    old = md.read_quotes(db, ISIN, as_of=cutoff)
-    assert [row["close"] for row in old["items"]] == ["100", "110"]
+    historical = md.read_quotes(db, ISIN, as_of=cutoff)
+    assert historical["generation"] == latest["generation"] == second["id"]
+    assert [row["close"] for row in historical["items"]] == ["55"]
+    with pytest.raises(md.DataError) as error:
+        md.read_quotes(db, ISIN, as_of=cutoff, generation=first["id"])
+    assert error.value.status == 409
+    # Publication changes visibility; the scheduled retention task deletes payloads separately.
     assert db.quotes.count_documents({}) == 3
     assert db.market_data_publications.count_documents({}) == 2
     assert md.published_history(db, ISIN, LISTING)["_id"] == second["id"]
-    assert md.published_history(db, ISIN, LISTING, cutoff)["_id"] == first["id"]
+    assert md.published_history(db, ISIN, LISTING, cutoff)["_id"] == second["id"]
 
 
-def test_failed_refresh_preserves_published_prices_profile_statistics(db, config, clock):
+def test_historical_as_of_filters_quote_dates_from_the_latest_generation(db, config, clock):
+    cutoff = datetime(2026, 9, 14, 23, 59, tzinfo=timezone.utc)
+    run(db, config, [quote("2026-09-14", "100"), quote("2026-09-15", "110")])
+    clock[0] += timedelta(seconds=2)
+    latest, _ = run(db, config, [quote("2026-09-14", "50"), quote("2026-09-15", "55")])
+    historical = md.read_quotes(db, ISIN, as_of=cutoff)
+    assert historical["generation"] == latest["id"]
+    assert [(row["date"], row["close"]) for row in historical["items"]] == [("2026-09-14", "50")]
+    assert md.quote_dates(db, ISIN, LISTING, as_of=cutoff) == ["2026-09-14"]
+    detail = md.instrument_detail(db, config, ISIN, as_of=cutoff)
+    assert detail["generation"] == latest["id"]
+    assert detail["summary"]["quote_count"] == 1
+    assert detail["summary"]["last_date"] == "2026-09-14"
+
+
+def test_failed_refresh_preserves_latest_published_prices_profile_statistics(db, config, clock):
     first, _ = run(db, config, [quote("2026-09-14"), quote("2026-09-15")])
+    clock[0] += timedelta(seconds=2)
+    latest, _ = run(db, config, source=Yahoo(
+        [page([quote("2026-09-14", "200"), quote("2026-09-15", "200")])],
+        profile={"name": "Latest published profile"},
+    ))
     before = md.instrument_detail(db, config, ISIN)
     clock[0] += timedelta(seconds=2)
     source = Yahoo([page([quote("2026-09-15", "999")])], profile={"name": "Unpublished profile"},
                    splits=[md.MarketDataError("rate_limited", "Yahoo rate limited the request.")])
     failed, _ = run(db, config, source=source)
     assert failed["status"] == "failed"
-    assert md.instrument_detail(db, config, ISIN)["profile"] == before["profile"]
-    assert [row["close"] for row in md.read_quotes(db, ISIN)["items"]] == ["100", "100"]
+    detail = md.instrument_detail(db, config, ISIN)
+    assert detail["generation"] == before["generation"] == latest["id"]
+    assert detail["profile"] == before["profile"]
+    assert [row["close"] for row in md.read_quotes(db, ISIN)["items"]] == ["200", "200"]
     assert md.acquired_instruments(db)["items"][0]["quote_count"] == 2
     stats, _ = refresh_statistics(db, ISIN)
     assert stats["daily_mean_log_return"] == 0
-    assert md.published_history(db, ISIN, LISTING)["_id"] == first["id"]
+    assert db.instrument_statistics.find_one({"_id": ISIN})["signature"]["generation"] == latest["id"]
+    assert md.published_history(db, ISIN, LISTING)["_id"] == latest["id"]
+    with pytest.raises(md.DataError) as error:
+        md.read_quotes(db, ISIN, generation=first["id"])
+    assert error.value.status == 409
     assert db.quotes.count_documents({"job_id": failed["id"]}) == 1
+    assert db.quotes.count_documents({"job_id": latest["id"]}) == 2
 
 
 def test_initial_failed_or_empty_history_is_not_acquired_inventory(db, config):
@@ -409,7 +486,7 @@ def test_expired_worker_cannot_publish_over_a_new_success(db, config, clock, mon
     assert md.acquired_instruments(db)["items"][0]["quote_count"] == 1
 
 
-def test_explicit_generation_pins_delayed_publication_even_with_same_cutoff(db, config, clock, monkeypatch):
+def test_delayed_publication_invalidates_superseded_and_legacy_generation_cursors(db, config, clock, monkeypatch):
     first, _ = run(db, config, [quote("2026-09-14", "100"), quote("2026-09-15", "110")])
     clock[0] += timedelta(seconds=1)
     original = db.market_data_publications.update_one
@@ -423,16 +500,17 @@ def test_explicit_generation_pins_delayed_publication_even_with_same_cutoff(db, 
     monkeypatch.setattr(db.market_data_publications, "update_one", delayed_publication)
     second, _ = run(db, config, [quote("2026-09-14", "50"), quote("2026-09-15", "55")])
     first_page = pages[0]
-    second_page = md.read_quotes(db, ISIN, limit=1, offset=1,
-                                as_of=datetime.fromisoformat(first_page["as_of"].replace("Z", "+00:00")),
-                                generation=first_page["generation"])
-    assert first_page["generation"] == second_page["generation"] == first["id"]
+    cutoff = datetime.fromisoformat(first_page["as_of"].replace("Z", "+00:00"))
+    assert first_page["generation"] == first["id"]
     assert first_page["items"][0]["close"] == "100"
-    assert second_page["items"][0]["close"] == "110"
+    for generation in (first_page["generation"], "legacy", str(uuid4())):
+        with pytest.raises(md.DataError) as error:
+            md.read_quotes(db, ISIN, limit=1, offset=1, as_of=cutoff, generation=generation)
+        assert error.value.status == 409
+    second_page = md.read_quotes(db, ISIN, limit=1, offset=1, as_of=cutoff, generation=second["id"])
+    assert second_page["generation"] == second["id"]
+    assert second_page["items"][0]["close"] == "55"
     assert md.read_quotes(db, ISIN)["generation"] == second["id"]
-    assert md.read_quotes(db, ISIN, generation="legacy")["total"] == 0
-    with pytest.raises(md.DataError, match="not published"):
-        md.read_quotes(db, ISIN, generation=str(uuid4()))
 
 
 def test_fresh_worker_replays_split_actions_from_persisted_chart_without_http(db, config, clock, monkeypatch):

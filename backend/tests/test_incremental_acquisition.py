@@ -1,4 +1,4 @@
-"""Automatic Yahoo diff downloads retain immutable complete generations."""
+"""Automatic Yahoo diffs publish complete latest-only history generations."""
 from datetime import timedelta
 from unittest.mock import Mock
 
@@ -7,7 +7,7 @@ from pymongo.errors import ConnectionFailure
 
 import market_data as md
 from market_data_refresh import refresh_stale_market_data
-from test_yfinance_acquisition import ISIN, LISTING, Yahoo, clock, config, db, legacy_config, page, quote, run
+from test_yfinance_acquisition import ISIN, LISTING, Yahoo, clock, config, db, page, quote, run
 
 
 def automatic(db, config, rows, splits=None):
@@ -16,18 +16,40 @@ def automatic(db, config, rows, splits=None):
     return md.run_acquisition(db, config, job["id"], source.factory), source
 
 
-def test_diff_includes_last_quote_and_preserves_complete_history_and_old_generation(db, config, clock):
+def test_diff_includes_last_quote_and_materializes_complete_latest_history(db, config, clock):
     first, _ = run(db, config, [quote("2026-09-14", "90"), quote("2026-09-15", "100")])
     cutoff = clock[0]
     clock[0] += timedelta(days=1)
     second, source = automatic(db, config, [quote("2026-09-15", "100"), quote("2026-09-18", "110")])
     assert second["status"] == "succeeded" and second["mode"] == "incremental"
     assert [call[3:5] for call in source.calls if call[0] == "eod"] == [("2026-09-15", "2026-09-18")]
-    assert [row["close"] for row in md.read_quotes(db, ISIN)["items"]] == ["90", "100", "110"]
-    assert [row["close"] for row in md.read_quotes(db, ISIN, as_of=cutoff, generation=first["id"])["items"]] == ["90", "100"]
+    latest = md.read_quotes(db, ISIN)
+    assert latest["generation"] == second["id"]
+    assert [row["close"] for row in latest["items"]] == ["90", "100", "110"]
+    historical = md.read_quotes(db, ISIN, as_of=cutoff)
+    assert historical["generation"] == second["id"]
+    assert [row["close"] for row in historical["items"]] == ["90", "100"]
+    with pytest.raises(md.DataError) as error:
+        md.read_quotes(db, ISIN, as_of=cutoff, generation=first["id"])
+    assert error.value.status == 409
+    # Old payloads remain until scheduled retention; the latest generation is self-contained.
     assert db.quotes.count_documents({"job_id": first["id"]}) == 2
     assert db.quotes.count_documents({"job_id": second["id"]}) == 3
+    copied = db.quotes.find_one({"job_id": second["id"], "date": "2026-09-14"})
+    original = db.quotes.find_one({"job_id": first["id"], "date": "2026-09-14"})
+    assert copied["source_job_id"] == first["id"]
+    assert copied["data"] == original["data"]
+    assert copied["collected_at"] == original["collected_at"]
     assert refresh_stale_market_data(db, config, now=clock[0], publish=Mock())["fresh"] == 1
+
+    from market_data_retention import cleanup
+
+    cleanup(db, config, ISIN)
+    assert db.quotes.count_documents({"job_id": first["id"]}) == 0
+    assert db.acquisition_jobs.find_one({"_id": first["id"]})["retention_state"] == "pruned"
+    retained = md.read_quotes(db, ISIN)
+    assert retained["generation"] == second["id"]
+    assert [row["close"] for row in retained["items"]] == ["90", "100", "110"]
 
 
 def test_startup_sweep_queues_diff_and_same_day_restarts_skip_it(db, config, clock):
@@ -72,7 +94,10 @@ def test_changed_adjustment_or_missing_overlap_falls_back_to_full_history(db, co
     assert result["status"] == "succeeded" and result["mode"] == "refresh"
     assert [call[3] for call in source.calls if call[0] == "eod"] == ["2026-09-15", "2010-05-19"]
     assert [row["close"] for row in md.read_quotes(db, ISIN)["items"]] == ["50", "50", "55"]
-    assert md.read_quotes(db, ISIN, generation=first["id"])["items"][0]["close"] == "100"
+    with pytest.raises(md.DataError) as error:
+        md.read_quotes(db, ISIN, generation=first["id"])
+    assert error.value.status == 409
+    assert db.quotes.find_one({"job_id": first["id"], "date": "2026-09-14"})["data"]["close"] == "100"
 
 
 def test_dividend_adjusted_overlap_change_triggers_full_refresh(db, config, clock):

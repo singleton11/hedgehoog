@@ -1276,10 +1276,10 @@ describe('ETF autocomplete and routing', () => {
 
 describe('acquisition estimates', () => {
   it.each([
-    ['unresolved', null, false, 1, 4, 9],
-    ['cached', { symbol: 'ETF.DE', exchange: 'XETR' }, false, 0, 3, 8],
-    ['manual', null, true, 0, 3, 8],
-  ])('includes lookup only for %s automatic listings', (_, listing, manual, lookupCalls, minimumCalls, calls) => {
+    ['unresolved', null, false, 1],
+    ['cached', { symbol: 'ETF.DE', exchange: 'XETR' }, false, 0],
+    ['manual', null, true, 0],
+  ])('includes lookup only for %s automatic listings', (_, listing, manual, lookupCalls) => {
     const instrument = detail(A, { listing });
     expect(acquisitionEstimate(instrument, 'update', manual)).toMatchObject({ lookupCalls, minimumCalls: 0, pages: null, calls: null });
     expect(acquisitionEstimate(instrument, 'update', manual).range).toBe('Full history from 2010-05-19 to latest available');
@@ -1289,7 +1289,7 @@ describe('acquisition estimates', () => {
 });
 
 describe('explicit acquisition and complete charts', () => {
-  it('requires quota authorization without listing inputs, then polls queued → running → succeeded and loads all quote pages', async () => {
+  it('requires Yahoo authorization without listing inputs, then polls queued → running → succeeded and loads all quote pages', async () => {
     const server = mockServer();
     await open(A);
     expect(server.posts()).toHaveLength(0);
@@ -1474,27 +1474,19 @@ describe('explicit acquisition and complete charts', () => {
     expect(JSON.parse(server.posts()[0][1].body)).toEqual({ symbol: 'SPYI.DE', confirmed: true, mode: 'update' });
   });
 
-  it('still requires a MIC for the legacy provider', async () => {
+  it('offers only Yahoo selection and authorization, without legacy quota controls', async () => {
     const server = mockServer();
-    server.details[A] = detail(A, { provider: 'marketstack', price_basis: 'unadjusted' });
+    server.details[A].budget = { month: '2026-09', used: 10000, limit: 10000, remaining: 0 };
     await open(A);
     await review();
     fireEvent.click(manualOverride());
-    const exchange = screen.getByLabelText('Exchange MIC');
-    const consent = screen.getByRole('checkbox', { name: 'Allow this request to use provider quota.' });
-    expect(exchange).toBeRequired();
+    expect(screen.getByLabelText('Exchange MIC')).not.toBeRequired();
+    expect(screen.getByRole('link', { name: 'SPYI.DE' })).toHaveAttribute('href', 'https://finance.yahoo.com/quote/SPYI.DE');
+    expect(screen.queryByRole('checkbox', { name: /use provider quota/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/ticker workbook|Estimated provider calls|Insufficient local budget/)).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Provider symbol'), { target: { value: 'SPYI.DE' } });
-    fireEvent.click(consent);
-    expect(exchange).toHaveAccessibleDescription('Enter a four-character exchange MIC.');
-    expect(screen.getByRole('button', { name: 'Confirm request' })).toBeDisabled();
-    fireEvent.submit(screen.getByRole('form', { name: 'Confirm request' }));
-    expect(server.posts()).toHaveLength(0);
-    fireEvent.change(exchange, { target: { value: 'XETR' } });
-    expect(consent).not.toBeChecked();
-    fireEvent.click(consent);
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm request' }));
-    await flush();
-    expect(JSON.parse(server.posts()[0][1].body)).toEqual({ symbol: 'SPYI.DE', exchange: 'XETR', confirmed: true, mode: 'update' });
+    fireEvent.click(authorization());
+    expect(screen.getByRole('button', { name: 'Confirm request' })).toBeEnabled();
   });
 
   it('lets a no-data failure explicitly override its saved listing and requires renewed authorization after edits', async () => {
@@ -1589,7 +1581,7 @@ describe('explicit acquisition and complete charts', () => {
     expect(JSON.parse(server.posts()[0][1].body)).toEqual({ confirmed: true, mode: 'update' });
   });
 
-  it('allows an explicit valid manual override with 3 calls remaining including splits and skips lookup', async () => {
+  it('validates manual Yahoo overrides without legacy budget gating', async () => {
     const server = mockServer();
     server.details[A].budget = { month: '2026-09', used: 9997, limit: 10000, remaining: 3 };
     server.details[A].catalogue.inception_date = null;
@@ -1683,7 +1675,7 @@ describe('explicit acquisition and complete charts', () => {
 
   it('renders listing selection and nested unknown metadata as text without substituting currency or missing OHLC', async () => {
     const server = mockServer();
-    server.details[A] = withData(A, { listing_resolution: { source: 'tickerslist', query: 'ETF', name: 'Selected &amp; &lt;img src=x onerror=bad()&gt;', collected_at: '2026-09-17T10:00:00Z', data: { symbol: 'ETF.DE', stock_exchange: { mic: 'XETR' }, future_unknown: null } } });
+    server.details[A] = withData(A, { listing_resolution: { source: 'yahoo_search', query: 'ETF', name: 'Selected &amp; &lt;img src=x onerror=bad()&gt;', collected_at: '2026-09-17T10:00:00Z', data: { symbol: 'ETF.DE', stock_exchange: { mic: 'XETR' }, future_unknown: null } } });
     server.details[A].catalogue.name = 'Fund &amp; &lt;img src=x onerror=bad()&gt;';
     server.quotes[A] = [quote(), quote(1, { open: null }), quote(2, { low: '' })];
     server.details[A].summary.quote_count = 3;
@@ -1715,7 +1707,7 @@ describe('explicit acquisition and complete charts', () => {
     expect(displayText('&#38; &#x3c; &amp;')).toBe('& < &');
   });
 
-  it('disables acquisitions when the provider or local budget is unavailable', async () => {
+  it('disables acquisitions only when Yahoo is unavailable, not for local quota', async () => {
     const server = mockServer();
     server.details[A] = detail(A, { provider_configured: false });
     await open(A);

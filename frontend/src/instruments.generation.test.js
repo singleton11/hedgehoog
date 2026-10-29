@@ -9,7 +9,7 @@ const page = (offset, generation = FIRST) => ({
   total: 2, offset, limit: 1000, as_of: cutoff, generation,
 });
 
-describe('immutable quote generations', () => {
+describe('latest-snapshot quote pagination', () => {
   it('pins the first server generation as well as its cutoff on later pages', async () => {
     const request = vi.fn().mockResolvedValueOnce(page(0)).mockResolvedValueOnce(page(1));
     expect(await loadAllQuotes(request, 'IE00B4L5Y983', new AbortController().signal)).toHaveLength(2);
@@ -21,7 +21,7 @@ describe('immutable quote generations', () => {
   it('rejects a generation change even with the same timestamp, total and dates', async () => {
     const request = vi.fn().mockResolvedValueOnce(page(0)).mockResolvedValueOnce(page(1, SECOND));
     await expect(loadAllQuotes(request, 'IE00B4L5Y983', new AbortController().signal))
-      .rejects.toThrow('changed history generation');
+      .rejects.toMatchObject({ status: 409 });
   });
 
   it('pins the detail generation on the first chart request', async () => {
@@ -30,9 +30,35 @@ describe('immutable quote generations', () => {
     expect(new URL(request.mock.calls[0][0], 'http://localhost').searchParams.get('generation')).toBe(FIRST);
   });
 
-  it('pins the explicit no-publication state instead of adopting a late publication', async () => {
-    const request = vi.fn().mockResolvedValue({ ...page(0, 'legacy'), total: 0, items: [] });
-    expect(await loadAllQuotes(request, 'IE00B4L5Y983', new AbortController().signal, { generation: 'legacy' })).toEqual([]);
-    expect(new URL(request.mock.calls[0][0], 'http://localhost').searchParams.get('generation')).toBe('legacy');
+  it('passes an explicit quote-date bound without excluding later-collected saved quotes', async () => {
+    const historical = '2026-09-15T00:00:00Z';
+    const request = vi.fn().mockResolvedValueOnce({ ...page(0), as_of: historical,
+      items: [{ date: '2026-09-14', collected_at: '2026-10-01T00:00:00Z', close: '100' }], total: 1 });
+    const result = await loadAllQuotes(request, 'IE00B4L5Y983', new AbortController().signal, { generation: FIRST, asOf: historical });
+    expect(new URL(request.mock.calls[0][0], 'http://localhost').searchParams.get('as_of')).toBe(historical);
+    expect(result).toEqual([{ date: '2026-09-14', collected_at: '2026-10-01T00:00:00Z', close: '100' }]);
+  });
+
+  it('propagates stale-generation 409 without adopting the latest snapshot or retrying automatically', async () => {
+    const stale = Object.assign(new Error('Refresh instrument details.'), { status: 409 });
+    const request = vi.fn().mockResolvedValueOnce(page(0)).mockRejectedValueOnce(stale);
+    await expect(loadAllQuotes(request, 'IE00B4L5Y983', new AbortController().signal)).rejects.toBe(stale);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(new URL(request.mock.calls[1][0], 'http://localhost').searchParams.get('generation')).toBe(FIRST);
+  });
+
+  it('accepts an empty response only while the pinned no-publication state still holds', async () => {
+    const request = vi.fn().mockResolvedValue({ ...page(0, null), total: 0, items: [] });
+    expect(await loadAllQuotes(request, 'IE00B4L5Y983', new AbortController().signal, { generation: null })).toEqual([]);
+    request.mockResolvedValue(page(0));
+    await expect(loadAllQuotes(request, 'IE00B4L5Y983', new AbortController().signal, { generation: null }))
+      .rejects.toMatchObject({ status: 409 });
+  });
+
+  it('rejects the retired legacy sentinel instead of making it a readable snapshot', async () => {
+    const request = vi.fn();
+    await expect(loadAllQuotes(request, 'IE00B4L5Y983', new AbortController().signal, { generation: 'legacy' }))
+      .rejects.toMatchObject({ status: 409 });
+    expect(request).not.toHaveBeenCalled();
   });
 });

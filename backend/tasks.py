@@ -5,7 +5,7 @@ from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
 from celery_app import (
-    ACQUISITION_TASK, ETF_IMPORT_TASK, MARKET_DATA_REFRESH_TASK, app,
+    ACQUISITION_TASK, ETF_IMPORT_TASK, MARKET_DATA_REFRESH_TASK, MARKET_DATA_RETENTION_TASK, app,
     enqueue_market_data_refresh,
 )
 from config import TaskSettings
@@ -60,6 +60,19 @@ def refresh_market_data_task(self, include_catalogue=False):
             return refresh_stale_market_data(db, config, **options)
 
 
+@app.task(name=MARKET_DATA_RETENTION_TASK, bind=True,
+          autoretry_for=(PyMongoError, JobBusy), retry_backoff=30,
+          retry_backoff_max=600, retry_jitter=True, max_retries=12)
+def retain_market_data_task(self, instrument_id=None):
+    from market_data_retention import cleanup
+    config = TaskSettings()
+    with MongoClient(config.mongodb_uri.get_secret_value(), serverSelectionTimeoutMS=5000) as client:
+        result = cleanup(client[config.mongodb_database], config, instrument_id)
+        if any(item.get("skipped") for item in result.get("items", [])):
+            raise JobBusy()
+        return result
+
+
 @app.task(name=ACQUISITION_TASK, bind=True, max_retries=12, soft_time_limit=600, time_limit=660)
 def acquire_instrument_task(self, job_id: str):
     config = TaskSettings()
@@ -67,7 +80,17 @@ def acquire_instrument_task(self, job_id: str):
         with MongoClient(
             config.mongodb_uri.get_secret_value(), serverSelectionTimeoutMS=5000,
         ) as client:
-            return run_acquisition(client[config.mongodb_database], config, job_id)
+            result = run_acquisition(client[config.mongodb_database], config, job_id)
+            if result and result.get("status") in ("succeeded", "failed", "retired"):
+                # Cleanup dispatch cannot change the acquisition outcome. Daily
+                # catch-up covers a broker failure after durable completion.
+                try:
+                    app.send_task(MARKET_DATA_RETENTION_TASK,
+                                  args=[result["instrument_id"]], queue="etfs")
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).warning("Retention dispatch failed; daily catch-up will retry")
+            return result
     except JobBusy:
         # A redelivered message waits for a live lease rather than doing paid work.
         raise self.retry(countdown=30) from None

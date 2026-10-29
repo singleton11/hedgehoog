@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
-import { loadAllQuotes, olderJob, pendingJob } from './instruments.js';
+import { loadAllQuotes, olderJob, pendingJob, STALE_GENERATION_MESSAGE } from './instruments.js';
 
 export const POLL_INTERVAL = 2000;
 
@@ -18,9 +18,12 @@ export default function useInstrument(isin) {
   const [quotesLoading, setQuotesLoading] = useState(false);
   const [quotesError, setQuotesError] = useState(null);
   const [quoteAttempt, setQuoteAttempt] = useState(0);
+  const [snapshotRevision, setSnapshotRevision] = useState(0);
+  const [quotesStale, setQuotesStale] = useState(false);
   const detailController = useRef(null);
   const postController = useRef(null);
   const mounted = useRef(false);
+  const snapshotRefreshPending = useRef(false);
   const path = `/instruments/${encodeURIComponent(isin)}`;
 
   useEffect(() => {
@@ -34,7 +37,7 @@ export default function useInstrument(isin) {
     let timer;
     setError(null);
     setPollError(null);
-    setLoading(!latest.current);
+    setLoading(snapshotRefreshPending.current || !latest.current);
     async function load() {
       if (controller.signal.aborted) return;
       let repeat = pendingJob(latest.current?.acquisition);
@@ -50,6 +53,10 @@ export default function useInstrument(isin) {
         } else {
           latest.current = data;
           setDetail(data);
+          if (snapshotRefreshPending.current) {
+            snapshotRefreshPending.current = false;
+            setSnapshotRevision((value) => value + 1);
+          }
           setPollError(null);
           setError(null);
           repeat = pendingJob(data.acquisition);
@@ -73,7 +80,7 @@ export default function useInstrument(isin) {
   // alone doesn't repeatedly reload quotes, and errors never erase prior data.
   const quoteVersion = detail ? JSON.stringify([
     detail.summary.quote_count, detail.summary.first_date, detail.summary.last_date,
-    detail.generation,
+    detail.generation, snapshotRevision,
     pendingJob(detail.acquisition) ? null : detail.acquisition?.id,
     pendingJob(detail.acquisition) ? null : detail.acquisition?.status,
   ]) : null;
@@ -82,11 +89,15 @@ export default function useInstrument(isin) {
     const controller = new AbortController();
     setQuotesLoading(true);
     setQuotesError(null);
-    const snapshot = { generation: latest.current?.generation, asOf: latest.current?.history_as_of };
+    setQuotesStale(false);
+    const snapshot = { generation: latest.current?.generation };
     loadAllQuotes(request, isin, controller.signal, snapshot).then((items) => {
       if (!controller.signal.aborted && items !== null) setQuotes(items);
     }).catch((error) => {
-      if (!controller.signal.aborted) setQuotesError(error.message);
+      if (!controller.signal.aborted) {
+        setQuotesStale(error.status === 409);
+        setQuotesError(error.status === 409 ? STALE_GENERATION_MESSAGE : error.message);
+      }
     }).finally(() => {
       if (!controller.signal.aborted) setQuotesLoading(false);
     });
@@ -123,7 +134,14 @@ export default function useInstrument(isin) {
     return accepted;
   }, [isin, path, request]);
 
-  return { detail, loading, error, pollError, postError, submitting, quotes, quotesLoading, quotesError, acquire,
+  const refreshSnapshot = useCallback(() => {
+    if (postController.current) return;
+    snapshotRefreshPending.current = true;
+    setRefresh((value) => value + 1);
+  }, []);
+
+  return { detail, loading, error, pollError, postError, submitting, quotes, quotesLoading, quotesError, quotesStale, acquire,
+    snapshotRevision, refreshSnapshot,
     retry: () => { if (!postController.current) setRefresh((value) => value + 1); },
     retryQuotes: () => setQuoteAttempt((value) => value + 1) };
 }

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from './Auth.jsx';
+import { STALE_GENERATION_MESSAGE } from './instruments.js';
 
-export function useReturnStatistics(isin, refreshKey = '', generation = null) {
+export function useReturnStatistics(isin, refreshKey = '', generation = undefined) {
   const { request } = useAuth();
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState({ key: null, data: null, error: null });
@@ -23,10 +24,14 @@ export function useReturnStatistics(isin, refreshKey = '', generation = null) {
           || !Number.isInteger(data.return_count) || !Number.isInteger(data.price_count) || !Number.isInteger(data.quote_count)) {
           throw new Error('Statistics returned an unexpected response.');
         }
+        if (generation !== undefined && data.generation !== undefined && data.generation !== generation) {
+          throw Object.assign(new Error(STALE_GENERATION_MESSAGE), { status: 409 });
+        }
         setState({ key, data, error: null });
       } catch (error) {
         if (abort.signal.aborted || sequence.current !== current) return;
-        setState({ key, data: null, error: error.message || 'Statistics are unavailable.' });
+        setState({ key, data: null, stale: error.status === 409,
+          error: error.status === 409 ? STALE_GENERATION_MESSAGE : error.message || 'Statistics are unavailable.' });
       }
     }
     load();
@@ -42,6 +47,7 @@ export function useReturnStatistics(isin, refreshKey = '', generation = null) {
   return {
     data: state.key === key ? state.data : null,
     error: state.key === key ? state.error : null,
+    stale: state.key === key && state.stale === true,
     loading: Boolean(isin) && state.key !== key,
     retry,
   };
@@ -106,19 +112,21 @@ export function StatisticsSummary({ statistics, variant = 'planner' }) {
       <div><dt>History window</dt><dd>{stats.first_date && stats.last_date ? `${stats.first_date} – ${stats.last_date}` : 'No usable history'}</dd></div>
       <div><dt>Price basis</dt><dd>{priceBasisLabel(stats.price_basis)}</dd></div>
       <div><dt>Listing price currency</dt><dd>{stats.price_currency || 'Unknown'}{stats.currency_source && ` (${stats.currency_source})`}</dd></div>
-      <div><dt>Saved-data snapshot (UTC)</dt><dd>{stats.as_of || 'Unavailable'}</dd></div>
+      <div><dt>Quote-date cutoff (UTC)</dt><dd>{stats.as_of || 'Unavailable'}</dd></div>
     </dl>
     {stats.price_basis === 'close' && <p className="muted">Unadjusted prices: splits and distributions may affect returns.</p>}
     {warnings.length > 0 && <ul aria-label="Statistics warnings">{warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
   </div>;
 }
 
-export default function ReturnStatistics({ isin, refreshKey, generation }) {
-  const { data, error, loading, retry } = useReturnStatistics(isin, refreshKey, generation);
+export default function ReturnStatistics({ isin, refreshKey, generation, onRefreshSnapshot, refreshingSnapshot }) {
+  const { data, error, stale, loading, retry } = useReturnStatistics(isin, refreshKey, generation);
   return <section aria-label="Return statistics">
     <h2>Return statistics</h2>
     {loading && <p role="status">Loading return statistics…</p>}
-    {error && <div><p>Return statistics unavailable: {error}</p><button className="secondary" onClick={retry}>Retry statistics</button></div>}
+    {error && <div><p>Return statistics unavailable: {error}</p>
+      {stale && onRefreshSnapshot ? <button className="secondary" onClick={onRefreshSnapshot} disabled={refreshingSnapshot}>Refresh latest snapshot</button>
+        : <button className="secondary" onClick={retry}>Retry statistics</button>}</div>}
     {data && <>
       <StatisticsSummary statistics={data} variant="instrument" />
       {!data.eligible && <p>Not eligible for goal planning: {data.ineligible_reason || 'EUR prices and at least 60 return observations are required.'}</p>}

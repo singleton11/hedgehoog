@@ -108,9 +108,9 @@ the first date plus that many calendar years (February 29 clamps to February 28)
 Sparse dates and unusable prices still count as saved coverage. Filtering happens
 before pagination, preserving exact totals. Membership reads compact first/last
 endpoints in bounded batches; only returned page items enumerate distinct quote
-dates. With Returns set to All, only page items refresh statistics. Yahoo coverage
-stays pinned to the published profile's exact generation and listing; legacy
-observations exclude Yahoo rows. Existing indexes are reused; real-Mongo
+dates. With Returns set to All, only page items refresh statistics. Coverage stays
+pinned to the latest complete Yahoo profile's exact generation and listing;
+Marketstack-only histories do not qualify. Existing indexes are reused; real-Mongo
 performance acceptance remains unverified locally.
 
 The optional native **Returns** dropdown defaults to **All**. Choose
@@ -136,21 +136,21 @@ Choose **Add ETF** to open the dedicated search page (`#/add`), then search the 
 1. The default `MARKET_DATA_PROVIDER=yfinance` needs **no API key or paid monthly budget**. `MARKET_DATA_MAX_CALLS_PER_JOB=40` and `MARKET_DATA_TIMEOUT_SECONDS=15` are safety bounds, not subscription limits. Rebuild/restart the worker with `make services-up` after this change. The header identifies Yahoo Finance as experimental.
 2. Explicitly authorize acquisition. An uncached listing is resolved using Yahoo Search and known exchange identifiers; the selected symbol/MIC and evidence are cached. This heuristic is not independent ISIN certification. A Yahoo symbol override is available before quotes exist, such as `SPYI.DE`; the worker detects the exchange from that exact symbol’s Yahoo metadata. Exchange MIC is an optional advanced override, not required knowledge. Once quotes are saved, the listing is fixed.
 3. **Request Data** queues `marketdata.acquire`. The worker saves metadata, daily chart evidence and split evidence from inception through the current UTC date; providers return only completed trading-day bars. Coverage is what Yahoo actually returns, not a promise of complete history.
-4. **Manual Yahoo updates refresh full available history**, including older dates. Automatic startup/daily updates download from the latest saved quote through today, with an inclusive overlap; changed prices or split actions trigger a full-history fallback. Each merged history is published as one new immutable generation, preserving prior snapshots. Corrections outside the overlap require a manual full refresh. Failed downloads leave previous published data active.
+4. **Manual Yahoo updates refresh full available history**, including older dates. Automatic startup/daily updates download from the latest saved quote through today, with an inclusive overlap; changed prices or split actions trigger a full-history fallback. Each merged history is published as one new complete generation, preserving the base's older dates before superseded payloads become eligible for retention cleanup. Only the latest complete Yahoo snapshot is readable; previous vintages are not archived for replay. Corrections outside the overlap require a manual full refresh. Failed downloads leave the last good published data active.
 5. **Retry Older History** also performs a full refresh. If Yahoo lacks early history, it cannot invent it. Provider errors are sanitized and can be retried manually or by the next automatic sweep; database interruptions resume persisted checkpoints.
 
-`yfinance` is unofficial experimental access without an SLA. Free access does not grant commercial redistribution rights. Before onboarding customers, replace/license the provider (planned: EODHD) behind `backend/market_provider.py`. The legacy Marketstack adapter is retained only for explicit compatibility/testing; it is never an automatic paid fallback.
+`yfinance` is unofficial experimental access without an SLA. Free access does not grant commercial redistribution rights. Before onboarding customers, replace/license the provider (planned: EODHD) behind `backend/market_provider.py`. Marketstack is retired: its adapter, provider option and configuration are removed. Marketstack-only instruments require a successful Yahoo acquisition; legacy data is not a read or acquisition fallback.
 
 Storage:
 
-- **`instruments`**: append-only tickerinfo observations, including complete nested provider `data`, `instrument_id` (ETF ISIN or separate index ID), provider symbol/exchange, job ID, exact UTC `collected_at` and UTC `collection_date`. Multiple observations in a day are retained. Point-in-time means *known when collected*, not historical fundamentals reconstructed before collection.
-- **`raw_eod_pages`**: complete parsed provider envelopes, keyed by job and offset, saved before indexing. Retains all rows, including duplicates, malformed dates, unexpected shapes and missing values for later cleanup. Re-indexing a saved page after a worker/DB interruption does not consume another provider call.
-- **`quotes`**: dated-object projection (first occurrence per job/date; all duplicates remain in raw pages); quote date separate from `collected_at` / `collection_date`, original raw and adjusted provider fields in `data`, listing and job ID. Observations are immutable; retries of the same job/date are idempotent. Yahoo reads select one completed published generation, optionally bounded by `as_of`, without filling its missing dates from older generations.
+- **`instruments`**: generation-owned provider profiles, including complete nested provider `data`, `instrument_id` (ETF ISIN or separate index ID), provider symbol/exchange, job ID, exact UTC `collected_at` and UTC `collection_date`. Collection times record provenance, not a knowledge-time read contract; superseded profile payloads are retention candidates.
+- **`raw_eod_pages`**: complete parsed provider envelopes, keyed by job and offset, saved before indexing. Each retained payload includes all rows, including duplicates, malformed dates, unexpected shapes and missing values. Re-indexing an active job's saved page after a worker/DB interruption does not consume another provider call.
+- **`quotes`**: dated-object projection (first occurrence per job/date; all duplicates remain in retained raw pages); quote date separate from `collected_at` / `collection_date`, original raw and adjusted provider fields in `data`, listing and job ID. Observations are immutable while retained; retries of the same job/date are idempotent. Reads select only the latest complete published Yahoo generation, with `as_of` bounding quote dates, without filling missing dates from older generations or Marketstack.
 - **`acquisition_jobs`**: durable status, progress, sanitized errors, requested range and pagination checkpoint. A partial unique index allows only one active job per instrument. A five-minute renewable worker lease fences abandoned work; polling exposes expired jobs as retryable failures. Queued requests not started within 30 minutes are also exposed as retryable failures, covering offline workers or an interrupted Mongo-to-broker handoff; any later delivery of an expired job is skipped. Delivery is at least once: a crash between a provider response and its checkpoint can require another request, so HTTP is not exactly once.
 - **`instrument_state`**: cached listing/resolution and optional manual currency label. Earlier records remain available if an update fails.
-- **`market_data_publications`**: immutable generation/job/provider/listing publication audit records. Visibility requires an atomic owner/status-guarded publication marker on the job, so expired workers cannot publish late. Profile, quote and split reads share the same generation; statistics cache keys include its identity.
+- **`market_data_publications`**: retained generation/job/provider/listing publication audit records and pruning tombstones. Visibility requires an atomic owner/status-guarded publication marker on the job, so expired workers cannot publish late. Profile, quote and split reads share the latest complete generation; statistics cache keys include its identity. An audit record does not guarantee a replayable historical payload.
 
-**Ingestion preserves provider evidence; cleanup is deferred.** Missing/null/unusual prices and inconsistent OHLC remain saved. Raw chart responses are retained before indexing; only usable dates enter dated history. Identity, transport, envelope, explicit authorization, lease and bounded-request safeguards fail safely. No silent price repair or invented null-volume zeros are applied. Provider credentials/session cookies are never published.
+**Ingestion preserves provider evidence within retained payloads; retention removes superseded payloads, not audit.** Missing/null/unusual prices and inconsistent OHLC remain saved. Raw chart responses are persisted before indexing; only usable dates enter dated history. Identity, transport, envelope, explicit authorization, lease and bounded-request safeguards fail safely. No silent price repair or invented null-volume zeros are applied. Provider credentials/session cookies are never published.
 
 Yahoo charts use **provider split-adjusted OHLC**, even though requests set `auto_adjust=False`. Statistics, trailing-year metrics, simulations and calibration use Yahoo **Close**, copied into the separate `split_adjusted_close` analytics field without multiplying split factors again. `Adj Close` remains separate; cash distributions are **not** reinvested in analytics. Manual split multiplication is disabled for this already-adjusted basis. Updates publish coherent refreshed histories; saved calculation reports remain immutable.
 
@@ -167,7 +167,13 @@ Authenticated endpoints (browser prefix `/api`):
 | `PATCH /instruments/{isin}/price-currency` | `{price_currency: "EUR" \| "USD" \| "CHF" \| "GBP" \| "RUB"}`; saves a manual chart currency override |
 | `POST /instruments/{isin}/acquisitions` | `{confirmed: true, mode: "update" \| "backfill"}`; optional Yahoo `symbol` manual override with auto-detected exchange; optional explicit `exchange` MIC; returns 202 and durable job |
 
-Quote pagination reuses both the returned `generation` UUID (or explicit `legacy`) and `as_of` cutoff. The generation prevents delayed publications from changing the selected history between pages. `as_of` requires an explicit timezone and filters **collected market-data observations**; the catalogue, manual price-currency setting and operational job/provider status are still current. See [the design contract](docs/on-demand-market-data.md).
+Quote pagination reuses both the returned `generation` UUID and `as_of` bound. A superseded generation cursor returns **409 Conflict requiring refresh**: reload details and restart pagination, rather than silently continuing with another snapshot or legacy data. `as_of` requires an explicit timezone and bounds **quote dates through its UTC date in the latest complete Yahoo snapshot**, not collection/publication time. It does not reconstruct what was known then; later revisions can introduce look-ahead bias. Catalogue, manual price-currency settings and operational job/provider status remain current. See [the design contract](docs/on-demand-market-data.md).
+
+### Market-data retention
+
+`MARKET_DATA_RETENTION_ENABLED=true` and `MARKET_DATA_RETENTION_BATCH_SIZE=1000` keep the latest complete Yahoo history and enable daily catch-up of superseded payload cleanup. There is no timed grace period: current publications, active readers and in-flight incremental bases are protected until safe to prune. Incremental publication must preserve the base's complete history, and failed refreshes preserve the last good snapshot plus failure status/errors in the audit. Publication/job audit and pruning tombstones remain, not historical-vintage replay payloads.
+
+From `backend/`, run `python -m market_data_retention --inventory` (also the no-flag default) to inspect without deleting. Only explicit `--apply` mutates data. Inventory flags ambiguous/untagged records for review and leaves unknown ownership untouched; it never blindly treats them as retired Marketstack data. Retention excludes `manual_splits`, catalogues/import records, users, customer goals/plans/simulations, calibrations and portfolios/transactions. Document deletion does not guarantee filesystem shrinkage because MongoDB can reuse freed storage. See [maintenance and safety details](docs/on-demand-market-data.md#retention-and-maintenance).
 
 ## Index catalogue
 
@@ -242,9 +248,11 @@ graph shows average portfolio value as a line, shaded 5th–95th and 25th–75th
 percentile clouds across all 10,000 traces, and the goal as a dashed line. It requires
 at least 60 usable daily returns; monthly payments start one month from today.
 An optional timezone-aware `as_of` timestamp on simulation requests enables
-historical-origin estimates using only quote observations and published history
-known by that cutoff. Normal current simulations also pin statistics and their
-forecast date to one captured UTC timestamp (`data_as_of` in the result).
+historical-origin estimates using quote dates through its UTC date from the
+**latest complete Yahoo snapshot**, not data known at that time. Later provider
+revisions and adjustments can introduce look-ahead bias; vintage replay is not
+supported. Normal current simulations also pin statistics and their forecast
+date to one captured UTC timestamp (`data_as_of` in the result).
 
 This is a **model estimate, not a guarantee**. It uses historical log returns,
 assumes fractional shares and (for standard Monte Carlo) independent normal
@@ -294,10 +302,11 @@ solves the required EUR/month using training-only history; an independent stream
 estimates that funded plan's probability before historical outcomes are read. Details include the calibration curve, origin
 count and paginated audit. Provided or generated seeds support replay.
 
-Each monthly forecast fits only its trailing historical window; later prices
-are used only to score the outcome. This is walk-forward fitting on downloaded
-history, **not** strict point-in-time vintages: later adjustments, present-day
-instrument selection and overlapping holding periods remain limitations.
+Each monthly forecast fits only its trailing historical window; later quote dates
+are used only to score the outcome. This is walk-forward fitting on the latest
+complete Yahoo snapshot, **not** point-in-time vintage replay: later revisions and
+adjustments can introduce look-ahead bias, while present-day instrument selection
+and overlapping holding periods remain limitations.
 Calculations use saved data only and do not spend provider quota.
 
 The authenticated `POST /goals/calibrate` accepts generated batches only, with

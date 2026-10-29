@@ -48,10 +48,14 @@ class StrategyDefinition(Generic[Parameters]):
             metadata = field.json_schema_extra or {}
             value = getattr(parameters, key)
             if value is not None and metadata.get("parameter_type") == "instrument" and metadata.get("universe") == "acquired":
-                # Shared by all strategies: profiles define acquired membership,
-                # not catalogue records, cached listings, queued jobs or quotes.
-                if db.instruments.find_one({"instrument_id": value}, {"_id": 1}) is None:
-                    raise md.DataError(422, "Choose an instrument from the acquired universe. Acquire its data first.")
+                from market_data_retention import reader
+
+                state = db.instrument_state.find_one({"_id": value}) or {}
+                listing = state.get("listing")
+                with reader(db, value, listing) as generation:
+                    if generation is None or db.instruments.find_one(
+                            md.observation_filter(db, value, listing, generation=generation), {"_id": 1}) is None:
+                        raise md.DataError(422, "Choose an instrument with published Yahoo history. Request Yahoo acquisition first.")
         return parameters
 
     def public_definition(self):
@@ -69,6 +73,14 @@ class StrategyDefinition(Generic[Parameters]):
 
 
 def buy_and_hold_single_instrument(parameters: BuyAndHoldParameters, goals: GoalInputs, db: Database, today: date, **simulation_options):
+    from market_data_retention import reader
+
+    state = db.instrument_state.find_one({"_id": parameters.instrument}) or {}
+    with reader(db, parameters.instrument, state.get("listing")):
+        return _buy_and_hold_single_instrument(parameters, goals, db, today, **simulation_options)
+
+
+def _buy_and_hold_single_instrument(parameters, goals, db, today, **simulation_options):
     policy = read_policy(db)
     estimates = instrument_statistics(db, parameters.instrument, as_of=goals._effective_as_of,
                                        point_in_time=goals._point_in_time, policy=policy)

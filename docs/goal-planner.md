@@ -186,34 +186,35 @@ atomic ledger-only fulfillment and durable retry semantics.
 
 ## Derived statistics
 
-`backend/return_statistics.py` calculates estimates after every successful EOD
+`backend/return_statistics.py` calculates estimates after successful EOD
 acquisition, including updates and backfills. `instrument_statistics` is a derived
-MongoDB cache, with one document per ISIN. Existing and partially downloaded data
-are also calculated lazily on a statistics read, without a provider request.
-Cache invalidation uses model version, listing, append-only observation count and
-UTC day; new observations revising an existing date invalidate it too. Current
-currency settings and acquisition state are checked separately on every read.
-Raw provider pages and quote observations are never rewritten or rejected by
-analytics. Database failure during statistics persistence leaves acquisition
-unfinished for the existing checkpoint/retry mechanism.
+MongoDB cache, with one document per ISIN. Reads may recompute statistics lazily
+from the latest complete published Yahoo history, without a provider request;
+partially downloaded or Marketstack-only histories are not calculation fallbacks.
+Cache invalidation includes generation identity, model version, listing and UTC
+day, so same-count revisions invalidate it too. Current currency settings and
+acquisition state are checked separately on every read. Analytics do not rewrite
+or reject raw provider evidence; market-data retention may prune superseded
+payloads and caches while preserving publication/job audit and tombstones.
+Database failure during statistics persistence uses the existing checkpoint/retry
+mechanism.
 
 History selection:
 
-- Select the latest observation per date for the saved symbol/MIC, breaking
-  collection-time ties by descending MongoDB `_id`. Ignore future quote dates and
-  future collection times. This is current-history analytics, not an `as_of`
-  historical model or backtest.
-- Exclude weekend quote dates from daily-return estimation, preserving the raw rows.
-  With saved provider or manually supplied split history, use `split_adjusted_close`: raw close multiplied
-  by cumulative effective split factors (new shares / old shares). This separate
-  derived series corrects forward/reverse splits without changing candles, applying
-  a split twice to provider-adjusted prices, or mixing adjustment vintages. It is
-  a price return, not a dividend-reinvestment total return. Missing/invalid raw
-  closes still break the chain. Manual corrections survive provider refreshes; matching
-  actions count once and conflicting factors block calculations. Manual-only legacy
-  history carries an incomplete-history warning. See [manual splits](on-demand-market-data.md#manual-splits).
-  Legacy history without splits temporarily prefers
-  complete provider `adj_close`, otherwise raw `close`, with an update warning.
+- Select only the latest complete published Yahoo generation for the saved
+  symbol/MIC. Never assemble dates from multiple generations or fall back to
+  Marketstack; Marketstack-only instruments need a Yahoo acquisition. `as_of`
+  bounds quote dates through its UTC date, not observation collection time or
+  publication time. Old generations are not available for vintage replay.
+- Exclude weekend quote dates from daily-return estimation, preserving retained
+  raw rows. Yahoo OHLC/Close are already provider split-adjusted even with
+  `auto_adjust=False`. Copy valid **Close** to the derived `split_adjusted_close`
+  field without multiplying split factors or applying manual split overlays again.
+  Do not substitute dividend-adjusted Adj Close when Close is invalid. This is a
+  price return, not dividend-reinvestment total return. Missing/invalid closes
+  still break the chain. Saved split actions are audit evidence; `manual_splits`
+  remain excluded from retention but are not applied to Yahoo's already-adjusted
+  basis. See [prices, actions and analytics](on-demand-market-data.md#prices-actions-and-analytics).
 - Reject missing, nonnumeric, boolean, non-finite and non-positive prices **from
   calculations only**. Invalid rows break the chain: a return never bridges them.
 - Only pairs on adjacent weekdays form daily returns. Friday to Monday is valid;
@@ -271,17 +272,17 @@ actual simple price change
 `P[end] / P[start] - 1`, displayed as a percentage, not a mean, CAGR, forecast or
 an input to the Monte Carlo model.
 
-- End at the latest saved quote date in the same latest-observation, listing and
-  knowledge-time selection above (not today's date or an earlier valid price).
+- End at the latest saved quote date in the same latest complete Yahoo generation
+  and listing selected above (not today's date or an earlier valid price).
 - Start at the most recent saved quote on or before the calendar anniversary one
   year earlier, allowing at most **7 calendar days** for weekends/holidays. February
   29 clamps to February 28. Never annualize shorter coverage or use a much older
   price as if it were a year ago. Actual endpoint dates are available on hover.
-- With a complete split snapshot, use split-corrected raw closes at both endpoints.
-  For legacy history only, prefer provider-adjusted closes if both are valid,
-  otherwise raw closes at both endpoints. Never splice bases or apply splits to
-  `adj_close`. The tooltip identifies the basis. Split correction does not reinvest
-  cash distributions or claim a total return.
+- Use Yahoo's provider split-adjusted **Close** at both endpoints, copied to the
+  derived `split_adjusted_close` field without another split multiplication or an
+  Adj Close fallback. Never splice generations or price bases. The tooltip
+  identifies the basis; cash distributions are not reinvested and this is not a
+  verified total return.
 - Endpoint prices must be positive and finite. Invalid endpoints are not silently
   replaced with earlier valid ones. Sparse or invalid intermediate prices do not
   prevent calculating an endpoint ratio; this does not imply continuous coverage.
@@ -303,14 +304,14 @@ latest-saved-quote/calendar-anniversary rules above. At least two usable daily
 returns and year-long saved coverage are required; insufficient coverage or known
 mixed currencies produce null, not zero. Flat usable prices produce zero.
 
-With a complete split snapshot, volatility uses split-corrected raw closes.
-For legacy history without splits, unlike the historical endpoint return, it uses
-provider-adjusted closes only when all weekday prices **within this window** have
-usable adjustments; otherwise it uses raw closes throughout. Older prices cannot
-affect either the basis or the volatility. The shared daily estimator excludes
-weekends and intervals spanning missing weekdays; bad prices break the return chain. Missing data is not
-interpolated. Sparse coverage can still yield an estimate from the remaining daily
-pairs; small samples are unreliable and do not imply continuous year-long data.
+Volatility uses Yahoo's provider split-adjusted Close within the selected
+complete generation, without applying split factors again or substituting
+Adj Close. Older prices outside the window cannot affect the volatility. The
+shared daily estimator excludes weekends and intervals spanning missing weekdays;
+bad prices break the return chain. Any derived filling follows the global
+[missing-quote policy](missing-quotes.md), never a cross-generation fallback.
+Sparse coverage can still yield an estimate from the remaining daily pairs;
+small samples are unreliable and do not imply continuous year-long data.
 
 The tooltip shows the selected window, usable return count, basis and formula.
 Separate API/cache metadata fields are `historical_year_volatility_start_date`,
@@ -330,8 +331,8 @@ Choose **Standard Monte Carlo** (the backward-compatible default) or **Block
 bootstrap** in either simulation form. Bootstrap offers quick sizes **5**, **10**
 (default recommendation) and **20** trading days, plus a custom integer **1–60**.
 These are starting points, not data-dependent optimal sizes. Block bootstrap
-uses the same saved, split-corrected, eligible daily log-return history and
-knowledge-time cutoff as the statistics estimator; missing weekdays, invalid
+uses the same latest complete Yahoo generation, provider split-adjusted Close
+and quote-date bound as the statistics estimator; missing weekdays, invalid
 prices and missing returns break contiguous runs. Every eligible complete block
 start is sampled with replacement across paths, and blocks can repeat. If no
 uninterrupted run accommodates the size, calculation returns 422 and asks for a
@@ -344,21 +345,25 @@ month grows investments to the goal date without an extra payment. Horizon must
 allow at least one payment and cannot exceed 50 years (600 payments).
 
 `POST /goals/simulate` and customer-goal `/simulate` accept an optional timezone-aware
-`as_of` timestamp. Without it, the server captures one UTC timestamp and uses it
-for both the data cutoff and forecast origin; the response reports this as
-`data_as_of`. With an explicit `as_of`, the simulation is historical: statistics
-use only observations collected by that timestamp, quote dates through its UTC
-date, and the history generation published by that timestamp. Later revisions,
-quotes and generations cannot affect the estimate. Historical requests do not
+`as_of` timestamp. Without it, the server captures one UTC timestamp for the
+quote-date bound and forecast origin; the response reports this as `data_as_of`.
+With an explicit `as_of`, the simulation has a historical origin and uses quote
+dates through its UTC date from the **latest complete published Yahoo snapshot**.
+It does not filter by collection/publication time or select a vintage known then.
+Later Yahoo revisions and adjustments to those earlier quote dates can change a
+new calculation and introduce **look-ahead bias**. Historical requests do not
 write the current statistics cache or expire/change active acquisition jobs.
 The goal date must still allow at least one contribution after the origin, and
 `as_of` cannot be in the future. No provider requests occur.
 
-This is point-in-time market-data selection, not a full historical account
-reconstruction: acquired-instrument membership, catalogue/listing identity and
-manual currency labels are current metadata. Those can introduce survivorship or
-metadata bias. Provider histories can also have adjustment limitations within a
-published generation; see the history and calibration caveats below.
+This is historical-origin analysis on current saved history, **not knowledge-time
+reconstruction or historical-vintage replay**. Acquired-instrument membership,
+catalogue/listing identity and manual currency labels are also current metadata,
+with survivorship and metadata bias. Superseded market-data payloads can be
+pruned, while publication/job audit and tombstones remain. Saved plans, simulations,
+calibrations and portfolios are outside market-data retention and remain unchanged;
+repeating their inputs is not a promise to recover the same source vintage.
+See [retention and maintenance](on-demand-market-data.md#retention-and-maintenance).
 
 For standard Monte Carlo, each interval with `d` actual calendar days uses:
 
@@ -436,9 +441,12 @@ have sampling error; a fixed seed improves repeatability, not accuracy.
 Amounts are nominal EUR. There is no inflation, tax, transaction fee, withdrawal,
 lot-size, liquidity or changing-contribution model. Fractional shares are assumed.
 Fund expenses and reinvested distributions are reflected only insofar as they
-appear in the price history. Adjusted prices are not a verified total-return
-series; incremental downloads may mix corporate-action adjustment vintages.
-This is an educational planning estimate, not a guaranteed investment plan.
+appear in the price history. Yahoo Close does not reinvest cash distributions;
+adjusted prices are not a verified total-return series. Incremental publications
+materialize a complete history and use a full-history fallback on detected overlap
+or action changes, but can miss corrections outside the overlap. Historical-origin
+requests still use the latest snapshot, so later revisions can cause look-ahead
+bias. This is an educational planning estimate, not a guaranteed investment plan.
 
 ## API and operation
 
@@ -474,7 +482,8 @@ Origin protections as other commands. None calls the market-data provider.
   - `POST /simulate` accepts `{strategy, starting_capital_eur, reliability}` with
     optional timezone-aware `as_of` and the simulation settings described below.
     Target/date are loaded from the saved goal,
-    never overridden by the client. `as_of` selects a historical data/origin cutoff.
+    never overridden by the client. `as_of` selects the origin and quote-date bound
+    within the latest complete Yahoo snapshot, not a knowledge-time vintage.
     Returns a temporary preview envelope with `id`, `customer_id`, `goal_id`,
     `calculated_at`, `saved_at: null`, full `inputs`, `strategy_definition` and
     `result` (the existing simulation payload), and `is_plan: false`.
@@ -552,8 +561,12 @@ the simulation.
   fields otherwise retain their existing contract.
 
 Rebuild the Celery image after updating code/dependencies (`make services-up`)
-and restart the backend. Existing history is processed on demand; no re-download
-is necessary. There is no scheduled analytics or provider refresh.
+and restart the backend. Existing complete Yahoo history is processed on demand;
+Marketstack-only instruments require Yahoo acquisition. Startup/daily provider
+refreshes and daily retention catch-up run separately from on-demand analytics.
+A generation-pinned statistics or quote request whose cursor has been superseded
+returns 409 requiring refresh; reload details and restart rather than silently
+switching snapshots.
 
 Tests: `cd backend && uv run pytest tests/test_goal_planner.py`; real-Mongo
 acquisition-to-planner checks are in `tests/test_goal_planner_integration.py` and

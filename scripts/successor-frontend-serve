@@ -1,0 +1,42 @@
+#!/usr/local/bin/python3
+"""Offline evidence server using the pinned frontend/browser test image.
+
+Run with /repo read-only, no network, and /tmp writable. Dependencies are supplied
+by the trusted image, never installed. Does not start or connect to a backend.
+"""
+import hashlib
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+
+SOURCE = Path("/repo/frontend")
+DEPENDENCIES = Path("/opt/frontend-tests")
+EXCLUDED = {"node_modules", "dist", ".git", ".env", "coverage", ".vite", ".cache"}
+
+
+def ignored(folder, names):
+    for name in names:
+        if (Path(folder) / name).is_symlink():
+            raise ValueError("Source symlinks are not permitted")
+    return [name for name in names if name in EXCLUDED or name.startswith(".env.")]
+
+
+def main():
+    for name in ("package.json", "package-lock.json"):
+        if hashlib.sha256((SOURCE / name).read_bytes()).digest() != hashlib.sha256((DEPENDENCIES / name).read_bytes()).digest():
+            raise SystemExit("Pinned frontend dependency manifest mismatch: " + name)
+    with tempfile.TemporaryDirectory(prefix="retention-browser-", dir="/tmp") as directory:
+        target = Path(directory) / "frontend"
+        shutil.copytree(SOURCE, target, ignore=ignored)
+        (target / "node_modules").symlink_to(DEPENDENCIES / "node_modules", target_is_directory=True)
+        runner = target / "evidence-server.mjs"
+        runner.write_text("import { createServer } from 'vite';\n"
+                          "const server = await createServer({cacheDir: '/tmp/retention-vite-cache', configLoader: 'runner', "
+                          "server: {host: '127.0.0.1', port: 4173, strictPort: true}});\n"
+                          "await server.listen(); server.printUrls();\n")
+        return subprocess.call(["node", str(runner)], cwd=target)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

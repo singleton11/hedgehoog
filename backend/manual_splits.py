@@ -67,17 +67,19 @@ def read_splits(db, isin, as_of=None):
     from split_adjustments import load_provider_split_snapshot, load_split_snapshot
 
     md.require_catalogue(db, isin)
-    cutoff = as_of or md.utcnow()
+    cutoff = md.aware(as_of) if as_of is not None else md.utcnow()
     listing = (db.instrument_state.find_one({"_id": isin}) or {}).get("listing")
-    provider = load_provider_split_snapshot(db, isin, listing, cutoff)
-    merged = load_split_snapshot(db, isin, listing, cutoff)
-    return md.public({
-        "instrument_id": isin, "listing": listing,
-        "supported": not (provider and provider.get("provider") == "yfinance"),
-        "manual": [public_event(event) for event in manual_events(db, isin, listing, cutoff)],
-        "provider": (provider or {}).get("events", []),
-        "error": (merged or {}).get("error"),
-    })
+    from market_data_retention import reader
+    with reader(db, isin, listing):
+        provider = load_provider_split_snapshot(db, isin, listing, cutoff)
+        merged = load_split_snapshot(db, isin, listing, cutoff)
+        return md.public({
+            "instrument_id": isin, "listing": listing,
+            "supported": False,
+            "manual": [public_event(event) for event in manual_events(db, isin, listing, cutoff)],
+            "provider": [event for event in (provider or {}).get("events", []) if event["date"] <= cutoff.date().isoformat()],
+            "error": (merged or {}).get("error"),
+        })
 
 
 def add_split(db, isin, body, user_id):

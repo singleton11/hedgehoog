@@ -290,7 +290,7 @@ def evaluate_history(rows, body: CalibrationInputs, *, seed, override=None, path
 def calibration_warnings(*, overlapping, sample_count, excluded, raw_prices, quality_warning, override,
                          simulation_method="standard", block_size=None):
     warnings = [
-        "Walk-forward fitting uses only prices dated on or before each origin. This is not strict point-in-time data: downloaded history may contain later provider corrections and corporate-action adjustments.",
+        "Walk-forward fitting uses the latest complete Yahoo published history, restricted to prices dated on or before each origin. This is not strict point-in-time data: later provider corrections and corporate-action adjustments may revise historical prices.",
         "The current acquired instrument, listing and any manual currency label are selected today. This does not remove survivorship or instrument-selection bias; do not choose settings by their best historical score.",
         "A forecast starts at the first recorded weekday close of each month. Each trailing lookback is refitted independently using at least 60 usable daily log returns; no held-out outcome is used to fit or tune it.",
         ("Normally distributed independent log returns, 252 trading days/year, calendar days/365.25 and fixed monthly-anniversary payments, as in the goal planner. Forecasts are model estimates, not guarantees."
@@ -316,6 +316,16 @@ def calibration_warnings(*, overlapping, sample_count, excluded, raw_prices, qua
 
 
 def calibrate_instrument(db, isin, body, *, evaluate):
+    from market_data_retention import reader
+
+    state = db.instrument_state.find_one({"_id": isin}) or {}
+    with reader(db, isin, state.get("listing")) as generation:
+        if generation is None:
+            raise md.DataError(422, "Request Yahoo acquisition before calculating calibration.")
+        return _calibrate_instrument(db, isin, body, generation, evaluate=evaluate)
+
+
+def _calibrate_instrument(db, isin, body, generation, *, evaluate):
     md.require_catalogue(db, isin)
     md.expire_stalled_jobs(db, isin)
     if db.acquisition_jobs.find_one({"instrument_id": isin, "active": True}):
@@ -325,8 +335,7 @@ def calibrate_instrument(db, isin, body, *, evaluate):
     if not listing:
         raise md.DataError(422, "Download EOD history for this instrument first.")
     cutoff = md.utcnow()
-    generation = md.history_generation(db, isin, listing, cutoff)
-    query = {**md.observation_filter(db, isin, listing, cutoff, generation), "collected_at": {"$lte": cutoff},
+    query = {**md.observation_filter(db, isin, listing, generation=generation),
              "date": {"$lte": cutoff.date().isoformat()}}
     records = db.quotes.aggregate([
         {"$match": query},

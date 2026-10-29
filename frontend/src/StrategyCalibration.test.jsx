@@ -354,7 +354,7 @@ describe('independent goals and contribution-solver policy', () => {
     await open({ route: reportRoute(run.id) });
     expect(result()).toHaveTextContent('Legacy evaluation: targets were selected from simulated wealth');
     await follow('Run again');
-    expect(screen.getByRole('note')).toHaveTextContent('its scenarios and scores will differ even with the same seed');
+    expect(screen.getByText(/This source uses the legacy simulated-target policy/)).toHaveTextContent('its scenarios and scores will differ even with the same seed');
     await submit();
     expect(result()).toHaveTextContent('Random starting capital, a higher EUR goal');
     expect(server.runs.get(run.id)).toEqual(run);
@@ -826,6 +826,10 @@ describe('saved report chart, metrics and bounded audit', () => {
     const server = mockServer(); server.save(); await open({ route: reportRoute() });
     expect(metric('Brier score')).toHaveTextContent('0.3125'); expect(metric('Calibration error')).toHaveTextContent('25.0 pp');
     expect(metric('Scored scenarios')).toHaveTextContent('1,000'); expect(metric('Historical origins')).toHaveTextContent('30');
+    expect(screen.getByRole('note')).toBeVisible();
+    expect(screen.getByRole('note')).toHaveTextContent('Look-ahead bias warning');
+    expect(screen.getByRole('note')).toHaveTextContent('quote dates, not knowledge time');
+    expect(screen.getByRole('list', { name: 'Calibration warnings' })).toHaveTextContent('Scenarios sharing historical origins and overlapping outcomes are dependent.');
     const svg = screen.getByRole('img', { name: 'Financial goal success calibration curve' });
     expect(svg).toHaveAccessibleDescription(expect.stringContaining('0% to 100%'));
     expect(svg.querySelectorAll('circle')).toHaveLength(1); expect(svg.querySelector('circle')).toHaveTextContent('1000 scenarios; predicted 25%, observed 50%');
@@ -859,7 +863,7 @@ describe('saved report chart, metrics and bounded audit', () => {
     saved.forecasts[0].price_basis = 'close'; server.save(saved); await open({ route: reportRoute() }); openAudit();
     for (const [label, value] of [['Mean predicted probability', '25%'], ['Observed success rate', '56%'],
       ['Monte Carlo paths per scenario', '10,000'], ['Available monthly origins', '36'],
-      ['Saved history', '2021-01-01 – 2026-09-22'], ['Data snapshot (UTC)', saved.data_as_of],
+      ['Saved history', '2021-01-01 – 2026-09-22'], ['Quote-date cutoff (UTC)', saved.data_as_of],
       ['Contribution-solver paths per scenario', '10,000'], ['History fingerprint', saved.history_fingerprint]]) {
       expect(metric(label)).toHaveTextContent(value);
     }

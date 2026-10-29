@@ -107,6 +107,8 @@ function CalibrationResult({ result }) {
       <div><dt>Scored scenarios</dt><dd>{result.sample_count.toLocaleString('en')}</dd></div>
       <div><dt>Historical origins</dt><dd>{result.origin_count.toLocaleString('en')}</dd></div>
     </dl>
+    <p role="note" className="muted">Look-ahead bias warning: historical evaluation uses the latest saved Yahoo Finance snapshot, not data vintages known at each forecast origin. Historical as_of cutoffs bound quote dates, not knowledge time. Later provider corrections and split adjustments can affect training and outcomes; walk-forward windows do not eliminate this bias.</p>
+    {result.warnings.length > 0 && <ul aria-label="Calibration warnings">{result.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
     <CalibrationChart bins={result.calibration_bins} countLabel="scenarios" />
     <details className="disclosure"><summary>Calculation audit</summary><div className="disclosure-content">
       <dl className="facts">
@@ -118,7 +120,7 @@ function CalibrationResult({ result }) {
         <div><dt>Monte Carlo paths per scenario</dt><dd>{result.simulation_paths.toLocaleString('en')}</dd></div>
         <div><dt>Available monthly origins</dt><dd>{result.available_origin_count.toLocaleString('en')}</dd></div>
         <div><dt>Saved history</dt><dd>{result.history_first_date} – {result.history_last_date}</dd></div>
-        <div><dt>Data snapshot (UTC)</dt><dd>{result.data_as_of}</dd></div>
+        <div><dt>Quote-date cutoff (UTC)</dt><dd>{result.data_as_of}</dd></div>
         <div><dt>{contributionSolver ? 'Contribution-solver paths per scenario' : 'Target-generation paths per scenario'}</dt>
           <dd>{(contributionSolver ? result.generation.solver_simulation_paths : result.generation.target_simulation_paths).toLocaleString('en')}</dd></div>
         <div><dt>Evaluation policy</dt><dd>{contributionSolver ? 'Independent goals · solved monthly contribution' : 'Legacy · simulated targets'}</dd></div>
@@ -251,6 +253,7 @@ function CalibrationForm({ strategies, instruments, request, source, initialStra
     {source ? <p className="muted">Settings copied from a <a href={runRoute(source.id)}>saved run</a>. You can adjust them below; the original report will not change.</p>
       : <p className="muted">Choose a strategy and parameters. Each successful calculation is saved as a separate run.</p>}
     <p className="muted">Generate random starting capital, a higher EUR target, deadline and requested success rate (1–99%). Solve the monthly contribution with the selected simulation and evaluate that funding plan across historical slices.</p>
+    <p role="note" className="muted">Historical simulations can have look-ahead bias: only the latest saved Yahoo Finance snapshot is available, including later corrections and split adjustments. Date-bounded training is not a reconstruction of what was known at the time.</p>
     {source && !contributionCalibration(source) && <p role="note" className="muted">This source uses the legacy simulated-target policy. The new run uses independent goals and solved contributions; its scenarios and scores will differ even with the same seed.</p>}
     <form className="goal-form calibration-form" aria-label="Calibration inputs" noValidate onSubmit={calculate}>
       <fieldset disabled={busy}>

@@ -5,7 +5,6 @@ import QuotaBudget, { BUDGET_POLL_INTERVAL } from './QuotaBudget.jsx';
 const { request } = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock('./Auth.jsx', () => ({ useAuth: () => ({ request }) }));
 const budget = { provider: 'yfinance', metered: false, month: '2026-09', used: 0, limit: null, remaining: null };
-const meteredBudget = { month: '2026-09', limit: 10000, used: 125, remaining: 9875 };
 const flush = async () => { await act(async () => {}); };
 const advance = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(BUDGET_POLL_INTERVAL); }); };
 
@@ -33,13 +32,14 @@ describe('header provider status', () => {
     }
   });
 
-  it('still displays a legacy metered budget including exhausted zero remaining', async () => {
-    request.mockResolvedValueOnce(meteredBudget).mockResolvedValue({ ...meteredBudget, used: 10000, remaining: 0 });
+  it('does not offer legacy metered provider status or quota displays', async () => {
+    request.mockResolvedValueOnce({ month: '2026-09', limit: 10000, used: 125, remaining: 9875 });
     render(<QuotaBudget />);
     await flush();
-    expect(screen.getByRole('group', { name: 'Provider status' })).toHaveTextContent('Local budget: 9,875 / 10,000 calls left');
+    expect(screen.getByText('Provider status unavailable.')).toBeInTheDocument();
+    expect(screen.queryByText(/Local budget|calls left/)).not.toBeInTheDocument();
     await advance();
-    expect(screen.getByRole('group', { name: 'Provider status' })).toHaveTextContent('0 / 10,000 calls left');
+    expect(screen.getByText('Yahoo Finance · experimental')).toBeInTheDocument();
   });
 
   it('does not present old usage as current after an error, and recovers automatically', async () => {

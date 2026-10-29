@@ -183,7 +183,11 @@ interval if that happens. This is not a guaranteed speedup or a provider quota.
 Use `docker compose logs -f celery-marketdata-worker` for download task logs.
 Rebuild both workers with `make services-up` after code/dependency changes. Browsing never calls the provider. Errors are sanitized; provider failures can be retried manually or by the next automatic sweep, while database recovery replays saved checkpoints.
 
-The worker resolves a Yahoo listing from the catalogue ticker/ISIN and known venues, saving symbol/MIC and lookup evidence. POST accepts `{confirmed:true}` and an optional Yahoo `symbol` override (for example `SPYI.DE`). Without `exchange`, the worker detects its MIC from exact-symbol Yahoo chart metadata; it never substitutes a different symbol. An explicit paired `symbol`/`exchange` override remains available, and the legacy Marketstack provider still requires the pair. Every Yahoo acquisition refreshes full available history from inception through the current UTC date, then publishes a coherent immutable generation. Failed refreshes keep previous published data readable. `as_of` quote pagination pins the publication cutoff so updates cannot splice different adjusted-price vintages.
+The worker resolves a Yahoo listing from the catalogue ticker/ISIN and known venues, saving symbol/MIC and lookup evidence. POST accepts `{confirmed:true}` and an optional Yahoo `symbol` override (for example `SPYI.DE`). Without `exchange`, the worker detects its MIC from exact-symbol Yahoo chart metadata; it never substitutes a different symbol. An explicit paired `symbol`/`exchange` override remains available. Marketstack is retired: its adapter, provider option and configuration are removed. Marketstack-only instruments require successful Yahoo acquisition, with no legacy read fallback.
+
+Manual refreshes request full available history through the current UTC date. Automatic refreshes can download an inclusive latest-quote overlap and materialize a new complete history from their protected base; overlap/action changes trigger full-history fallback. Only the latest complete published Yahoo generation is readable. Failed/empty refreshes preserve the last good published history and keep failure status/errors in the audit.
+
+`as_of` bounds quote dates through its UTC date in that latest complete snapshot; it is not a collection/publication cutoff and cannot replay what was known then. Historical simulations can contain look-ahead bias from later revisions. Reuse the returned `generation` and `as_of` for pagination; a superseded generation returns 409 requiring details/page refresh, never a silent switch to another generation or Marketstack.
 
 Yahoo OHLC/Close are already split-adjusted with `auto_adjust=False`. Analytics use Close without applying split factors again or substituting dividend-adjusted Adj Close; manual split multiplication is unavailable for this basis. Preserve raw evidence and nulls. The neutral adapter contract in `market_provider.py` is the replacement point for a future licensed EODHD provider. Yahoo is unofficial experimental access, not a commercial data licence. See the [full storage and API contract](../docs/on-demand-market-data.md).
 
@@ -192,22 +196,53 @@ uv run pytest  # Includes provider MockTransport, acquisition and API tests; no 
 # Optional: set TEST_MONGODB_URI and TEST_CELERY_BROKER_URL for isolated real-service tests.
 ```
 
+## Market-data retention and maintenance
+
+Settings default to `market_data_retention_enabled=true` and
+`market_data_retention_batch_size=1000` (`MARKET_DATA_RETENTION_ENABLED` and
+`MARKET_DATA_RETENTION_BATCH_SIZE` in the environment). Automatic cleanup and daily
+catch-up prune superseded successful Yahoo payloads and positively identified
+retired Marketstack payloads, not the latest complete Yahoo history. There is no
+timed grace: current publications, admitted readers and active incremental bases
+are protected, with eligibility rechecked before pruning. Incremental publication
+must finish materializing the base's older dates before cleanup can release it.
+Failed refreshes must not remove the last good snapshot; failure status/errors remain
+in the operational audit.
+
+From `backend/`, using the intended database configuration:
+
+```sh
+python -m market_data_retention --inventory
+python -m market_data_retention          # Same non-destructive default
+python -m market_data_retention --apply  # Explicit deletion after inventory review
+```
+
+Inventory flags protected and ambiguous/untagged records, not just deletion
+candidates. Unknown ownership is left untouched for review, never blindly inferred
+from missing provider tags. Publication/job audit, provenance and pruning
+tombstones remain; old payload replay is not supported even before physical
+cleanup. `manual_splits`, catalogues/import records, users, customer goals and
+saved plans/simulations, calibrations, portfolios and transactions are excluded.
+Retention does not reset customer data. MongoDB can reuse freed storage without
+shrinking its filesystem footprint; this command is not compaction. See the
+[full retention contract](../docs/on-demand-market-data.md#retention-and-maintenance).
+
 ## Saved-history filtering
 
 `GET /instruments/acquired?min_history_years=5|15|30` preserves latest-profile
-ordering and exact totals before pagination. `saved_history_bounds` validates
-publications at one request cutoff, separates legacy/pinned seeds, and runs two
-correlated endpoint lookups (date ascending/descending, limit 1) per candidate.
+ordering and exact totals before pagination. Only the latest complete Yahoo
+publication is eligible; Marketstack-only histories do not qualify. Endpoint
+lookups remain scoped to the selected generation and listing, with date
+ascending/descending and limit 1 per candidate.
 Each aggregation carries literal selected identities through a single instruments
 row; it does not reselect profiles. An inventory emptied during the read returns
 409 rather than an incorrect total. Batches cap at 50 candidates and 512 KiB BSON
 including conservative command overhead; oversized identities return 413.
 
 The query reuses `(job_id,date)` and
-`(instrument_id,symbol,exchange,date,collected_at)` indexes without new storage or
-write costs. Provider/listing predicates remain mandatory residual filters, so
-internal probes can examine extra keys, especially legacy histories surrounded by
-retained Yahoo generations. Client batch count is not total internal probe count.
+`(instrument_id,symbol,exchange,date,collected_at)` indexes. Provider/listing
+predicates remain mandatory; superseded or legacy rows awaiting safe cleanup must
+not enter coverage. Client batch count is not total internal probe count.
 No history grouping, durable coverage cache, acquisition change or provider call
 is introduced. Full distinct dates/counts and statistics remain page-only.
 
@@ -278,11 +313,12 @@ All routes require authentication:
   without overwriting metadata, including concurrent adds.
 - `GET /indices/{id}` → record.
 - `POST /indices/{id}/acquisitions` with **only** `{confirmed:true}` → `{job}` (202).
-  Active requests deduplicate. This explicitly selects Yahoo even when ETF
-  acquisitions are configured to use legacy Marketstack.
+  Active requests deduplicate. Yahoo is the only supported acquisition provider.
 - `GET /indices/{id}/quotes` → existing `{items,total,limit,offset,as_of,generation}`
   quote contract, with exact numeric strings/nulls; supports `limit` (1–1000),
-  `offset`, timezone-aware `as_of`, and stable `generation` pagination.
+  `offset`, timezone-aware quote-date `as_of`, and generation-pinned pagination.
+  Only the latest complete Yahoo generation is readable; superseded cursors
+  return 409 requiring refresh, never silent fallback.
 
 Records include `instrument_id,name,symbol,currency,return_variant,
 verification_status,acquisition,summary,provider`; summary contains

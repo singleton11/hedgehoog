@@ -21,7 +21,7 @@ class CalibrationRequest(RandomCalibrationInputs):
 
 
 def simulation_cutoff(body):
-    """Pin model inputs and the horizon to one UTC knowledge-time cutoff."""
+    """Bound quote dates and the horizon; the latest Yahoo vintage stays current."""
     now = md.utcnow()
     cutoff = body.as_of or now
     if cutoff > now:
@@ -81,10 +81,25 @@ def saved_calibration(strategy_id: str, request: Request, user: CurrentUser, res
 
 @router.post("/simulate")
 def simulate(body: GoalRequest, request: Request, user: CurrentUser):
-    # One captured cutoff drives both historical statistics and the forecast schedule.
+    from contextlib import ExitStack
+    from market_data_retention import reader
+
     body, cutoff = simulation_cutoff(body)
     strategy = get_strategy(body.strategy.id)
-    parameters = strategy.resolve_parameters(body.strategy.parameters, request.app.state.database)
-    result = strategy.simulate(parameters, body, request.app.state.database, cutoff.date())
-    return {**result, "data_as_of": md.public(cutoff),
-            "strategy": body.strategy.model_dump(mode="json")}
+    db = request.app.state.database
+    parameters = strategy.resolve_parameters(body.strategy.parameters, db)
+    # Keep statistics and bootstrap return runs on the same still-current vintage.
+    with ExitStack() as readers:
+        for key, field in parameters.__class__.model_fields.items():
+            if (field.json_schema_extra or {}).get("parameter_type") == "instrument":
+                isin = getattr(parameters, key)
+                if isin is not None:
+                    state = db.instrument_state.find_one({"_id": isin}) or {}
+                    readers.enter_context(reader(db, isin, state.get("listing")))
+        result = strategy.simulate(parameters, body, db, cutoff.date())
+        warning = ("Uses the latest complete Yahoo published history with quote dates bounded by as_of, "
+                   "not observations known at that timestamp. Later provider corrections and corporate-action "
+                   "adjustments can revise historical prices; this is not strict point-in-time data.")
+        return {**result, "data_as_of": md.public(cutoff), "history_contract": "latest_complete_yahoo",
+                "warnings": [*result.get("warnings", []), warning],
+                "strategy": body.strategy.model_dump(mode="json")}

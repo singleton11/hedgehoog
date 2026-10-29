@@ -91,6 +91,8 @@ export function SimulationResult({ result, strategy }) {
       <div><dt>Total contributions</dt><dd>{formatEuros(result.total_contributions_eur)}</dd></div>
       <div><dt>Total invested</dt><dd>{formatEuros(result.total_invested_eur)}</dd></div>
     </dl>
+    <p role="note" className="muted">Simulations use the latest saved Yahoo Finance snapshot, which can include later corrections and split adjustments. Historical quote-date cutoffs do not reconstruct what was known at the time; historical comparisons can have look-ahead bias.</p>
+    {result.warnings.length > 0 && <ul aria-label="Simulation warnings">{result.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
     <GoalProjectionChart trajectory={result.trajectory} goal={result.goal_eur} pathCount={result.simulation_paths} />
     <h3>Projected final value</h3>
     <dl className="facts terminal-values">
