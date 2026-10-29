@@ -86,7 +86,8 @@ The experimental transition resets acquired data and experimental customers, goa
 ## HTTP contract (authenticated; browser prefix `/api`)
 
 - `GET /instruments/search?q=...&limit=15`: local latest-catalogue autocomplete.
-- `GET /instruments/acquired?limit=20&offset=0`: published inventory with quote coverage and cached historical/statistical metrics.
+- `GET /instruments/acquired?limit=20&offset=0[&min_history_years=5&hide_negative_returns=true]`: published acquired ETF inventory with quote coverage and historical/statistical metrics. The optional boolean `hide_negative_returns` defaults to `false`; when `true`, it intersects the returns filter with `min_history_years` before computing `total` and applying pagination.
+- `GET /instruments/acquired/universe`: complete lightweight acquired ETF universe, unaffected by acquired-list history/returns filters; bulk updates use this unfiltered membership.
 - `GET /instruments/budget`: Yahoo returns `{provider:"yfinance", metered:false, month, used:0, limit:null, remaining:null}`. Null limits are not exhausted credit. The header shows the experimental provider instead of a paid quota counter.
 - `GET /instruments/{isin}[?as_of=...]`: catalogue, listing, resolution, profile, acquisition, summary, manual currency, `generation`, `provider`, `price_basis`, `provider_configured:true`, `budget:null`.
 - `GET /instruments/{isin}/quotes?limit=1000&offset=0[&as_of=...&generation=...]`: one published generation in ascending date order; `{items,total,limit,offset,as_of,generation}`. Reuse both snapshot fields. Numeric fields serialize as strings; nulls survive.
@@ -96,6 +97,25 @@ The experimental transition resets acquired data and experimental customers, goa
 - `/instruments/{isin}/splits`: saved audit evidence; Yahoo manual-add attempts return 409 rather than double-adjusting prices.
 
 ## UI and verification
+
+The acquired ETF list has an optional native **Returns** dropdown: **All** is the
+default; **Hide negative/unavailable** hides the entire row when either
+`historical_year_return` (historical annual return) or
+`annualized_mean_log_return` (statistical annual return) is unavailable,
+nonnumeric, nonfinite or negative. Both values must be finite numeric values
+greater than or equal to zero. Comparisons use raw, unrounded values, not the
+displayed percentage: tiny negative returns are hidden even if they round to zero,
+while zero and negative zero (`-0`) are kept. Volatility availability, currency
+and simulation eligibility are independent; this filter does not change their
+rules or filter instrument details, the acquired universe or bulk updates.
+
+With `hide_negative_returns=true`, the acquired-list read validates cached
+statistics for every candidate that satisfies the saved-history requirement,
+recomputing from saved history where necessary. A cold cache may require reading
+many histories, not just the returned page. Distinct quote-date enumeration
+remains page-only. With the default `false`, statistics refresh remains page-only.
+These reads use saved MongoDB data and never call a provider; no performance
+claim is made for the filtered path.
 
 The header identifies Yahoo Finance as experimental. Request forms require explicit consent to fetch Yahoo data, explain full-history refresh, allow a manual Yahoo symbol with optional advanced MIC entry, explain invalid inputs, and do not estimate paid quota. Bulk updates capture the complete lightweight `/instruments/acquired/universe` response before submission and skip profiles collected less than 24 hours ago. The single-response capture avoids membership and ordering races with concurrent downloads; it does not read quote history or compute statistics. No POST is retried automatically after uncertainty.
 

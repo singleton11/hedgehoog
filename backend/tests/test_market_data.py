@@ -344,6 +344,248 @@ def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config
     assert md.acquired_instruments(db)["items"][0]["instrument_id"] == ISIN
 
 
+@pytest.mark.parametrize("historical,statistical,keep", [
+    (0.1, 0.2, True), (0.1, -0.2, False), (-0.1, 0.2, False), (-0.1, -0.2, False),
+    (0, 0, True), (-0.0, 0.0, True), (0.1, -0.0, True), (-1e-12, 0.2, False), (0.1, -1e-12, False),
+    (None, 0.2, False), (0.1, None, False), (None, None, False),
+    (float("nan"), 0.2, False), (0.1, float("inf"), False), (float("-inf"), 0.2, False),
+    ("0", 0.2, False), (0.1, "0.2", False), (True, 0.2, False), (0.1, False, False),
+    ({}, 0.2, False), (0.1, [], False),
+])
+def test_acquired_return_filter_requires_two_finite_nonnegative_numbers(db, monkeypatch, historical, statistical, keep):
+    import return_statistics
+
+    db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "collected_at": NOW})
+    db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
+    statistics = {"historical_year_return": historical, "annualized_mean_log_return": statistical,
+                  "annualized_volatility": None, "historical_year_volatility": None}
+    refresh = Mock(return_value=(statistics, {"listing": LISTING}))
+    monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
+    assert md.acquired_instruments(db, hide_negative_returns=True)["total"] == int(keep)
+    refresh.assert_called_once_with(db, ISIN, generation="legacy", as_of=NOW)
+    # All remains a display-only path: no return membership rule, even with unavailable volatility.
+    assert md.acquired_instruments(db, hide_negative_returns=False)["total"] == 1
+    statistics.clear()  # Missing keys must not coerce to zero.
+    assert md.acquired_instruments(db, hide_negative_returns=True)["total"] == 0
+
+
+@pytest.mark.parametrize("years", [None, 5, 15, 30])
+def test_acquired_return_filter_counts_all_candidates_before_paging(db, monkeypatch, years):
+    import return_statistics
+
+    values = {}
+    for index in range(12):
+        isin = f"IE{index:010d}"
+        values[isin] = {"historical_year_return": 0.1, "annualized_mean_log_return": 0.2 if index % 2 else -0.2}
+        db.instruments.insert_one({"instrument_id": isin, **LISTING, "collected_at": NOW})
+        db.instrument_state.insert_one({"_id": isin, "listing": LISTING})
+        for day in ("1990-01-01", "2020-01-01" if index != 11 else "1991-01-01"):
+            db.quotes.insert_one({"instrument_id": isin, **LISTING, "date": day, "collected_at": NOW})
+    # A newer duplicate must not affect one-row membership or deterministic tie ordering.
+    db.instruments.insert_one({"instrument_id": "IE0000000001", **LISTING, "collected_at": NOW, "job_id": "duplicate"})
+    db.instruments.insert_one({"instrument_id": "idx-excluded", **LISTING, "collected_at": NOW})
+    refresh = Mock(side_effect=lambda db, isin, **kwargs: (values[isin], {"listing": LISTING}))
+    dates = Mock(wraps=md.quote_dates)
+    labels = Mock(wraps=db.etfs.find_one)
+    monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
+    monkeypatch.setattr(md, "quote_dates", dates)
+    monkeypatch.setattr(db.etfs, "find_one", labels)
+    matches = [f"IE{index:010d}" for index in range(1, 12 if years is None else 11, 2)]
+    for offset in (0, 2, 4, 6, 99):
+        refresh.reset_mock()
+        dates.reset_mock()
+        labels.reset_mock()
+        result = md.acquired_instruments(db, limit=2, offset=offset, min_history_years=years, hide_negative_returns=True)
+        expected = matches[offset:offset + 2]
+        assert result["total"] == len(matches)
+        assert [item["instrument_id"] for item in result["items"]] == expected
+        assert result["limit"] == 2 and result["offset"] == offset
+        assert dates.call_count == labels.call_count == len(expected)
+        assert refresh.call_count == (12 if years is None else 11)
+        assert len({call.args[1] for call in refresh.call_args_list}) == refresh.call_count
+        assert all(call.kwargs == {"generation": "legacy", "as_of": NOW} for call in refresh.call_args_list)
+    assert md.acquired_universe(db)["total"] == 12
+
+
+@pytest.mark.parametrize("missing_state", [True, False])
+def test_acquired_return_filter_treats_listing_mismatch_as_unavailable(db, config, monkeypatch, missing_state):
+    import return_statistics
+
+    collect(db, config, Provider([page([bar("2025-09-16", "90"), bar("2026-09-14", "100"), bar("2026-09-15", "110"), bar("2026-09-16", "121")])]))
+    assert md.acquired_instruments(db, hide_negative_returns=True)["total"] == 1
+    if missing_state:
+        db.instrument_state.delete_one({"_id": ISIN})
+    else:
+        db.instrument_state.update_one({"_id": ISIN}, {"$set": {"listing": {**LISTING, "symbol": "OTHER"}}})
+    refresh = Mock(side_effect=AssertionError("Must not read another listing's statistics"))
+    monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
+    assert md.acquired_instruments(db, hide_negative_returns=True)["total"] == 0
+    refresh.assert_not_called()
+
+
+@pytest.mark.parametrize("invalid", ["unpublished", "instrument", "listing", "cutoff"])
+def test_acquired_return_filter_propagates_invalid_publication(db, invalid):
+    db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "provider": "yfinance", "published": True,
+                               "job_id": "pinned", "collected_at": NOW})
+    publication = {"_id": "pinned", "instrument_id": ISIN, "listing": LISTING, "provider": "yfinance",
+                   "published": True, "published_at": NOW}
+    if invalid == "unpublished":
+        publication["published"] = False
+    elif invalid == "instrument":
+        publication["instrument_id"] = "OTHER"
+    elif invalid == "listing":
+        publication["listing"] = {**LISTING, "exchange": "OTHER"}
+    else:
+        publication["published_at"] = NOW + timedelta(seconds=1)
+    db.acquisition_jobs.insert_one(publication)
+    with pytest.raises(md.DataError, match="not published") as error:
+        md.acquired_instruments(db, hide_negative_returns=True)
+    assert error.value.status == 409
+
+
+@pytest.mark.parametrize("published", [True, False])
+def test_acquired_return_filter_resolves_missing_job_or_pins_legacy(db, monkeypatch, published):
+    import return_statistics
+    from bson import ObjectId
+
+    old_listing = {**LISTING, "symbol": "OLD"}
+    for identity, listing in [(ObjectId("000000000000000000000001"), old_listing),
+                              (ObjectId("000000000000000000000002"), LISTING)]:
+        db.instruments.insert_one({"_id": identity, "instrument_id": ISIN, **listing,
+                                   "provider": "yfinance", "published": True, "collected_at": NOW})
+    db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
+    if published:
+        db.acquisition_jobs.insert_one({"_id": "resolved", "instrument_id": ISIN, "listing": LISTING,
+                                        "provider": "yfinance", "published": True, "published_at": NOW})
+    # An unpublished Yahoo quote must never contribute to the legacy fallback.
+    db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "date": "1800-01-01", "provider": "yfinance", "job_id": "hidden"})
+    refresh = Mock(return_value=({"historical_year_return": 0, "annualized_mean_log_return": 0}, {"listing": LISTING}))
+    monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
+    result = md.acquired_instruments(db, hide_negative_returns=True)
+    assert result["total"] == 1
+    assert result["items"][0]["listing"] == LISTING
+    assert result["items"][0]["quote_count"] == 0
+    refresh.assert_called_once_with(db, ISIN, generation="resolved" if published else "legacy", as_of=NOW)
+
+
+def test_acquired_return_filter_does_not_hide_database_failures(db, monkeypatch):
+    import return_statistics
+
+    db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "collected_at": NOW})
+    db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
+    monkeypatch.setattr(return_statistics, "refresh_statistics", Mock(side_effect=ConnectionFailure("offline")))
+    with pytest.raises(ConnectionFailure, match="offline"):
+        md.acquired_instruments(db, hide_negative_returns=True)
+
+
+@pytest.mark.parametrize("years", [None, 5])
+def test_acquired_return_filter_pins_publication_during_and_after_profile_selection(db, clock, monkeypatch, years):
+    import return_statistics
+
+    def publish(generation, close, published=True):
+        db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "collected_at": clock[0],
+                                   "job_id": generation, "provider": "yfinance", "published": published})
+        db.acquisition_jobs.insert_one({"_id": generation, "instrument_id": ISIN, "listing": LISTING,
+                                        "provider": "yfinance", "published": published, "published_at": clock[0]})
+        for day, value in [("2020-01-01", "90"), ("2025-09-16", "90"), ("2026-09-14", "100"),
+                           ("2026-09-15", "110"), ("2026-09-16", close)]:
+            db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "job_id": generation, "provider": "yfinance",
+                                  "date": day, "collected_at": clock[0],
+                                  "data": {"date": day, "close": value, "price_basis": "provider_split_adjusted"}})
+
+    publish("previous", "50")
+    db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
+    aggregate = db.instruments.aggregate
+
+    def select_with_publication(pipeline, *args, **kwargs):
+        if not any("$group" in stage for stage in pipeline):
+            return aggregate(pipeline, *args, **kwargs)
+        def cursor():
+            clock[0] += timedelta(seconds=1)
+            publish("selected", "121")
+            yield from aggregate(pipeline, *args, **kwargs)
+        return cursor()
+
+    refresh = return_statistics.refresh_statistics
+    calls = []
+
+    def refresh_then_publish(*args, **kwargs):
+        calls.append(kwargs)
+        result = refresh(*args, **kwargs)
+        clock[0] += timedelta(seconds=1)
+        publish("later", "10")
+        publish("failed", "1", published=False)
+        return result
+
+    monkeypatch.setattr(db.instruments, "aggregate", select_with_publication)
+    monkeypatch.setattr(return_statistics, "refresh_statistics", refresh_then_publish)
+    dates = Mock(wraps=md.quote_dates)
+    monkeypatch.setattr(md, "quote_dates", dates)
+    result = md.acquired_instruments(db, min_history_years=years, hide_negative_returns=True)
+    assert result["total"] == 1
+    item = result["items"][0]
+    assert item["historical_year_return"] == pytest.approx(121 / 90 - 1)
+    assert item["annualized_mean_log_return"] > 0
+    assert item["quote_count"] == 5
+    cutoff = NOW + timedelta(seconds=1)
+    assert calls == [{"generation": "selected", "as_of": cutoff}]
+    dates.assert_called_once_with(db, ISIN, LISTING, generation="selected", publication_as_of=cutoff)
+
+
+@pytest.mark.parametrize("change", ["prices", "fill", "splits", "generation"])
+def test_acquired_return_filter_validates_cached_statistics(db, config, clock, monkeypatch, change):
+    import return_statistics
+
+    collect(db, config, Provider([page([bar("2025-09-16", "90"), bar("2026-09-14", "100"), bar("2026-09-15", "110"), bar("2026-09-16", "121")])]))
+    assert md.acquired_instruments(db, hide_negative_returns=True)["total"] == 1
+    cached = db.instrument_statistics.find_one({"_id": ISIN})
+    clock[0] += timedelta(hours=1)
+    if change == "prices":
+        db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "date": "2026-09-16", "collected_at": clock[0],
+                              "job_id": "revised", "data": bar("2026-09-16", "50")})
+    elif change == "fill":
+        # Reuse the real policy shape, changing one validated signature input.
+        policy = dict(cached["signature"]["quote_fill_policy"])
+        policy["method"] = "none" if policy["method"] != "none" else "smooth"
+        monkeypatch.setattr(return_statistics, "read_policy", lambda db: policy)
+    elif change == "splits":
+        db.split_snapshots.insert_one({"_id": "new-splits", "instrument_id": ISIN, **LISTING,
+                                      "requested_at": clock[0], "collected_at": clock[0], "data": [], "status": "succeeded"})
+    else:
+        db.instruments.update_many({}, {"$set": {"provider": "yfinance", "published": True, "job_id": "new-generation"}})
+        db.acquisition_jobs.insert_one({"_id": "new-generation", "instrument_id": ISIN, "listing": LISTING,
+                                        "provider": "yfinance", "published": True, "published_at": clock[0]})
+    latest_rows = Mock(wraps=return_statistics._latest_rows)
+    monkeypatch.setattr(return_statistics, "_latest_rows", latest_rows)
+    filtered = md.acquired_instruments(db, hide_negative_returns=True)
+    assert latest_rows.call_count == 1
+    updated = db.instrument_statistics.find_one({"_id": ISIN})
+    assert updated["signature"] != cached["signature"]
+    if change in ("prices", "generation", "splits"):
+        # A conflicting replacement split snapshot invalidates derived returns.
+        assert filtered["total"] == 0
+    else:
+        assert filtered["total"] == 1
+    latest_rows.reset_mock()
+    assert md.acquired_instruments(db, hide_negative_returns=True) == filtered
+    latest_rows.assert_not_called()
+
+
+def test_acquired_return_filter_api_validation_and_defaults(api, db, config, monkeypatch):
+    client, _ = api
+    assert client.get("/instruments/acquired?hide_negative_returns=true").status_code == 401
+    client.post("/auth/login", json={"login": "admin", "password": "admin"})
+    collect(db, config)  # Profile and insufficient history are retained by All.
+    monkeypatch.setattr(md, "provider_client", Mock(side_effect=AssertionError("Read must not call provider")))
+    assert client.get("/instruments/acquired").json()["total"] == 1
+    assert client.get("/instruments/acquired?hide_negative_returns=false").json()["total"] == 1
+    for query in ("hide_negative_returns=true", "hide_negative_returns=true&min_history_years=5"):
+        assert client.get("/instruments/acquired?" + query).json() == {"items": [], "total": 0, "limit": 20, "offset": 0}
+    for value in ("maybe", "2", "", "null"):
+        assert client.get("/instruments/acquired?hide_negative_returns=" + value).status_code == 422
+    assert client.get("/instruments/acquired/universe").json()["total"] == 1
+
+
 @pytest.mark.parametrize("years", [5, 15, 30])
 def test_acquired_history_filter_precedes_pagination(db, monkeypatch, years):
     import return_statistics

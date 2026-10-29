@@ -100,17 +100,36 @@ The sweep reuses existing acquisition jobs and their per-instrument active-job g
 
 ## On-demand instrument data
 
-After sign-in, the workspace shows **Acquired ETFs** with an **Add ETF** button above the table: one entry per ETF with a saved provider profile, newest profile collection first, with the saved listing, grouped **Historical → Annual return / Annual volatility** and **Statistical → Annual return / Annual volatility** columns, distinct quote count and date range. Historical yearly return is the actual trailing 12-month price change ending at the latest saved quote (`latest / year-ago − 1`), not an annualized estimate. Hover over it for the endpoint dates and adjusted/unadjusted price basis. A year-ago quote may be up to seven days before the calendar anniversary; insufficient or incomparable endpoints show **Unavailable**. Historical annual volatility is the sample standard deviation of usable daily log returns in that trailing year, multiplied by √252. It requires year-long saved coverage and at least two usable daily returns; hover for the window, return count, and price basis. Sparse or missing-weekday intervals are excluded, not treated as daily moves. Statistical annual return/volatility retain the same all-history log-based statistics as instrument details. All values are percentages; positive returns have a green **+** sign and negative returns are red with a **−** sign. Zero returns and volatility remain neutral; missing estimates show **Unavailable**. Statistics are refreshed from saved prices for the current page only, without provider requests. Yahoo instruments become visible only after a complete history generation is published; failed refreshes retain the previous published data. Open any ETF from the list or page through results. Returning from instrument details refreshes the list.
+After sign-in, the workspace shows **Acquired ETFs** with an **Add ETF** button above the table: one entry per ETF with a saved provider profile, newest profile collection first, with the saved listing, grouped **Historical → Annual return / Annual volatility** and **Statistical → Annual return / Annual volatility** columns, distinct quote count and date range. Historical yearly return is the actual trailing 12-month price change ending at the latest saved quote (`latest / year-ago − 1`), not an annualized estimate. Hover over it for the endpoint dates and adjusted/unadjusted price basis. A year-ago quote may be up to seven days before the calendar anniversary; insufficient or incomparable endpoints show **Unavailable**. Historical annual volatility is the sample standard deviation of usable daily log returns in that trailing year, multiplied by √252. It requires year-long saved coverage and at least two usable daily returns; hover for the window, return count, and price basis. Sparse or missing-weekday intervals are excluded, not treated as daily moves. Statistical annual return/volatility retain the same all-history log-based statistics as instrument details. All values are percentages; positive returns have a green **+** sign and negative returns are red with a **−** sign. Zero returns and volatility remain neutral; missing estimates show **Unavailable**. Statistics use saved prices without provider requests; with the default Returns setting, statistics are refreshed for the current page only. Yahoo instruments become visible only after a complete history generation is published; failed refreshes retain the previous published data. Open any ETF from the list or page through results. Returning from instrument details refreshes the list.
 
 The **Saved history** presets (5y+, 15y+, 30y+) use the first-to-last saved
 quote span, not fund inception or age relative to today. The last date must reach
 the first date plus that many calendar years (February 29 clamps to February 28).
 Sparse dates and unusable prices still count as saved coverage. Filtering happens
 before pagination, preserving exact totals. Membership reads compact first/last
-endpoints in bounded batches; only returned page items enumerate distinct dates
-and refresh statistics. Yahoo coverage stays pinned to the published profile's
-exact generation and listing; legacy observations exclude Yahoo rows. Existing
-indexes are reused; real-Mongo performance acceptance remains unverified locally.
+endpoints in bounded batches; only returned page items enumerate distinct quote
+dates. With Returns set to All, only page items refresh statistics. Yahoo coverage
+stays pinned to the published profile's exact generation and listing; legacy
+observations exclude Yahoo rows. Existing indexes are reused; real-Mongo
+performance acceptance remains unverified locally.
+
+The optional native **Returns** dropdown defaults to **All**. Choose
+**Hide negative/unavailable** to hide an entire ETF row if either historical
+annual return (`historical_year_return`) or statistical annual return
+(`annualized_mean_log_return`) is unavailable, nonnumeric, nonfinite or negative.
+Both returns must be finite numeric values greater than or equal to zero; raw,
+unrounded values are compared, so a tiny negative return is hidden even if its
+display rounds to zero. Zero and negative zero (`-0`) remain visible. Volatility,
+currency and simulation eligibility are independent of this filter.
+
+`GET /instruments/acquired` accepts the optional boolean
+`hide_negative_returns` (default `false`). When `true`, the return filter
+intersects with `min_history_years` before computing `total` and applying
+pagination. It validates cached statistics for every history-qualified candidate,
+recomputing from saved history when needed; a cold cache may require reading many
+histories, while distinct quote dates are still enumerated only for the returned
+page. This is an acquired-list filter only: `/instruments/acquired/universe` and
+bulk updates remain complete and unfiltered. Reads make no provider calls.
 
 Choose **Add ETF** to open the dedicated search page (`#/add`), then search the local ETF catalogue by name, ticker or ISIN. Selecting a result opens its details, where you can explicitly request data. Catalogue search is no longer displayed above the list or instrument details; the goal planner selects instrument parameters from the acquired universe only. Search, acquired-list reads, page reads, polling and charts use MongoDB only: browsing never contacts Yahoo.
 
@@ -142,7 +161,7 @@ Authenticated endpoints (browser prefix `/api`):
 | Route | Purpose |
 | --- | --- |
 | `GET /instruments/search?q=...` | Latest-snapshot autocomplete, no provider calls |
-| `GET /instruments/acquired?limit=20&offset=0` | Paginated acquired ETFs with historical yearly return, annual return/volatility, saved profile and quote coverage, no provider calls |
+| `GET /instruments/acquired?limit=20&offset=0[&min_history_years=5&hide_negative_returns=true]` | Paginated acquired ETFs with historical/statistical metrics, saved profile and quote coverage; optional history/returns filters apply before totals and pagination, no provider calls |
 | `GET /instruments/{isin}[?as_of=...Z]` | Catalogue, published profile, coverage, job and provider/basis |
 | `GET /instruments/{isin}/quotes?limit=1000&offset=0[&as_of=...Z&generation=...]` | Published-generation candles, ascending and paginated |
 | `PATCH /instruments/{isin}/price-currency` | `{price_currency: "EUR" \| "USD" \| "CHF" \| "GBP" \| "RUB"}`; saves a manual chart currency override |

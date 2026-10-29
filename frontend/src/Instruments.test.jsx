@@ -242,6 +242,197 @@ describe('read-only price currency', () => {
 });
 
 describe('acquired ETF inventory', () => {
+  it('provides a native Returns select with an associated explanation and component-local defaults', async () => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(A, { name: 'Negative ETF', historical_year_return: -0.1 }),
+      acquiredItem(B, { name: 'Unavailable ETF', annualized_mean_log_return: null })];
+    const view = await open();
+    const filter = screen.getByRole('combobox', { name: 'Returns' });
+    expect(filter.tagName).toBe('SELECT');
+    expect(filter).toHaveValue('');
+    expect(filter).toBeEnabled();
+    expect(within(filter).getAllByRole('option').map((option) => option.textContent)).toEqual(['All', 'Hide negative/unavailable']);
+    expect(within(filter).getByRole('option', { name: 'All' }).selected).toBe(true);
+    expect(filter).toHaveAccessibleDescription('Shows only ETFs whose historical and statistical annual returns are both available and at least zero.');
+    expect(screen.getByText('Shows only ETFs whose historical and statistical annual returns are both available and at least zero.')).toBeVisible();
+    expect(screen.getByRole('combobox', { name: 'Saved history' }).parentElement.parentElement).toContainElement(filter);
+    expect(screen.getByRole('link', { name: 'Negative ETF' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Unavailable ETF' })).toBeInTheDocument();
+    expect(server.fetch).toHaveBeenCalledWith('/api/instruments/acquired?limit=20&offset=0', expect.anything());
+    fireEvent.change(filter, { target: { value: 'hide' } });
+    await flush();
+    view.unmount();
+    await open();
+    expect(screen.getByRole('combobox', { name: 'Returns' })).toHaveValue('');
+    expect(server.fetch.mock.calls.at(-1)[0]).toBe('/api/instruments/acquired?limit=20&offset=0');
+    expect(server.posts()).toHaveLength(0);
+  });
+
+  it('composes the filters and resets pagination when either filter is enabled or cleared', async () => {
+    const server = mockServer();
+    const calls = [];
+    server.acquired = async (params) => {
+      calls.push(params.toString());
+      const offset = Number(params.get('offset'));
+      return { items: [acquiredItem(offset ? B : A)], total: 21, offset, limit: ACQUIRED_PAGE_SIZE };
+    };
+    await open();
+    let previousQuery = '';
+    for (const [name, value, query] of [
+      ['Returns', 'hide', '&hide_negative_returns=true'],
+      ['Saved history', '5', '&min_history_years=5&hide_negative_returns=true'],
+      ['Returns', '', '&min_history_years=5'],
+      ['Saved history', '', ''],
+    ]) {
+      fireEvent.click(screen.getByRole('button', { name: 'Next ETFs' }));
+      await flush();
+      expect(calls.at(-1)).toBe(`limit=20&offset=20${previousQuery}`);
+      fireEvent.change(screen.getByRole('combobox', { name }), { target: { value } });
+      await flush();
+      expect(calls.at(-1)).toBe(`limit=20&offset=0${query}`);
+      expect(screen.getByRole('button', { name: 'Previous ETFs' })).toBeDisabled();
+      previousQuery = query;
+    }
+    expect(calls).toHaveLength(9);
+    expect(server.posts()).toHaveLength(0);
+  });
+
+  it.each(['success', 'failure'])('clears mismatched pages and ignores stale %s responses across both filters', async (result) => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem()];
+    await open();
+    const pending = [deferred(), deferred(), deferred()];
+    const signals = [];
+    server.acquired = (_, options) => {
+      signals.push(options.signal);
+      return pending[signals.length - 1].promise;
+    };
+    fireEvent.change(screen.getByRole('combobox', { name: 'Returns' }), { target: { value: 'hide' } });
+    await flush();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Acquired ETFs', exact: true })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Saved history' }), { target: { value: '15' } });
+    await flush();
+    expect(signals[0].aborted).toBe(true);
+    pending[1].resolve({ items: [acquiredItem(B, { name: 'Current fund' })], total: 1, offset: 0, limit: ACQUIRED_PAGE_SIZE });
+    await flush();
+    expect(screen.getByRole('link', { name: 'Current fund' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Returns' }), { target: { value: '' } });
+    await flush();
+    expect(signals[1].aborted).toBe(true);
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    if (result === 'failure') pending[0].reject(new Error('stale failure'));
+    else pending[0].resolve({ items: [acquiredItem(A, { name: 'Stale fund' })], total: 1, offset: 0, limit: ACQUIRED_PAGE_SIZE });
+    await flush();
+    expect(screen.getByText('Loading acquired ETFs…')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    pending[2].resolve({ items: [], total: 0, offset: 0, limit: ACQUIRED_PAGE_SIZE });
+    await flush();
+    expect(screen.getByRole('heading', { name: 'No ETFs match these filters' })).toBeInTheDocument();
+    expect(screen.queryByText('Loading acquired ETFs…')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Stale fund' })).not.toBeInTheDocument();
+  });
+
+  it.each(['network', 'malformed'])('retries a %s error with both filters and uses server-filtered totals', async (failure) => {
+    const server = mockServer();
+    server.acquiredItems = [acquiredItem(A, { name: 'Unfiltered fund' })];
+    await open();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Saved history' }), { target: { value: '5' } });
+    await flush();
+    server.acquired = async () => {
+      if (failure === 'network') throw new Error('offline');
+      return { items: null, total: 4 };
+    };
+    fireEvent.change(screen.getByRole('combobox', { name: 'Returns' }), { target: { value: 'hide' } });
+    await flush();
+    expect(screen.getByRole('alert')).toHaveTextContent(failure === 'network' ? 'Could not reach the backend' : 'unexpected acquired ETF list');
+    expect(screen.queryByRole('link', { name: 'Unfiltered fund' })).not.toBeInTheDocument();
+    expect(screen.queryByText('No ETFs match these filters')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Returns' })).toBeEnabled();
+    server.acquired = async (params) => ({ items: [acquiredItem(B, { name: 'Matching fund', historical_year_return: 0, annualized_mean_log_return: 0 })], total: 1,
+      offset: Number(params.get('offset')), limit: ACQUIRED_PAGE_SIZE });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry list' }));
+    await flush();
+    expect(server.fetch.mock.calls.at(-1)[0]).toBe('/api/instruments/acquired?limit=20&offset=0&min_history_years=5&hide_negative_returns=true');
+    expect(screen.getByRole('heading', { name: 'Acquired ETFs (1)' })).toBeInTheDocument();
+    expect(screen.getByText('1–1 of 1 ETFs')).toBeInTheDocument();
+    expect(screen.getAllByRole('cell', { name: '0%' })).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'Next ETFs' })).toBeDisabled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it.each(['', '30'])('keeps filters visible for empty returns-filtered results and recovers by relaxing them (history: %s)', async (history) => {
+    const server = mockServer();
+    server.acquired = async (params) => {
+      const filtered = params.has('min_history_years') || params.has('hide_negative_returns');
+      return { items: filtered ? [] : [acquiredItem()], total: filtered ? 0 : 1, offset: 0, limit: ACQUIRED_PAGE_SIZE };
+    };
+    await open();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Saved history' }), { target: { value: history } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Returns' }), { target: { value: 'hide' } });
+    await flush();
+    expect(screen.getByRole('heading', { name: 'No ETFs match these filters' })).toBeInTheDocument();
+    expect(screen.getByText('Try relaxing the filters or select All.')).toBeInTheDocument();
+    expect(screen.queryByText('No acquired ETFs yet')).not.toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    for (const name of ['Returns', 'Saved history']) expect(screen.getByRole('combobox', { name })).toBeEnabled();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Returns' }), { target: { value: '' } });
+    await flush();
+    if (history) expect(screen.getByRole('heading', { name: 'No ETFs match these filters' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Saved history' }), { target: { value: '' } });
+    await flush();
+    expect(screen.getByRole('link', { name: 'iShares S&P ETF' })).toBeInTheDocument();
+    expect(server.fetch.mock.calls.at(-1)[0]).toBe('/api/instruments/acquired?limit=20&offset=0');
+  });
+
+  it('preserves both filters and corrects pagination after removing the last matching ETF on a page', async () => {
+    const server = mockServer();
+    let removed = false;
+    server.acquired = async (params) => {
+      const offset = Number(params.get('offset'));
+      return { items: offset ? (removed ? [] : [acquiredItem(B, { name: 'Last matching ETF' })]) : [acquiredItem()],
+        total: removed ? 20 : 21, offset, limit: ACQUIRED_PAGE_SIZE };
+    };
+    const pending = deferred();
+    const fetch = server.fetch.getMockImplementation();
+    server.fetch.mockImplementation(async (url, options) => {
+      if (url === `/api/instruments/${B}` && options.method === 'DELETE') {
+        await pending.promise;
+        removed = true;
+        return response(204);
+      }
+      return fetch(url, options);
+    });
+    await open();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Saved history' }), { target: { value: '5' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Returns' }), { target: { value: 'hide' } });
+    await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Next ETFs' }));
+    await flush();
+    await review('Remove Last matching ETF');
+    for (const name of ['Returns', 'Saved history']) expect(screen.getByRole('combobox', { name })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete saved data' }));
+    await flush();
+    for (const name of ['Returns', 'Saved history']) expect(screen.getByRole('combobox', { name })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Removing…' })).toBeDisabled();
+    pending.resolve();
+    await flush();
+    expect(screen.getByText('Last matching ETF removed. Saved market data deleted.')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Acquired ETFs (20)' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Previous ETFs' })).toBeDisabled();
+    expect(screen.queryByRole('link', { name: 'Last matching ETF' })).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Returns' })).toHaveValue('hide');
+    expect(screen.getByRole('combobox', { name: 'Saved history' })).toHaveValue('5');
+    for (const name of ['Returns', 'Saved history']) expect(screen.getByRole('combobox', { name })).toBeEnabled();
+    const lists = server.fetch.mock.calls.filter(([url]) => url.startsWith('/api/instruments/acquired?'));
+    expect(lists.slice(-2).map(([url]) => url)).toEqual([
+      '/api/instruments/acquired?limit=20&offset=20&min_history_years=5&hide_negative_returns=true',
+      '/api/instruments/acquired?limit=20&offset=0&min_history_years=5&hide_negative_returns=true',
+    ]);
+    expect(server.posts()).toHaveLength(0);
+  });
+
   it('requests each minimum-history preset and resets pagination when it changes', async () => {
     const server = mockServer();
     const calls = [];
@@ -261,7 +452,7 @@ describe('acquired ETF inventory', () => {
       fireEvent.change(filter, { target: { value: years } });
       await flush();
       expect(calls.at(-1)).toBe(`limit=20&offset=0&min_history_years=${years}`);
-      expect(screen.getByText('No ETFs match this history filter')).toBeInTheDocument();
+      expect(screen.getByText('No ETFs match these filters')).toBeInTheDocument();
       expect(screen.queryByText('No acquired ETFs yet')).not.toBeInTheDocument();
     }
     fireEvent.change(filter, { target: { value: '' } });
@@ -280,7 +471,7 @@ describe('acquired ETF inventory', () => {
     await flush();
     stale.resolve({ items: [acquiredItem()], total: 1, limit: 20, offset: 0 });
     await flush();
-    expect(screen.getByText('No ETFs match this history filter')).toBeInTheDocument();
+    expect(screen.getByText('No ETFs match these filters')).toBeInTheDocument();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
@@ -569,6 +760,73 @@ describe('acquired ETF market-data updates', () => {
     fireEvent.click(screen.getByRole('button', { name: all ? 'Confirm update all' : 'Confirm update' }));
     await flush();
   }
+
+  it.each([
+    ['history', '5', ''], ['returns', '', 'hide'], ['both', '5', 'hide'],
+  ])('updates the unfiltered universe with the %s filter active and never presents a filtered total as the bulk count', async (_, history, returns) => {
+    const server = mockServer();
+    server.acquiredItems = [staleAcquiredItem(), staleAcquiredItem(B, { name: 'Hidden ETF', historical_year_return: -0.1,
+      first_date: '2025-09-17', last_date: '2026-09-16' })];
+    server.acquired = async (params) => {
+      const filtered = params.has('min_history_years') || params.has('hide_negative_returns');
+      return { items: filtered ? [server.acquiredItems[0]] : server.acquiredItems, total: filtered ? 1 : 2, offset: 0, limit: ACQUIRED_PAGE_SIZE };
+    };
+    await open();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Saved history' }), { target: { value: history } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Returns' }), { target: { value: returns } });
+    await flush();
+    expect(screen.getByRole('heading', { name: 'Acquired ETFs (1)' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Hidden ETF' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Update all' })).toHaveAttribute('title',
+      'Update all acquired ETFs, including those hidden by filters, skipping ETFs collected 0 days ago');
+    await review('Update all');
+    expect(screen.getByRole('heading', { name: 'Update all acquired ETFs?' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Update all 1 acquired ETFs?' })).not.toBeInTheDocument();
+    for (const name of ['Returns', 'Saved history']) expect(screen.getByRole('combobox', { name })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    for (const name of ['Returns', 'Saved history']) expect(screen.getByRole('combobox', { name })).toBeEnabled();
+    expect(server.posts()).toHaveLength(0);
+    await review('Update all');
+    await confirmUpdate(true);
+    expect(server.fetch.mock.calls.filter(([url]) => url.includes('/acquired/universe')).map(([url]) => url)).toEqual(['/api/instruments/acquired/universe']);
+    expect(server.posts().map(([url]) => url)).toEqual([`/api/instruments/${A}/acquisitions`, `/api/instruments/${B}/acquisitions`]);
+    expect(screen.getByRole('combobox', { name: 'Returns' })).toHaveValue(returns);
+    expect(screen.getByRole('combobox', { name: 'Saved history' })).toHaveValue(history);
+  });
+
+  it('preserves both filters during a completed row-update refresh and recovers when the updated ETF no longer matches', async () => {
+    const server = mockServer();
+    server.acquiredItems = [staleAcquiredItem()];
+    await open();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Saved history' }), { target: { value: '5' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Returns' }), { target: { value: 'hide' } });
+    await flush();
+    await review('Update market data for iShares S&P ETF');
+    for (const name of ['Returns', 'Saved history']) expect(screen.getByRole('combobox', { name })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    for (const name of ['Returns', 'Saved history']) expect(screen.getByRole('combobox', { name })).toBeEnabled();
+    await review('Update market data for iShares S&P ETF');
+    await confirmUpdate();
+    const pending = deferred();
+    server.acquired = () => pending.promise;
+    server.details[A].acquisition = job('succeeded');
+    await advance(POLL_INTERVAL);
+    expect(server.fetch.mock.calls.at(-1)[0]).toBe('/api/instruments/acquired?limit=20&offset=0&min_history_years=5&hide_negative_returns=true');
+    expect(screen.getByText('Loading acquired ETFs…')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'iShares S&P ETF' })).toBeInTheDocument();
+    pending.resolve({ items: [], total: 0, offset: 0, limit: ACQUIRED_PAGE_SIZE });
+    await flush();
+    expect(screen.getByRole('heading', { name: 'No ETFs match these filters' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Returns' })).toHaveValue('hide');
+    expect(screen.getByRole('combobox', { name: 'Saved history' })).toHaveValue('5');
+    for (const name of ['Returns', 'Saved history']) expect(screen.getByRole('combobox', { name })).toBeEnabled();
+    server.acquired = async () => ({ items: [acquiredItem(A, { historical_year_return: -0.02 })], total: 1, offset: 0, limit: ACQUIRED_PAGE_SIZE });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Returns' }), { target: { value: '' } });
+    await flush();
+    expect(screen.getByRole('cell', { name: '-2%' })).toBeInTheDocument();
+    expect(server.fetch.mock.calls.at(-1)[0]).toBe('/api/instruments/acquired?limit=20&offset=0&min_history_years=5');
+    expect(server.posts()).toHaveLength(1);
+  });
 
   it('keeps Update all outside the responsive table and requires consent before updating a row', async () => {
     const server = mockServer();

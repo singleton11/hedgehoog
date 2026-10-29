@@ -80,6 +80,8 @@ export default function AcquiredEtfs() {
   const { request } = useAuth();
   const [offset, setOffset] = useState(0);
   const [minHistoryYears, setMinHistoryYears] = useState('');
+  const [hideNegativeReturns, setHideNegativeReturns] = useState(false);
+  const filtersActive = Boolean(minHistoryYears || hideNegativeReturns);
   const [attempt, setAttempt] = useState(0);
   const [page, setPage] = useState(null);
   const [error, setError] = useState(null);
@@ -141,12 +143,14 @@ export default function AcquiredEtfs() {
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setPage((previous) => previous?.offset === offset && previous.minHistoryYears === minHistoryYears ? previous : null);
+    setPage((previous) => previous?.offset === offset && previous.minHistoryYears === minHistoryYears
+      && previous.hideNegativeReturns === hideNegativeReturns ? previous : null);
     setError(null);
     async function load() {
       try {
         const historyQuery = minHistoryYears ? `&min_history_years=${minHistoryYears}` : '';
-        const data = await request(`/instruments/acquired?limit=${ACQUIRED_PAGE_SIZE}&offset=${offset}${historyQuery}`, { signal: controller.signal });
+        const returnsQuery = hideNegativeReturns ? '&hide_negative_returns=true' : '';
+        const data = await request(`/instruments/acquired?limit=${ACQUIRED_PAGE_SIZE}&offset=${offset}${historyQuery}${returnsQuery}`, { signal: controller.signal });
         if (controller.signal.aborted) return;
         if (!Array.isArray(data?.items) || !Number.isInteger(data.total) || data.total < 0
             || data.offset !== offset || data.limit !== ACQUIRED_PAGE_SIZE) {
@@ -156,7 +160,7 @@ export default function AcquiredEtfs() {
           setOffset(Math.max(0, Math.floor((data.total - 1) / ACQUIRED_PAGE_SIZE) * ACQUIRED_PAGE_SIZE));
           return;
         }
-        setPage({ ...data, minHistoryYears });
+        setPage({ ...data, minHistoryYears, hideNegativeReturns });
       } catch (error) {
         if (!controller.signal.aborted) setError(error.message);
       } finally {
@@ -165,7 +169,7 @@ export default function AcquiredEtfs() {
     }
     load();
     return () => controller.abort();
-  }, [request, offset, attempt, minHistoryYears]);
+  }, [request, offset, attempt, minHistoryYears, hideNegativeReturns]);
 
   return <section aria-labelledby="acquired-etfs-heading" className="acquired-page">
     <div className="section-heading page-heading">
@@ -176,18 +180,33 @@ export default function AcquiredEtfs() {
       <a className="button-link" href="#/add"><Icon name="plus" />Add ETF</a>
     </div>
     <div className="section-heading history-filter">
-      <label htmlFor="minimum-history">Saved history
-        <select id="minimum-history" value={minHistoryYears} disabled={Boolean(selection)} onChange={(event) => {
-          setMinHistoryYears(event.target.value);
-          setOffset(0);
-        }}>
-          <option value="">All</option>
-          <option value="5">5y+</option>
-          <option value="15">15y+</option>
-          <option value="30">30y+</option>
-        </select>
-      </label>
-      <p className="muted">Minimum span between first and last saved quotes.</p>
+      <div className="button-group">
+        <label htmlFor="minimum-history">Saved history
+          <select id="minimum-history" value={minHistoryYears} disabled={Boolean(selection)} onChange={(event) => {
+            setMinHistoryYears(event.target.value);
+            setOffset(0);
+          }}>
+            <option value="">All</option>
+            <option value="5">5y+</option>
+            <option value="15">15y+</option>
+            <option value="30">30y+</option>
+          </select>
+        </label>
+        <label htmlFor="returns-filter">Returns
+          <select id="returns-filter" value={hideNegativeReturns ? 'hide' : ''} aria-describedby="returns-filter-help"
+            disabled={Boolean(selection)} onChange={(event) => {
+              setHideNegativeReturns(event.target.value === 'hide');
+              setOffset(0);
+            }}>
+            <option value="">All</option>
+            <option value="hide">Hide negative/unavailable</option>
+          </select>
+        </label>
+      </div>
+      <div>
+        <p className="muted">Minimum span between first and last saved quotes.</p>
+        <p className="muted" id="returns-filter-help">Shows only ETFs whose historical and statistical annual returns are both available and at least zero.</p>
+      </div>
     </div>
     {notice && <p role="status">{notice}</p>}
     {selection?.remove && <RemoveConfirmation selection={selection} removing={removing} error={removeError}
@@ -204,13 +223,13 @@ export default function AcquiredEtfs() {
     {loading && <p role="status">Loading acquired ETFs…</p>}
     {error && <><p role="alert">{error}</p><button className="secondary" onClick={() => setAttempt((value) => value + 1)}>Retry list</button></>}
     {page && (page.total === 0
-      ? <div className="empty-state collection-empty"><span className="empty-icon"><Icon name="layers" /></span><h3>{minHistoryYears ? 'No ETFs match this history filter' : 'No acquired ETFs yet'}</h3><p>{minHistoryYears ? 'Try a shorter history or select All.' : 'Choose Add ETF to find a fund and request its data.'}</p></div>
+      ? <div className="empty-state collection-empty"><span className="empty-icon"><Icon name="layers" /></span><h3>{filtersActive ? 'No ETFs match these filters' : 'No acquired ETFs yet'}</h3><p>{filtersActive ? 'Try relaxing the filters or select All.' : 'Choose Add ETF to find a fund and request its data.'}</p></div>
       : <>
         <div className="collection-table-card">
         <div className="table-heading"><h3>Fund overview</h3>
           <button className="secondary" disabled={busy || loading || Boolean(selection)}
-            title="Update all acquired ETFs, including those hidden by the history filter, skipping ETFs collected 0 days ago"
-            onClick={(event) => review(event, { isin: null, total: minHistoryYears ? null : page.total })}>Update all</button>
+            title="Update all acquired ETFs, including those hidden by filters, skipping ETFs collected 0 days ago"
+            onClick={(event) => review(event, { isin: null, total: filtersActive ? null : page.total })}>Update all</button>
         </div>
         <p className="collection-scroll-hint">Scroll horizontally for all columns →</p>
         <div className="acquired-table-scroll" role="region" aria-label="Acquired ETF data" tabIndex={0}>
