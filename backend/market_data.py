@@ -88,6 +88,10 @@ def ensure_indexes(db):
     db.quotes.create_index([("job_id", ASCENDING), ("date", ASCENDING)], unique=True)
     db.raw_eod_pages.create_index([("job_id", ASCENDING), ("offset", ASCENDING)], unique=True)
     db.raw_split_pages.create_index([("job_id", ASCENDING), ("offset", ASCENDING)], unique=True)
+    # Provider prefix serves global legacy discovery; instrument/job suffixes
+    # serve per-instrument discovery and purges without scanning unrelated payloads.
+    for name in ("raw_eod_pages", "raw_split_pages"):
+        db[name].create_index([("provider", ASCENDING), ("instrument_id", ASCENDING), ("job_id", ASCENDING)])
     db.split_snapshots.create_index([("instrument_id", ASCENDING), ("symbol", ASCENDING), ("exchange", ASCENDING), ("requested_at", DESCENDING), ("_id", DESCENDING)])
     db.market_data_publications.create_index([("instrument_id", ASCENDING), ("published_at", DESCENDING), ("_id", DESCENDING)])
 

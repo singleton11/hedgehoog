@@ -326,6 +326,8 @@ def retain_instrument(db, settings, isin):
 def cleanup(db, settings, isin=None):
     if not settings.market_data_retention_enabled:
         return {"disabled": True, "items": []}
+    # Global provider discovery runs before retain_instrument's index setup.
+    md.ensure_indexes(db)
     identifiers = {isin} if isin else set(db.acquisition_jobs.distinct("instrument_id")) | set(db.market_data_retention.distinct("instrument_id"))
     if isin is None:
         for name in (*PAYLOADS, "market_data_publications"):
