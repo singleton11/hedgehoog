@@ -102,9 +102,34 @@ Both failures reproduce using the base SHA's original `market_data.py`:
   `acquisition_jobs` and fixtures with no attributed publication jobs; both base
   and patched code fail with the same missing-attribute error.
 
-These stale opt-in tests are neither silently counted as passes nor rewritten as
-part of the pagination fix. The supported Yahoo endpoint-probe cases in the old
-history module pass against real Mongo, using the existing quote index.
+The universe fixture was subsequently corrected in `67ccac1`: it now supplies
+attributed published Yahoo jobs and generation/listing identities, and publishes
+once during batched catalogue reads. All its original assertions are preserved.
+The original fixture fails before correction and passes after it on real MongoDB.
+The legacy-history failure remains unchanged and is not counted as a pass.
+The supported Yahoo endpoint-probe cases in the old history module pass against
+real Mongo, using the existing quote index.
+
+## Independent validation follow-up
+
+A read-only review of `0ecc69d` found no actionable correctness or retention-race
+findings and independently ran 91 focused tests successfully. The parent also
+reran pagination, filter latency and latest-history safety tests: 70 passed.
+
+A separate real-Mongo rerun used MongoDB 7.0.45 in a disposable Docker container
+limited to 1 GiB / two CPUs, bound to a random loopback port, then removed it.
+The expanded acquired/retention suite returned **249 passed, 1 failed**; the sole
+failure is the unchanged legacy-history case above. Excluding that old history
+module, the supported suite returned **247 passed**. Canonical Python helpers
+returned **68 passed + 357 subtests**; Node baseline helpers returned **15 passed**.
+These focused reruns do not replace or claim a new full coverage measurement.
+
+The independent 30,000-ETF / 41,628-job run measured limit 1 at **2.2499 seconds**
+(24 finds, eight updates), limit 20 / offset 20 at **2.5458 seconds** (366 finds,
+160 updates), and the empty page at **1.9251 seconds** (zero finds/updates).
+Universe returned 30,000 rows in **3.239 seconds**, with two aggregates, two
+getMores, 600 catalogue finds, and zero writes/quote commands. EXPLAIN again used
+`job_id_1`, examining 30,000 keys/documents with zero lookup collection scans.
 
 ## Remaining risks
 
