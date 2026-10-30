@@ -20,28 +20,43 @@ def test_real_mongo_universe_capture_during_publication():
     with MongoClient(uri, serverSelectionTimeoutMS=5000, tz_aware=True) as mongo:
         db = mongo[name]
         try:
-            db.instruments.insert_many([
-                {"instrument_id": isin, "collected_at": now, "provider": "yfinance", "published": True}
-                for isin in reversed(ids)
-            ] + [
-                {"instrument_id": ids[0], "collected_at": now + timedelta(hours=1), "provider": "yfinance", "published": True},
-                {"instrument_id": "IE9999999999", "provider": "yfinance", "published": False},
-                {"instrument_id": "idx-test", "collected_at": now},
-            ])
+            db.instruments.create_index("job_id")
+
+            def seed_acquisition(isin, generation, collected_at, *, published=True):
+                listing = {"symbol": isin, "exchange": "TEST"}
+                db.instruments.insert_one({
+                    "instrument_id": isin, "job_id": generation, **listing,
+                    "provider": "yfinance", "collected_at": collected_at,
+                })
+                db.acquisition_jobs.insert_one({
+                    "_id": generation, "instrument_id": isin, "listing": listing,
+                    "provider": "yfinance", "published": published,
+                    "requested_at": collected_at, "published_at": collected_at if published else None,
+                    "status": "succeeded" if published else "running",
+                })
+
+            for isin in reversed(ids):
+                seed_acquisition(isin, f"original-{isin}", now)
+            seed_acquisition(ids[0], "newer-first-etf", now + timedelta(hours=1))
+            seed_acquisition("IE9999999999", "unpublished-etf", now, published=False)
+            seed_acquisition("idx-test", "published-index", now)
             db.etfs.insert_many([
                 {"isin": ids[0], "name": "Old label", "import_date": "2026-10-16"},
                 {"isin": ids[0], "name": "Current label", "ticker": "ETF", "import_date": "2026-10-17"},
             ])
 
             class PublishingCatalogue:
+                published = False
+
                 def find(self, *args, **kwargs):
-                    # A download publishes after membership is captured, before labels load.
-                    db.instruments.insert_one({
-                        "instrument_id": "IE9999999999", "provider": "yfinance", "published": True, "collected_at": now,
-                    })
+                    # Publish once: catalogue hydration can span several batches.
+                    if not self.published:
+                        seed_acquisition("IE9999999999", "newly-published-etf", now)
+                        self.published = True
                     return db.etfs.find(*args, **kwargs)
 
             class PublishingDatabase:
+                acquisition_jobs = db.acquisition_jobs
                 instruments = db.instruments
                 etfs = PublishingCatalogue()
 
