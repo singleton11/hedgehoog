@@ -6,8 +6,10 @@ not historical effective dates. At-least-once execution is not exactly-once HTTP
 
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import logging
 import math
 import re
+from time import perf_counter
 from uuid import uuid4
 
 from bson import BSON, Decimal128, ObjectId
@@ -237,6 +239,27 @@ def saved_history_bounds(db, observations, as_of=None):
         return bounds
 
 
+def published_history_summary(observation, cutoff):
+    """Only writer-produced, fully covered immutable generations can skip probes."""
+    summary = observation.get("history_summary")
+    if not isinstance(summary, dict):
+        return None
+    try:
+        for field in ("first_date", "last_date"):
+            if date.fromisoformat(summary[field]).isoformat() != summary[field]:
+                return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    if (summary.get("version") == 1 and summary.get("instrument_id") == observation["_id"]
+            and summary.get("listing") == observation["listing"] and summary.get("generation") == observation["job_id"]
+            and type(summary.get("quote_count")) is int and summary["quote_count"] > 0
+            and type(summary.get("observations")) is int and summary["observations"] == summary["quote_count"]
+            and isinstance(summary.get("first_date"), str) and isinstance(summary.get("last_date"), str)
+            and summary["first_date"] <= summary["last_date"] <= cutoff.date().isoformat()):
+        return summary
+    return None
+
+
 def _nonnegative_returns(statistics):
     for field in ("historical_year_return", "annualized_mean_log_return"):
         value = statistics.get(field)
@@ -254,23 +277,46 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None, *, hide
     """Latest complete Yahoo profiles with generation-consistent history/returns."""
     from contextlib import ExitStack
     from market_data_retention import reader
-    from return_statistics import refresh_statistics
+    from return_statistics import acquired_statistics
 
     cutoff = utcnow()
+    started = phase = perf_counter()
+    timings = {}
+
+    def mark(name):
+        nonlocal phase
+        now = perf_counter()
+        timings[name] = round((now - phase) * 1000, 2)
+        phase = now
+
     observations, page_statistics = [], {}
     with ExitStack() as readers:
+        selected = []
         for row in _acquired_publications(db):
             job = row["publication"]
             generation = readers.enter_context(reader(db, row["_id"], job["listing"], job["_id"]))
-            profile = db.instruments.find_one(observation_filter(db, row["_id"], job["listing"], generation=generation))
-            if profile is None:
-                raise DataError(409, "The latest Yahoo profile is unavailable. Request Yahoo history again.")
-            observations.append({"_id": row["_id"], "listing": job["listing"], "job_id": generation,
-                                 "provider": "yfinance", **{key: profile.get(key) for key in ("collected_at", "asset_class", "index")}})
+            selected.append({"_id": row["_id"], "listing": job["listing"], "job_id": generation,
+                             "provider": "yfinance", "history_summary": job.get("history_summary")})
+        mark("publications_and_leases_ms")
+        identity = lambda row: {**listing_filter(row["_id"], row["listing"]), "provider": "yfinance", "job_id": row["job_id"]}
+        command = lambda batch: {"find": "instruments", "filter": {"$or": [identity(row) for row in batch]}}
+        for batch in _history_batches(selected, command):
+            profiles = {profile["instrument_id"]: profile for profile in db.instruments.find(
+                {"$or": [identity(row) for row in batch]},
+                {"instrument_id": 1, "collected_at": 1, "asset_class": 1, "index": 1})}
+            for row in batch:
+                profile = profiles.get(row["_id"])
+                if profile is None:
+                    raise DataError(409, "The latest Yahoo profile is unavailable. Request Yahoo history again.")
+                observations.append({**row, **{key: profile.get(key) for key in ("collected_at", "asset_class", "index")}})
+        mark("profiles_ms")
+        inventory_count = len(observations)
         observations.sort(key=lambda row: row["_id"])
         observations.sort(key=lambda row: aware(row["collected_at"]), reverse=True)
         if min_history_years is not None:
-            bounds = saved_history_bounds(db, observations, cutoff)
+            bounds = {row["_id"]: summary for row in observations
+                      if (summary := published_history_summary(row, cutoff)) is not None}
+            bounds.update(saved_history_bounds(db, [row for row in observations if row["_id"] not in bounds], cutoff))
             matching = []
             for observation in observations:
                 span = bounds.get(observation["_id"], {})
@@ -284,35 +330,42 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None, *, hide
                 if end >= anniversary:
                     matching.append(observation)
             observations = matching
+        mark("bounds_ms")
         if hide_negative_returns:
-            matching = []
-            for observation in observations:
-                isin = observation["_id"]
-                statistics, state = refresh_statistics(db, isin, generation=observation["job_id"], as_of=cutoff)
-                if state.get("listing") != observation["listing"] or not _nonnegative_returns(statistics):
-                    continue
-                if offset <= len(matching) < offset + limit:
-                    page_statistics[isin] = statistics
-                matching.append(observation)
-            observations = matching
+            page_statistics = acquired_statistics(db, observations, cutoff)
+            observations = [row for row in observations
+                            if page_statistics[row["_id"]][1].get("listing") == row["listing"]
+                            and _nonnegative_returns(page_statistics[row["_id"]][0])]
+        page = observations[offset:offset + limit]
+        if not hide_negative_returns:
+            page_statistics = acquired_statistics(db, page, cutoff)
+        mark("statistics_ms")
+        catalogues = {}
+        command = lambda batch: {"find": "etfs", "filter": {"isin": {"$in": [row["_id"] for row in batch]}}}
+        for batch in _history_batches(page, command):
+            for record in db.etfs.find({"isin": {"$in": [row["_id"] for row in batch]}},
+                                       {"isin": 1, "name": 1, "ticker": 1, "import_date": 1}).sort("import_date", DESCENDING):
+                catalogues.setdefault(record["isin"], record)
         items = []
-        for observation in observations[offset:offset + limit]:
+        for observation in page:
             isin = observation["_id"]
-            catalogue = latest_catalogue(db, isin) or {}
-            dates = quote_dates(db, isin, observation["listing"], as_of=cutoff, generation=observation["job_id"])
-            if hide_negative_returns:
-                statistics = page_statistics[isin]
-            else:
-                statistics, state = refresh_statistics(db, isin, generation=observation["job_id"], as_of=cutoff)
-                if state.get("listing") != observation["listing"]:
-                    statistics = {}
+            catalogue = catalogues.get(isin, {})
+            statistics, state = page_statistics[isin]
+            saved_history = statistics.get("saved_history")
+            if saved_history is None:
+                # Compatibility for older/custom calculators; normal caches use
+                # compact coverage, not a second full distinct-date response.
+                dates = quote_dates(db, isin, observation["listing"], as_of=cutoff, generation=observation["job_id"])
+                saved_history = {"quote_count": len(dates), "first_date": dates[0] if dates else None,
+                                 "last_date": dates[-1] if dates else None}
+            if state.get("listing") != observation["listing"]:
+                statistics = {}
             items.append({
                 "instrument_id": isin, "isin": isin,
                 "name": catalogue.get("name"), "ticker": catalogue.get("ticker"),
                 "listing": observation["listing"], "collected_at": observation["collected_at"],
                 "asset_class": observation.get("asset_class"), "index": observation.get("index"),
-                "quote_count": len(dates), "first_date": dates[0] if dates else None,
-                "last_date": dates[-1] if dates else None,
+                **saved_history,
                 **{key: statistics.get(key) for key in (
                     "annualized_mean_log_return", "annualized_volatility", "historical_year_return",
                     "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis",
@@ -321,6 +374,10 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None, *, hide
                     "historical_year_volatility_price_basis", "historical_year_volatility_return_count",
                 )},
             })
+        mark("page_hydration_ms")
+        logging.getLogger(__name__).debug("acquired_filter phases_ms=%s inventory=%d matched=%d page=%d history_years=%s returns=%s total_ms=%.2f",
+                                         timings, inventory_count, len(observations), len(items), min_history_years,
+                                         hide_negative_returns, (perf_counter() - started) * 1000)
         return public({"items": items, "total": len(observations), "limit": limit, "offset": offset})
 
 
@@ -1000,7 +1057,16 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
             # If an expired/replaced worker pauses before it, the owner/status
             # predicate fails on resume; an earlier checkpoint is not enough.
             publication = db.market_data_publications.find_one({"_id": job_id})
-            job = checkpoint({"published": True, "published_at": publication["published_at"]})
+            summary = list(db.quotes.aggregate([
+                {"$match": {**listing_filter(isin, listing), "provider": name, "job_id": job_id}},
+                {"$group": {"_id": "$date", "observations": {"$sum": 1}}},
+                {"$group": {"_id": None, "observations": {"$sum": "$observations"}, "quote_count": {"$sum": 1},
+                            "first_date": {"$min": "$_id"}, "last_date": {"$max": "$_id"}}},
+            ]))[0]
+            summary.pop("_id")
+            job = checkpoint({"published": True, "published_at": publication["published_at"],
+                              "history_summary": {"version": 1, "instrument_id": isin, "listing": listing,
+                                                  "generation": job_id, **summary}})
             db.instruments.update_one({"job_id": job_id}, {"$set": {"published": True}})
             while True:
                 checkpoint({"phase": "caching_listing"})
