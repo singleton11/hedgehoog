@@ -129,32 +129,85 @@ def search_catalogue(db, query, limit):
     return [{**record, "instrument_id": record["isin"]} for record in records]
 
 
-def _acquired_publications(db):
-    return db.acquisition_jobs.aggregate([
+def _acquired_publication_pipeline():
+    return [
         {"$match": {"instrument_id": {"$not": {"$regex": "^idx-"}}, "provider": "yfinance", "published": True}},
         {"$sort": {"requested_at": -1, "published_at": -1, "_id": -1}},
         {"$group": {"_id": "$instrument_id", "publication": {"$first": "$$ROOT"}}},
         {"$sort": {"_id": 1}},
-    ])
+    ]
+
+
+def _acquired_publications(db):
+    return db.acquisition_jobs.aggregate(_acquired_publication_pipeline())
+
+
+def _acquired_metadata_pipeline():
+    # Join only the chosen generation. No histories, caches or reader leases are
+    # needed to select a page; payload hydration still runs inside reader().
+    pipeline = _acquired_publication_pipeline()
+    pipeline.insert(1, {"$project": {"instrument_id": 1, "listing": 1, "requested_at": 1,
+                                     "published_at": 1, "history_summary": 1}})
+    return pipeline + [
+        {"$project": {"publication._id": 1, "publication.listing": 1, "publication.history_summary": 1}},
+        {"$lookup": {"from": "instruments", "localField": "publication._id",
+                     "foreignField": "job_id", "as": "profiles"}},
+        {"$project": {"listing": "$publication.listing", "job_id": "$publication._id",
+                      "history_summary": "$publication.history_summary", "profiles": {"$filter": {"input": "$profiles", "as": "profile", "cond": {"$and": [
+                          {"$eq": ["$$profile.instrument_id", "$_id"]},
+                          {"$eq": ["$$profile.provider", "yfinance"]},
+                          {"$eq": ["$$profile.symbol", "$publication.listing.symbol"]},
+                          {"$eq": ["$$profile.exchange", "$publication.listing.exchange"]},
+                      ]}}}}},
+        {"$project": {"listing": 1, "job_id": 1, "history_summary": 1, "profile_count": {"$size": "$profiles"},
+                      "collected_at": {"$arrayElemAt": ["$profiles.collected_at", 0]}}},
+    ]
+
+
+def _acquired_page(db, limit, offset):
+    result = next(db.acquisition_jobs.aggregate(_acquired_metadata_pipeline() + [
+        {"$facet": {
+            "count": [{"$count": "total"}],
+            "invalid": [{"$match": {"profile_count": {"$ne": 1}}}, {"$limit": 1}],
+            "page": [{"$sort": {"collected_at": -1, "_id": 1}}, {"$skip": offset}, {"$limit": limit}],
+        }},
+    ]))
+    if result["invalid"]:
+        raise DataError(409, "The latest Yahoo profile is unavailable. Request Yahoo history again.")
+    return (result["count"][0]["total"] if result["count"] else 0), result["page"]
+
+
+def _acquired_catalogues(db, observations):
+    catalogues = {}
+    command = lambda batch: {"find": "etfs", "filter": {"isin": {"$in": [row["_id"] for row in batch]}}}
+    for batch in _history_batches(observations, command):
+        for record in db.etfs.find({"isin": {"$in": [row["_id"] for row in batch]}},
+                                   {"isin": 1, "name": 1, "ticker": 1, "import_date": 1}).sort("import_date", DESCENDING):
+            catalogues.setdefault(record["isin"], record)
+    return catalogues
 
 
 def acquired_universe(db):
-    """Capture only latest published Yahoo profiles, never quote histories."""
-    from contextlib import ExitStack
-    from market_data_retention import reader
-
-    items = []
-    with ExitStack() as readers:
-        for row in _acquired_publications(db):
-            job = row["publication"]
-            generation = readers.enter_context(reader(db, row["_id"], job["listing"], job["_id"]))
-            profile = db.instruments.find_one(observation_filter(db, row["_id"], job["listing"], generation=generation))
-            if profile is None:
-                raise DataError(409, "The latest Yahoo profile is unavailable. Request Yahoo history again.")
-            catalogue = latest_catalogue(db, row["_id"]) or {}
-            items.append({"instrument_id": row["_id"], "name": catalogue.get("name"),
-                          "ticker": catalogue.get("ticker"), "collected_at": profile.get("collected_at")})
-        return public({"items": items, "total": len(items)})
+    """Capture compact published metadata, without leasing any quote payloads."""
+    observations = list(db.acquisition_jobs.aggregate(_acquired_metadata_pipeline()))
+    if any(row["profile_count"] != 1 for row in observations):
+        raise DataError(409, "The latest Yahoo profile is unavailable. Request Yahoo history again.")
+    catalogues = _acquired_catalogues(db, observations)
+    # Metadata has no payload lifetime to protect. Revalidate the captured
+    # identities in one read instead of acquiring N write-backed payload leases.
+    current = {row["_id"]: row["publication"] for row in db.acquisition_jobs.aggregate(
+        _acquired_publication_pipeline() + [{"$project": {
+            "publication._id": 1, "publication.listing": 1, "publication.retention_state": 1,
+        }}])}
+    if any(current.get(row["_id"], {}).get("_id") != row["job_id"]
+           or current[row["_id"]].get("listing") != row["listing"]
+           or current[row["_id"]].get("retention_state") in ("retiring", "pruned") for row in observations):
+        from market_data_retention import conflict
+        raise conflict()
+    items = [{"instrument_id": row["_id"], "name": catalogues.get(row["_id"], {}).get("name"),
+              "ticker": catalogues.get(row["_id"], {}).get("ticker"), "collected_at": row.get("collected_at")}
+             for row in observations]
+    return public({"items": items, "total": len(items)})
 
 
 HISTORY_BATCH_SIZE = 50
@@ -292,7 +345,16 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None, *, hide
     observations, page_statistics = [], {}
     with ExitStack() as readers:
         selected = []
-        for row in _acquired_publications(db):
+        unfiltered = min_history_years is None and not hide_negative_returns
+        total = None
+        if unfiltered:
+            total, candidates = _acquired_page(db, limit, offset)
+            publications = ({"_id": row["_id"], "publication": {"_id": row["job_id"], "listing": row["listing"],
+                                                             "history_summary": row.get("history_summary")}}
+                            for row in candidates)
+        else:
+            publications = _acquired_publications(db)
+        for row in publications:
             job = row["publication"]
             generation = readers.enter_context(reader(db, row["_id"], job["listing"], job["_id"]))
             selected.append({"_id": row["_id"], "listing": job["listing"], "job_id": generation,
@@ -336,16 +398,11 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None, *, hide
             observations = [row for row in observations
                             if page_statistics[row["_id"]][1].get("listing") == row["listing"]
                             and _nonnegative_returns(page_statistics[row["_id"]][0])]
-        page = observations[offset:offset + limit]
+        page = observations if unfiltered else observations[offset:offset + limit]
         if not hide_negative_returns:
             page_statistics = acquired_statistics(db, page, cutoff)
         mark("statistics_ms")
-        catalogues = {}
-        command = lambda batch: {"find": "etfs", "filter": {"isin": {"$in": [row["_id"] for row in batch]}}}
-        for batch in _history_batches(page, command):
-            for record in db.etfs.find({"isin": {"$in": [row["_id"] for row in batch]}},
-                                       {"isin": 1, "name": 1, "ticker": 1, "import_date": 1}).sort("import_date", DESCENDING):
-                catalogues.setdefault(record["isin"], record)
+        catalogues = _acquired_catalogues(db, page)
         items = []
         for observation in page:
             isin = observation["_id"]
@@ -378,7 +435,7 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None, *, hide
         logging.getLogger(__name__).debug("acquired_filter phases_ms=%s inventory=%d matched=%d page=%d history_years=%s returns=%s total_ms=%.2f",
                                          timings, inventory_count, len(observations), len(items), min_history_years,
                                          hide_negative_returns, (perf_counter() - started) * 1000)
-        return public({"items": items, "total": len(observations), "limit": limit, "offset": offset})
+        return public({"items": items, "total": total if unfiltered else len(observations), "limit": limit, "offset": offset})
 
 
 def remove_acquired_instrument(db, isin):
