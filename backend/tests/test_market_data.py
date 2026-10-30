@@ -425,10 +425,10 @@ def test_acquired_return_filter_counts_all_candidates_before_paging(db, monkeypa
     db.instruments.insert_one({"instrument_id": "idx-excluded", **LISTING, "collected_at": NOW})
     refresh = Mock(side_effect=lambda db, isin, **kwargs: (values[isin], {"listing": LISTING}))
     dates = Mock(wraps=md.quote_dates)
-    labels = Mock(wraps=db.etfs.find_one)
+    labels = Mock(wraps=db.etfs.find)
     monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
     monkeypatch.setattr(md, "quote_dates", dates)
-    monkeypatch.setattr(db.etfs, "find_one", labels)
+    monkeypatch.setattr(db.etfs, "find", labels)
     matches = [f"IE{index:010d}" for index in range(1, 12 if years is None else 11, 2)]
     for offset in (0, 2, 4, 6, 99):
         refresh.reset_mock()
@@ -439,7 +439,10 @@ def test_acquired_return_filter_counts_all_candidates_before_paging(db, monkeypa
         assert result["total"] == len(matches)
         assert [item["instrument_id"] for item in result["items"]] == expected
         assert result["limit"] == 2 and result["offset"] == offset
-        assert dates.call_count == labels.call_count == len(expected)
+        assert dates.call_count == len(expected)  # Custom calculator omits compact coverage.
+        assert labels.call_count == int(bool(expected))
+        if expected:
+            assert labels.call_args.args[0] == {"isin": {"$in": expected}}
         assert refresh.call_count == (12 if years is None else 11)
         assert len({call.args[1] for call in refresh.call_args_list}) == refresh.call_count
         assert all(call.kwargs == {"generation": call.args[1], "as_of": NOW} for call in refresh.call_args_list)
@@ -710,7 +713,7 @@ def test_history_filter_accepts_publication_during_profile_selection(db, clock, 
     assert (item["first_date"], item["last_date"], item["quote_count"]) == ("2020-01-01", "2025-01-01", 2)
     assert bounds.call_args.args[2] == NOW
     assert clock[0] == NOW + timedelta(seconds=1)
-    dates.assert_called_once_with(db, ISIN, LISTING, generation="refreshed", as_of=NOW)
+    dates.assert_not_called()  # Coverage reuses the raw-row summary, not usable-price endpoints.
     statistics.assert_called_once_with(db, ISIN, generation="refreshed", as_of=NOW)
     print({"scenario": "publication during saved-profile selection", "total": result["total"],
            "instrument_id": item["instrument_id"], "generation": "refreshed",

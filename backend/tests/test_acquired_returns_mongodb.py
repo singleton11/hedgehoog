@@ -30,7 +30,8 @@ def test_return_membership_cold_warm_and_combined_history(monkeypatch):
             db.instruments.insert_one({"instrument_id": isin, **listing, **metadata, "published": True, "collected_at": cutoff})
             db.instrument_state.insert_one({"_id": isin, "listing": listing})
             db.acquisition_jobs.insert_one({"_id": generation, "instrument_id": isin, "listing": listing,
-                                            "provider": "yfinance", "published": True, "published_at": cutoff})
+                                            "provider": "yfinance", "published": True, "published_at": cutoff,
+                                            "status": "succeeded", "active": False})
             days = [date(2025, 9, 16) + timedelta(days=offset) for offset in range(366)]
             if index % 3 == 0:
                 days.insert(0, date(2010, 1, 1))
@@ -62,8 +63,8 @@ def test_return_membership_cold_warm_and_combined_history(monkeypatch):
                 assert len(page["items"]) == min(7, expected - 7)
                 assert all(item["historical_year_return"] >= 0 and item["annualized_mean_log_return"] >= 0 for item in page["items"])
                 assert histories.call_count == (candidates if cache == "cold" else 0)
-                assert refresh.call_count == candidates
-                assert dates.call_count == len(page["items"])
+                assert refresh.call_count == (candidates if cache == "cold" else 0)
+                assert dates.call_count == 0  # Saved coverage comes from the same calculated rows.
                 if previous is not None:
                     assert page == previous
                 previous = page

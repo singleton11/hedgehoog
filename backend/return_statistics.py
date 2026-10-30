@@ -1,17 +1,18 @@
 """Derived return analytics; never alter or reject saved provider evidence."""
 
 from datetime import date, timedelta
+import hashlib
 import math
 from statistics import fmean, variance
 
-from bson import Decimal128
+from bson import BSON, Decimal128
 
 import market_data as md
 from split_adjustments import BASIS, adjusted_rows, load_split_snapshot
 
 from quote_fill import currency, fill_adjusted_rows, missing, read_policy
 
-MODEL_VERSION = 11
+MODEL_VERSION = 12
 TRADING_DAYS = 252
 MIN_RETURNS = 60
 YEAR_START_MAX_GAP_DAYS = 7
@@ -275,6 +276,97 @@ def instrument_return_runs(db, isin, *, as_of, policy=None):
         return calculate_daily_statistics(adjusted, include_return_runs=True)["return_runs"]
 
 
+def _statistics_signature(isin, state, generation, count, splits, cutoff, policy):
+    return {"version": MODEL_VERSION, "instrument_id": isin, "listing": state.get("listing"),
+            "observations": count, "quote_fill_policy": policy,
+            "currency_override": state.get("price_currency_override"), "generation": generation,
+            "splits": hashlib.sha256(BSON.encode({key: splits.get(key) for key in
+                                                  ("_id", "error", "events", "date_from", "date_to")})).hexdigest() if splits else None,
+            "day": cutoff.date().isoformat()}
+
+
+def acquired_statistics(db, observations, cutoff):
+    """Validate compact caches in bounded batches under the inventory's reader leases.
+
+    Legacy quote identities/counts are checked, including duplicate-date revisions;
+    only missing or invalid caches take the existing leased calculation path.
+    Writer summaries avoid quote scans for complete immutable generations.
+    Published Yahoo writes are insert-only; corrections publish a new generation.
+    Direct in-place database edits require an explicit forced refresh.
+    """
+    result = {}
+    if not observations:
+        return result
+    policy = read_policy(db)
+    identity = lambda row: {**md.listing_filter(row["_id"], row["listing"]), "provider": "yfinance", "job_id": row["job_id"]}
+    command = lambda batch: {"aggregate": "quotes", "pipeline": [{"$match": {"$or": [identity(row) for row in batch]}}], "cursor": {}}
+    for batch in md._history_batches(observations, command):
+        ids = [row["_id"] for row in batch]
+        states = {row["_id"]: row for row in db.instrument_state.find(
+            {"_id": {"$in": ids}}, {"listing": 1, "price_currency_override": 1})}
+        caches = {row["_id"]: row for row in db.instrument_statistics.find(
+            {"_id": {"$in": ids}}, {"signature": 1, "statistics": 1})}
+        metadata = {}
+        for row in batch:
+            summary = md.published_history_summary(row, cutoff)
+            if summary is not None:
+                metadata[row["_id"]] = summary
+        missing = [identity(row) for row in batch if row["_id"] not in metadata]
+        # Pre-summary generations and earlier cutoffs retain exact validation,
+        # including duplicate-date observations. Never assume a TTL proves freshness.
+        def quote_metadata(identities, *, bounded=False):
+            match = {"$or": identities}
+            if bounded:
+                match["date"] = {"$lte": cutoff.date().isoformat()}
+            return {row["_id"]: row for row in db.quotes.aggregate([
+                {"$match": match},
+                {"$group": {"_id": {"instrument": "$instrument_id", "date": "$date"}, "observations": {"$sum": 1}}},
+                {"$group": {"_id": "$_id.instrument", "observations": {"$sum": "$observations"},
+                            "quote_count": {"$sum": 1}, "first_date": {"$min": "$_id.date"}, "last_date": {"$max": "$_id.date"}}},
+            ])}
+
+        if missing:
+            full_metadata = quote_metadata(missing)
+            metadata.update(full_metadata)
+            future = [identity(row) for row in batch if row["_id"] in full_metadata
+                      and full_metadata[row["_id"]]["last_date"] > cutoff.date().isoformat()]
+            if future:
+                for row in batch:
+                    if row["_id"] in full_metadata and full_metadata[row["_id"]]["last_date"] > cutoff.date().isoformat():
+                        metadata.pop(row["_id"], None)
+                metadata.update(quote_metadata(future, bounded=True))
+            # Lazily upgrade pre-summary completed generations. Never attach a
+            # partial cutoff or duplicate-date summary, nor one to a running job.
+            for row in batch:
+                summary = full_metadata.get(row["_id"])
+                if summary and summary["observations"] == summary["quote_count"]:
+                    db.acquisition_jobs.update_one({"_id": row["job_id"], "instrument_id": row["_id"],
+                                                    "provider": "yfinance", "published": True, "listing": row["listing"],
+                                                    "status": "succeeded", "active": False, "history_summary": {"$exists": False}},
+                                                   {"$set": {"history_summary": {
+                                                       "version": 1, "instrument_id": row["_id"], "listing": row["listing"],
+                                                       "generation": row["job_id"],
+                                                       **{key: value for key, value in summary.items() if key != "_id"}}}})
+        splits = {row["instrument_id"]: row for row in db.split_snapshots.find(
+            {"$or": [identity(row) for row in batch]},
+            {"instrument_id": 1, "error": 1, "events": 1, "date_from": 1, "date_to": 1})}
+        for row in batch:
+            isin = row["_id"]
+            state, cached = states.get(isin, {}), caches.get(isin, {})
+            summary = metadata.get(isin, {"observations": 0, "quote_count": 0, "first_date": None, "last_date": None})
+            signature = _statistics_signature(isin, state, row["job_id"], summary["observations"], splits.get(isin), cutoff, policy)
+            coverage = {key: summary[key] for key in ("quote_count", "first_date", "last_date")}
+            statistics = cached.get("statistics")
+            valid_statistics = (isinstance(statistics, dict) and statistics.get("saved_history") == coverage
+                                and all(key in statistics for key in ("historical_year_return", "annualized_mean_log_return")))
+            if state.get("listing") == row["listing"] and cached.get("signature") == signature and valid_statistics:
+                result[isin] = ({**statistics, "as_of": cutoff}, state)
+            else:
+                options = {"force": True} if cached.get("signature") == signature and not valid_statistics else {}
+                result[isin] = refresh_statistics(db, isin, generation=row["job_id"], as_of=cutoff, **options)
+    return result
+
+
 def refresh_statistics(db, isin, *, force=False, generation=None, as_of=None, point_in_time=False, policy=None):
     """Lease the current vintage across cache validation, quotes, actions and writes."""
     from market_data_retention import reader
@@ -298,17 +390,16 @@ def _refresh_statistics(db, isin, state, *, force=False, generation=None, as_of=
     splits = load_split_snapshot(db, isin, listing, cutoff, generation) if generation is not None else None
     publication = md.published_history(db, isin, listing, generation=generation)
     policy = policy or read_policy(db)
-    signature = {"version": MODEL_VERSION, "listing": listing, "observations": count,
-                 "quote_fill_policy": policy, "currency_override": state.get("price_currency_override"),
-                 "generation": publication["_id"] if publication else None,
-                 "splits": {"id": splits["_id"], "error": splits.get("error")} if splits else None,
-                 "day": cutoff.date().isoformat()}
+    signature = _statistics_signature(isin, state, publication["_id"] if publication else None,
+                                      count, splits, cutoff, policy)
     cached = db.instrument_statistics.find_one({"_id": isin}) if not historical else None
     if not force and cached and cached.get("signature") == signature:
         statistics = dict(cached["statistics"])
         statistics["as_of"] = cutoff
         return statistics, state
     rows = _latest_rows(db, listing, query)
+    saved_history = {"quote_count": len(rows), "first_date": rows[0]["date"] if rows else None,
+                     "last_date": rows[-1]["date"] if rows else None}
     currencies = set()
     unknown_currency = False
     for row in rows:
@@ -324,7 +415,7 @@ def _refresh_statistics(db, isin, state, *, force=False, generation=None, as_of=
         "quote_fill_policy": policy, "filled_quote_count": sum(bool(row.get("filled_fields")) for row in rows),
         **calculate_statistics(rows, carry_trailing=policy["method"] == "smooth",
                                currency_override=state.get("price_currency_override")),
-        "computed_at": cutoff, "as_of": cutoff,
+        "computed_at": cutoff, "as_of": cutoff, "saved_history": saved_history,
         "provider_currencies": sorted(currencies), "unknown_currency": unknown_currency,
     }
     source_date = statistics["historical_year_carried_from_date"]
@@ -356,6 +447,7 @@ def _instrument_statistics(db, isin, generation=None, *, as_of=None, point_in_ti
     estimates, state = refresh_statistics(db, isin, generation=generation, as_of=as_of,
                                           point_in_time=point_in_time, policy=policy)
     estimates = estimates.copy()
+    estimates.pop("saved_history", None)
     currencies = set(estimates.pop("provider_currencies"))
     unknown = estimates.pop("unknown_currency")
     override = state.get("price_currency_override")
