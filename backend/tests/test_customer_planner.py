@@ -72,6 +72,31 @@ def planner(api, db):
     return (client, *target(client))
 
 
+@pytest.mark.parametrize("invalidate", ["superseded", "lease_lost"])
+def test_customer_preview_rejects_history_change_without_saving_preview(planner, db, monkeypatch, invalidate):
+    client, _, _, url = planner
+    strategy = gs.STRATEGIES[STRATEGY]
+    original = strategy.simulate
+
+    def changed_history(*args, **kwargs):
+        assert db.acquisition_jobs.find_one({"_id": "seed-history"})["reader_leases"]
+        result = original(*args, **kwargs)
+        if invalidate == "superseded":
+            previous = db.acquisition_jobs.find_one({"_id": "seed-history"})
+            db.acquisition_jobs.insert_one({**previous, "_id": "successor",
+                                            "requested_at": NOW + timedelta(seconds=1), "reader_leases": {}})
+        else:
+            db.acquisition_jobs.update_one({"_id": "seed-history"}, {"$set": {"reader_leases": {}}})
+        return result
+
+    monkeypatch.setitem(gs.STRATEGIES, STRATEGY, replace(strategy, simulate=changed_history))
+    response = client.post(url + "/simulate", json=selection())
+    assert response.status_code == 409, response.text
+    assert "Refresh" in response.json()["detail"]
+    assert db.planner_simulations.count_documents({}) == 0
+    assert not db.acquisition_jobs.find_one({"_id": "seed-history"}).get("reader_leases")
+
+
 def test_creation_normalizes_and_reads_only_public_fields_with_startup_indexes(api, db):
     client, publish = api
     login(client)
@@ -383,7 +408,10 @@ def test_generic_strategy_dispatch_snapshots_normalized_typed_parameters(planner
     assert preview["inputs"]["strategy"] == normalized
     assert preview["inputs"]["starting_capital_eur"] == "0.00"
     assert preview["result"] == {**expected, "data_as_of": NOW.isoformat().replace("+00:00", "Z"),
-                                  "strategy": normalized}
+                                  "strategy": normalized, "history_contract": "latest_complete_yahoo",
+                                  "warnings": ["Uses the latest complete Yahoo published history with quote dates bounded by as_of, "
+                                               "not observations known at that timestamp. Later provider corrections and corporate-action "
+                                               "adjustments can revise historical prices; this is not strict point-in-time data."]}
     assert preview["strategy_definition"] == strategy.public_definition()
     assert save(client, url, preview)["result"] == preview["result"]
     execute.assert_called_once()
@@ -548,7 +576,7 @@ def test_recalculate_checks_fresh_eligibility_and_failures_leave_history_unchang
         clock[0] += timedelta(days=3650)
     forbidden = Mock(side_effect=AssertionError("Invalid calculation must not run solver or provider"))
     monkeypatch.setattr(gs, "simulate_buy_and_hold", forbidden)
-    monkeypatch.setattr(md, "MarketstackClient", forbidden)
+    monkeypatch.setattr(md, "provider_client", forbidden)
     assert client.post(url + "/simulate", json=selection()).status_code == 422
     assert list(db.planner_simulations.find()) == original
     assert client.get(url + f"/simulations/{first['id']}").json() == first

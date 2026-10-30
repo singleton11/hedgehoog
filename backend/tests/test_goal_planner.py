@@ -34,15 +34,27 @@ def history(count=81, currency="EUR"):
 
 def seed_history(db, rows=None):
     rows = rows if rows is not None else history()
+    generation = "seed-history"
     db.instrument_state.update_one({"_id": ISIN}, {"$set": {"listing": LISTING}}, upsert=True)
-    for index, row in enumerate(rows):
-        db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "date": row["date"][:10], "data": row,
-                              "job_id": f"seed-{index}", "collected_at": NOW, "collection_date": NOW.date().isoformat()})
+    db.acquisition_jobs.update_one({"_id": generation}, {"$set": {
+        "instrument_id": ISIN, "listing": LISTING, "provider": "yfinance", "published": True,
+        "requested_at": NOW, "published_at": NOW, "status": "succeeded", "active": False,
+    }}, upsert=True)
+    db.split_snapshots.update_one({"_id": generation}, {"$set": {
+        "instrument_id": ISIN, **LISTING, "job_id": generation, "provider": "yfinance",
+        "collected_at": NOW, "date_from": "2010-05-19", "date_to": NOW.date().isoformat(), "events": [],
+    }}, upsert=True)
+    for row in rows:
+        db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "date": row["date"][:10],
+                              "data": {**row, "price_basis": "provider_split_adjusted"},
+                              "provider": "yfinance", "job_id": generation, "collected_at": NOW,
+                              "collection_date": NOW.date().isoformat()})
 
 
 def seed_profile(db):
     db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "data": {"name": "Synthetic ETF"},
-                               "job_id": "seed-profile", "collected_at": NOW})
+                               "provider": "yfinance", "published": True,
+                               "job_id": "seed-history", "collected_at": NOW})
 
 
 def goal_inputs(**changes):
@@ -193,13 +205,13 @@ def test_successful_download_persists_stats_and_updates_recompute(db, config, cl
     rows = history()
     result, source = collect(db, config, Provider([page(rows)]))
     assert result["status"] == "succeeded"
-    assert len(source.calls) == 3
+    assert len(source.calls) == 2
     stored = db.instrument_statistics.find_one({"_id": ISIN})
     assert stored["statistics"]["return_count"] == len(rows) - 1
     before = instrument_statistics(db, ISIN)
     assert before["eligible"] and before["price_currency"] == "EUR"  # Fund is USD.
     clock[0] += timedelta(hours=1)
-    result, source = collect(db, config, Provider([page([{**bar("2026-09-16", "100"), "price_currency": "EUR"}])]))
+    result, source = collect(db, config, Provider([page([*rows, {**bar("2026-09-16", "100"), "price_currency": "EUR"}])]))
     assert result["status"] == "succeeded"
     after = instrument_statistics(db, ISIN)
     assert after["return_count"] == before["return_count"] + 1
@@ -219,7 +231,7 @@ def test_statistics_db_failure_resumes_without_provider_calls(db, config, clock,
     clock[0] += timedelta(seconds=md.LEASE_SECONDS + 1)
     result = md.run_acquisition(db, config, job["id"], source.factory)
     assert result["status"] == "succeeded"
-    assert len(source.calls) == 3
+    assert len(source.calls) == 2
     assert instrument_statistics(db, ISIN)["return_count"] == 80
 
 
@@ -232,13 +244,21 @@ def test_lazy_stats_latest_observation_listing_and_cache_invalidation(db, clock)
     clock[0] += timedelta(hours=1)
     assert instrument_statistics(db, ISIN)["computed_at"] == first["computed_at"]
     original = original_quotes[-1]
-    revised = {**original, "_id": "revision", "job_id": "revision", "collected_at": clock[0],
-               "data": {**original["data"], "close": "200", "adj_close": "200"}}
-    db.quotes.insert_one(revised)
-    # These must not contaminate the selected listing/history/knowledge time.
+    generation = "revision"
+    for observation in original_quotes:
+        db.quotes.insert_one({**observation, "_id": "revision-" + observation["date"],
+                              "job_id": generation, "collected_at": clock[0],
+                              "data": {**observation["data"], **({"close": "200", "adj_close": "200"}
+                                       if observation["date"] == original["date"] else {})}})
+    revised = db.quotes.find_one({"job_id": generation, "date": original["date"]})
+    previous = db.acquisition_jobs.find_one({"_id": "seed-history"})
+    db.acquisition_jobs.insert_one({**previous, "_id": generation, "requested_at": clock[0], "published_at": clock[0]})
+    snapshot = db.split_snapshots.find_one({"_id": "seed-history"})
+    db.split_snapshots.insert_one({**snapshot, "_id": generation, "job_id": generation})
+    # Unpublished observations and future quote dates cannot contaminate the snapshot.
     db.quotes.insert_one({**revised, "_id": "wrong-listing", "symbol": "OTHER", "date": "2026-09-16"})
     db.quotes.insert_one({**revised, "_id": "future-date", "date": "2099-01-01"})
-    db.quotes.insert_one({**revised, "_id": "future-knowledge", "collected_at": clock[0] + timedelta(days=1)})
+    db.quotes.insert_one({**revised, "_id": "unpublished", "job_id": "unpublished", "collected_at": clock[0] + timedelta(days=1)})
     second = instrument_statistics(db, ISIN)
     assert second["quote_count"] == 81
     assert second["computed_at"] > first["computed_at"]
@@ -300,7 +320,7 @@ def test_currency_edits_and_active_jobs_revalidate_cached_estimates(db, config):
 
 
 def test_mixed_currency_and_short_or_empty_history_are_ineligible(db):
-    assert "Download" in instrument_statistics(db, ISIN)["ineligible_reason"]
+    assert "Request Yahoo acquisition" in instrument_statistics(db, ISIN)["ineligible_reason"]
     rows = history(count=10)
     seed_history(db, rows)
     assert "60" in instrument_statistics(db, ISIN)["ineligible_reason"]
@@ -546,7 +566,7 @@ def test_api_statistics_and_simulation_auth_origin_and_no_provider_calls(api, db
     seed_history(db)
     seed_profile(db)
     provider = Mock(side_effect=AssertionError("No provider call"))
-    monkeypatch.setattr(md, "MarketstackClient", provider)
+    monkeypatch.setattr(md, "provider_client", provider)
     url = f"/instruments/{ISIN}/statistics"
     assert client.get(url).status_code == 401
     assert client.post("/goals/simulate", json=request_body()).status_code == 401
@@ -573,7 +593,8 @@ def test_api_statistics_and_simulation_auth_origin_and_no_provider_calls(api, db
     assert client.get("/instruments/US0378331005/statistics").status_code == 404
     assert client.get("/instruments/invalid/statistics").status_code == 422
     assert md.budget_status(db, config)["used"] == 0
-    assert db.acquisition_jobs.count_documents({}) == 0
+    assert db.acquisition_jobs.count_documents({}) == 1
+    assert db.acquisition_jobs.find_one({"_id": "seed-history"})["status"] == "succeeded"
     provider.assert_not_called()
     publish.assert_not_called()
 
@@ -611,7 +632,7 @@ def test_api_rejects_insufficient_or_non_eur_history(api, db, rows):
 def test_strategy_catalogue_auth_field_metadata_and_no_provider_calls(api, db, config, monkeypatch):
     client, publish = api
     forbidden = Mock(side_effect=AssertionError("Catalogue must not acquire or estimate data"))
-    monkeypatch.setattr(md, "MarketstackClient", forbidden)
+    monkeypatch.setattr(md, "provider_client", forbidden)
     monkeypatch.setattr(gs, "instrument_statistics", forbidden)
     monkeypatch.setattr(db.instruments, "find_one", forbidden)
     assert client.get("/goals/strategies").status_code == 401
@@ -708,11 +729,11 @@ def test_strategy_requires_its_own_saved_profile_even_when_quotes_are_eligible(a
     forbidden = Mock(side_effect=AssertionError("Acquired gate must precede statistics and simulation"))
     monkeypatch.setattr(gs, "instrument_statistics", forbidden)
     monkeypatch.setattr(gs, "simulate_buy_and_hold", forbidden)
-    monkeypatch.setattr(md, "MarketstackClient", forbidden)
+    monkeypatch.setattr(md, "provider_client", forbidden)
     login(client)
     response = client.post("/goals/simulate", json=request_body())
     assert response.status_code == 422
-    assert response.json()["detail"] == "Choose an instrument from the acquired universe. Acquire its data first."
+    assert response.json()["detail"] == "Choose an instrument with published Yahoo history. Request Yahoo acquisition first."
     forbidden.assert_not_called()
     publish.assert_not_called()
 
@@ -729,7 +750,7 @@ def test_simulation_revalidates_cached_eligibility_after_operational_changes(api
     cached = db.instrument_statistics.find_one({"_id": ISIN})
     provider = Mock(side_effect=AssertionError("Simulation must not call a provider"))
     solver = Mock(side_effect=AssertionError("Ineligible history must not reach the solver"))
-    monkeypatch.setattr(md, "MarketstackClient", provider)
+    monkeypatch.setattr(md, "provider_client", provider)
     original_solver = gs.simulate_buy_and_hold
     monkeypatch.setattr(gs, "simulate_buy_and_hold", solver)
     if change == "active-job":
@@ -774,13 +795,19 @@ def test_acquired_instrument_type_enforces_membership_for_every_strategy_paramet
     )
     monkeypatch.setitem(gs.STRATEGIES, definition.id, definition)
     seed_profile(db)
+    seed_history(db)
     second = "IE00B4L5Y983"
     body = request_body(strategy={"id": definition.id, "parameters": {"primary": ISIN, "secondary": second}})
     client, _ = api
     login(client)
     assert client.post("/goals/simulate", json=body).status_code == 422
     execute.assert_not_called()
-    db.instruments.insert_one({"instrument_id": second, "job_id": "second-profile"})
+    db.instrument_state.insert_one({"_id": second, "listing": LISTING})
+    db.instruments.insert_one({"instrument_id": second, **LISTING, "provider": "yfinance",
+                               "published": True, "job_id": "second-profile"})
+    db.acquisition_jobs.insert_one({"_id": "second-profile", "instrument_id": second,
+                                    "listing": LISTING, "provider": "yfinance", "published": True,
+                                    "requested_at": NOW, "published_at": NOW, "active": False, "status": "succeeded"})
     response = client.post("/goals/simulate", json=body)
     assert response.status_code == 200
     assert response.json()["strategy"] == body["strategy"]
@@ -839,7 +866,10 @@ def test_registry_dispatches_another_typed_strategy_without_buy_and_hold_assumpt
     assert response.status_code == 200, response.text
     assert response.json() == {**output, "data_as_of": NOW.isoformat().replace("+00:00", "Z"), "strategy": {
         "id": definition.id, "parameters": {"periods": 3, "settlement_date": NOW.date().isoformat()},
-    }}
+    }, "history_contract": "latest_complete_yahoo",
+        "warnings": ["Uses the latest complete Yahoo published history with quote dates bounded by as_of, "
+                     "not observations known at that timestamp. Later provider corrections and corporate-action "
+                     "adjustments can revise historical prices; this is not strict point-in-time data."]}
     assert len(calls) == 1
     forbidden.assert_not_called()
     publish.assert_not_called()

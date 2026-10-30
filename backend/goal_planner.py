@@ -79,15 +79,11 @@ def saved_calibration(strategy_id: str, request: Request, user: CurrentUser, res
     return {"result": latest_result(request.app.state.database, user["_id"], strategy_id)}
 
 
-@router.post("/simulate")
-def simulate(body: GoalRequest, request: Request, user: CurrentUser):
+def simulate_with_history(strategy, parameters, body, db, cutoff):
+    """Apply the same latest-history protection and disclosure to every preview."""
     from contextlib import ExitStack
     from market_data_retention import reader
 
-    body, cutoff = simulation_cutoff(body)
-    strategy = get_strategy(body.strategy.id)
-    db = request.app.state.database
-    parameters = strategy.resolve_parameters(body.strategy.parameters, db)
     # Keep statistics and bootstrap return runs on the same still-current vintage.
     with ExitStack() as readers:
         for key, field in parameters.__class__.model_fields.items():
@@ -103,3 +99,12 @@ def simulate(body: GoalRequest, request: Request, user: CurrentUser):
         return {**result, "data_as_of": md.public(cutoff), "history_contract": "latest_complete_yahoo",
                 "warnings": [*result.get("warnings", []), warning],
                 "strategy": body.strategy.model_dump(mode="json")}
+
+
+@router.post("/simulate")
+def simulate(body: GoalRequest, request: Request, user: CurrentUser):
+    body, cutoff = simulation_cutoff(body)
+    strategy = get_strategy(body.strategy.id)
+    db = request.app.state.database
+    parameters = strategy.resolve_parameters(body.strategy.parameters, db)
+    return simulate_with_history(strategy, parameters, body, db, cutoff)

@@ -39,6 +39,26 @@ function server(conflict) {
 }
 
 describe('explicit latest-snapshot refresh', () => {
+  it('rejects malformed initial details without reading an unpinned snapshot, then retries explicitly', async () => {
+    server(null);
+    const original = request.getMockImplementation();
+    let malformed = true;
+    request.mockImplementation(async (path, options) => {
+      if (path === `/instruments/${ISIN}` && malformed) return { ...detail(FIRST), instrument_id: 'OTHER' };
+      return original(path, options);
+    });
+    render(<InstrumentDetail isin={ISIN} />); await flush();
+    expect(screen.getByRole('alert')).toHaveTextContent('Instrument details returned an unexpected response.');
+    expect(request.mock.calls.map(([path]) => path)).toEqual([`/instruments/${ISIN}`]);
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    malformed = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry details' })); await flush();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Provider split-adjusted OHLC/ })).toBeInTheDocument();
+    expect(request.mock.calls.filter(([path]) => path.includes('/quotes?'))[0][0]).toContain(`generation=${FIRST}`);
+    expect(request.mock.calls.every(([, options]) => !options.method || options.method === 'GET')).toBe(true);
+  });
+
   it('requires explicit refresh when the first publication races an empty detail', async () => {
     const state = server(null);
     const original = request.getMockImplementation();

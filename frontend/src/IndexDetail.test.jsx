@@ -107,6 +107,40 @@ it('requires an explicit latest-snapshot refresh after a generation 409 and relo
   expect(s.fetch.mock.calls.every(([, options]) => !options.method || options.method === 'GET')).toBe(true);
 });
 
+it.each([
+  { instrument_id: OTHER },
+  { name: null },
+  { summary: { quote_count: -1 } },
+  { summary: { quote_count: 1.5 } },
+])('rejects malformed index details before loading chart pages: %j', async (invalid) => {
+  const s = server(); s.detail = record(invalid);
+  await open();
+  expect(screen.getByRole('alert')).toHaveTextContent('The backend returned unexpected index details. Please retry.');
+  expect(s.quoteCalls()).toHaveLength(0);
+  expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  s.detail = record();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry details' })); await flush();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.getByRole('img', { name: /Index OHLC/ })).toBeInTheDocument();
+});
+
+it('retries a transient chart failure with the same pinned snapshot and no detail refresh or download', async () => {
+  const s = server(); s.chart = () => response(503, { detail: 'Saved quotes unavailable' });
+  await open();
+  expect(screen.getByRole('alert')).toHaveTextContent('Saved quotes unavailable');
+  expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Refresh latest snapshot' })).not.toBeInTheDocument();
+  const failedURL = s.quoteCalls()[0][0];
+  s.chart = null;
+  fireEvent.click(screen.getByRole('button', { name: 'Retry chart' })); await flush();
+  expect(s.quoteCalls()).toHaveLength(2);
+  expect(s.quoteCalls()[1][0]).toBe(failedURL);
+  expect(s.fetch.mock.calls.filter(([url]) => url === `/api/indices/${ID}`)).toHaveLength(1);
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.getByRole('img', { name: /Index OHLC/ })).toBeInTheDocument();
+  expect(s.fetch.mock.calls.every(([, options]) => !options.method || options.method === 'GET')).toBe(true);
+});
+
 it('handles missing details with a retry and rejects malformed IDs without fetching them', async () => {
   const s = server(); s.read = () => response(404, { detail: 'Index not found in the index catalogue' });
   await open();

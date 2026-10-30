@@ -448,9 +448,9 @@ def test_price_reviewability_does_not_bypass_hard_blockers(tracker, db, monkeypa
         def unsupported(*args):
             return {**adapter(*args), "supported_actions": ["deposit", "sell"]}
         monkeypatch.setitem(STRATEGIES, strategy.id, replace(strategy, recommendation_targets=unsupported))
-    else:
-        db.instrument_state.delete_one({"_id": ISIN})
     quote(db, "2026-09-17", "1000000000000")
+    if mode == "listing":
+        db.instrument_state.delete_one({"_id": ISIN})
     snapshot = get(client, url)
     assert snapshot["status"] == "blocked"
     assert all(not a["eligible"] and not a["reviewable"] for a in snapshot["actions"])
@@ -1044,7 +1044,7 @@ def test_fee_adjusted_preview_mismatch_reconciles_concurrent_receipt(tracker, db
     else:
         assert response.status_code == 409, response.text
         expected = ("Operation ID was already used with different reviewed inputs." if receipt == "changed-payload"
-                    else "Preview changed. Review again before confirming.")
+                    else "This history generation is unavailable or superseded. Refresh instrument details and retry with the latest Yahoo history.")
         assert response.json()["detail"] == expected
     assert db.portfolios.find_one({"_id": metadata["id"]}) == after_winner
     if receipt == "absent":

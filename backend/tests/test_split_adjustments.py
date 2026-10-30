@@ -5,16 +5,17 @@ import math
 from statistics import variance
 from unittest.mock import Mock
 
-import httpx
 import pytest
 from pymongo.errors import ConnectionFailure
 
 import market_data as md
-from marketstack import MarketstackClient, MarketstackError
+from market_provider import MarketDataError
+from yahoo_finance import YahooFinanceClient
 from return_statistics import calculate_statistics, instrument_statistics
-from split_adjustments import BASIS, adjusted_rows, load_split_snapshot
+from split_adjustments import BASIS, adjusted_rows, load_split_snapshot, split_events
 from test_goal_planner import history, request_body, login
-from test_market_data import ISIN, LISTING, NOW, Provider, api, bar, clock, collect, config, db, enqueue, page
+from test_market_data import ISIN, LISTING, NOW, Provider, api, bar, clock, collect, config, db, enqueue, page, seed_yahoo
+from test_yahoo_finance import END, START, SYMBOL, no_live_http, transport
 
 
 def event(day="2026-09-15", factor="25", **changes):
@@ -26,20 +27,19 @@ def snapshot(events, **changes):
             "events": [{"date": day, "factor": factor} for day, factor in events], **changes}
 
 
-def test_client_split_endpoint_exact_values_and_quota():
-    requests, reserved = [], Mock()
-
-    def respond(request):
-        requests.append(request)
-        return httpx.Response(200, content=b'{"data":[{"symbol":"SPYI.F","date":"2026-02-23","split_factor":25.000000000000000001}]}')
-
-    with MarketstackClient("secret", reserved, transport=httpx.MockTransport(respond)) as client:
-        result = client.splits_page("SPYI.F", "2011-01-01", "2026-09-16", offset=1000)
+def test_client_split_chart_exact_values_and_per_http_reservation(transport):
+    state, calls = transport
+    reserved = Mock()
+    event = next(iter(state["history"]["chart"]["result"][0]["events"]["splits"].values()))
+    event.update(numerator="25.000000000000000001", denominator=1)
+    with YahooFinanceClient(before_request=reserved) as client:
+        result = client.splits_page(SYMBOL, START, END)
+        assert client.splits_page(SYMBOL, START, END) == result
     assert result["data"][0]["split_factor"] == "25.000000000000000001"
-    assert requests[0].url.path == "/v2/splits"
-    assert dict(requests[0].url.params) == {"access_key": "secret", "symbols": "SPYI.F", "date_from": "2011-01-01",
-        "date_to": "2026-09-16", "limit": "1000", "sort": "ASC", "offset": "1000"}
-    reserved.assert_called_once()
+    assert len(calls) == reserved.call_count == 4
+    assert "/chart/" in calls[-1][1]
+    assert calls[-1][2]["params"]["events"] == "div,splits,capitalGains"
+    assert not any("/splits" in call[1] for call in calls)
 
 
 @pytest.mark.parametrize("args", [("", "2020-01-01", "2026-01-01", 0),
@@ -47,7 +47,7 @@ def test_client_split_endpoint_exact_values_and_quota():
     ("SPYI.F", "2020-01-01", "2026-01-01", -1)])
 def test_client_rejects_bad_requests_without_quota(args):
     reserved = Mock()
-    with MarketstackClient("secret", reserved) as client, pytest.raises(MarketstackError):
+    with YahooFinanceClient(before_request=reserved) as client, pytest.raises(MarketDataError):
         client.splits_page(*args)
     reserved.assert_not_called()
 
@@ -123,15 +123,17 @@ def test_invalid_raw_close_breaks_corrected_chain_without_adj_fallback(invalid):
 
 
 def test_split_pagination_duplicates_and_raw_quotes_unchanged(db, config):
-    rows = [bar("2026-09-14", "250"), bar("2026-09-15", "10"), bar("2026-09-16", "10")]
-    splits = [page([event()], total=2), page([event(factor="25.0")], total=2, offset=1)]
+    rows = [{**bar(day, "10"), "price_basis": "provider_split_adjusted"}
+            for day in ("2026-09-14", "2026-09-15", "2026-09-16")]
+    splits = [page([event(), event(factor="25.0")])]
     result, source = collect(db, config, Provider([page(rows)], splits=splits))
     assert result["status"] == "succeeded"
-    assert result["calls"] == md.budget_status(db, config)["used"] == 4
-    assert source.calls[-1][-1] == 1
+    assert result["calls"] == 2 and md.budget_status(db, config)["used"] == 0
+    assert [call[0] for call in source.calls] == ["tickerinfo", "eod"]
     assert db.split_snapshots.find_one()["events"] == [{"date": "2026-09-15", "factor": "25.0"}]
-    assert [quote["data"] for quote in db.quotes.find().sort("date", 1)] == rows
-    assert [item["close"] for item in md.read_quotes(db, ISIN)["items"]] == ["250", "10", "10"]
+    assert [quote["data"] for quote in db.quotes.find().sort("date", 1)] == [
+        {**row, "price_basis": "provider_split_adjusted"} for row in rows]
+    assert [item["close"] for item in md.read_quotes(db, ISIN)["items"]] == ["10", "10", "10"]
     assert all(BASIS not in item for item in md.read_quotes(db, ISIN)["items"])
     assert instrument_statistics(db, ISIN)["daily_volatility"] == 0
     saved = list(db.raw_split_pages.find())
@@ -143,24 +145,33 @@ def test_split_pagination_duplicates_and_raw_quotes_unchanged(db, config):
     [event(factor=None)], [event(symbol="SPYI")], [event(exchange="XLON")], [event(day="bad")],
     [event(day="2030-01-01")], [None], [event(), event(factor="2")]])
 def test_invalid_split_evidence_retained_but_never_used(db, config, split_rows):
-    result, _ = collect(db, config, Provider(splits=[page(split_rows)]))
-    assert result["status"] == "failed" and "Split history" in result["error"]
+    # Validate normalized action evidence independently of Yahoo's raw projection,
+    # which drops undated events and derives symbol identity from chart metadata.
+    raw = {"job_id": "invalid-actions", "data": page(split_rows)}
+    db.raw_split_pages.insert_one(deepcopy(raw))
+    with pytest.raises(MarketDataError, match="Split history"):
+        split_events([raw], LISTING, "2010-05-19", "2026-09-17")
     assert db.raw_split_pages.find_one()["data"]["data"] == split_rows
-    assert db.split_snapshots.count_documents({}) == 0
-    assert db.quotes.count_documents({}) == 1
-    assert db.instrument_state.find_one().get("last_complete_quote_date") is None
-    stats = instrument_statistics(db, ISIN)
-    assert stats["daily_mean_log_return"] is None
-    assert any("incomplete" in w for w in stats["warnings"])
+    assert db.split_snapshots.count_documents({}) == db.quotes.count_documents({}) == 0
+    assert db.instrument_state.find_one() is None
 
 
-@pytest.mark.parametrize("last", [MarketstackError("quota_exceeded", "Quota exhausted"),
-    page([], total=2, offset=1), {"data": []}, page([], total=1, offset=1)])
-def test_incomplete_split_pagination_does_not_publish_or_advance(db, config, last):
-    result, _ = collect(db, config, Provider(splits=[page([event()], total=2), last]))
+@pytest.mark.parametrize("damage", ["provider-error", "missing-chart", "missing-result", "wrong-symbol"])
+def test_incomplete_chart_action_evidence_does_not_publish_or_advance(db, config, damage):
+    raw = {"chart": {"result": [{"meta": {"symbol": LISTING["symbol"], "exchangeTimezoneName": "UTC"}}]}}
+    if damage == "provider-error":
+        raw["chart"] = {"error": {"code": "Too Many Requests"}, "result": None}
+    elif damage == "missing-chart":
+        raw = {}
+    elif damage == "missing-result":
+        raw["chart"].pop("result")
+    else:
+        raw["chart"]["result"][0]["meta"]["symbol"] = "OTHER"
+    result, _ = collect(db, config, Provider([{**page(), "raw": raw}]))
     assert result["status"] == "failed"
     assert db.split_snapshots.count_documents({}) == 0
-    assert db.instrument_state.find_one().get("last_complete_quote_date") is None
+    assert db.instrument_state.find_one() is None
+    assert md.read_quotes(db, ISIN)["items"] == []
 
 
 def test_saved_split_page_replays_after_database_disconnect(db, config, clock, monkeypatch):
@@ -178,41 +189,45 @@ def test_saved_split_page_replays_after_database_disconnect(db, config, clock, m
     monkeypatch.setattr(db.raw_split_pages, "find_one_and_update", real)
     clock[0] += timedelta(seconds=md.LEASE_SECONDS + 1)
     assert md.run_acquisition(db, config, job["id"], source.factory)["status"] == "succeeded"
-    assert len(source.calls) == 3  # No second split request.
+    assert len(source.calls) == 2  # Replay chart actions without any split HTTP request.
     assert db.raw_split_pages.count_documents({}) == db.split_snapshots.count_documents({}) == 1
 
 
-def test_no_new_quotes_update_reloads_all_splits_and_invalidates_cache(db, config, clock):
-    rows = [bar("2026-09-14", "250"), bar("2026-09-15", "10"), bar("2026-09-16", "10")]
-    collect(db, config, Provider([page(rows)], splits=[page([])]))
+def test_no_new_quote_dates_refreshes_close_vintage_and_actions_without_double_adjustment(db, config, clock):
+    rows = [{**bar(day, close), "price_basis": "provider_split_adjusted"} for day, close in
+            [("2026-09-14", "250"), ("2026-09-15", "10"), ("2026-09-16", "10")]]
+    first, _ = collect(db, config, Provider([page(rows)], splits=[page([])]))
     before = instrument_statistics(db, ISIN)
-    saved = list(db.quotes.find())
+    saved = list(db.quotes.find({"job_id": first["id"]}))
+    corrected = [{**row, "close": "10"} for row in rows]
     clock[0] += timedelta(minutes=1)
-    result, source = collect(db, config, Provider(splits=[page([event()])]))
+    result, source = collect(db, config, Provider([page(corrected)], splits=[page([event()])]))
     assert result["status"] == "succeeded"
-    assert [call[0] for call in source.calls] == ["tickerinfo", "splits"]
-    assert source.calls[-1][2:4] == ("2010-05-19", "2026-09-16")
+    assert [call[0] for call in source.calls] == ["tickerinfo", "eod"]
+    assert source.calls[-1][3:5] == ("2010-05-19", "2026-09-17")
     after = instrument_statistics(db, ISIN)
     assert before["daily_volatility"] > 0 and after["daily_volatility"] == 0
-    assert list(db.quotes.find()) == saved
-    # A later complete empty snapshot removes a provider-retracted action.
+    assert list(db.quotes.find({"job_id": first["id"]})) == saved
+    assert md.read_quotes(db, ISIN)["total"] == 3
+    # A later action retraction changes evidence, not already split-adjusted Close.
     clock[0] += timedelta(minutes=1)
-    collect(db, config, Provider(splits=[page([])]))
-    assert instrument_statistics(db, ISIN)["daily_volatility"] == before["daily_volatility"]
+    final, _ = collect(db, config, Provider([page(corrected)], splits=[page([])]))
+    assert final["status"] == "succeeded"
+    assert db.split_snapshots.find_one({"_id": final["id"]})["events"] == []
+    assert instrument_statistics(db, ISIN)["daily_volatility"] == 0
 
 
-def test_lazy_cache_invalidation_on_split_only_revision(db, config, clock):
-    rows = [bar("2025-09-16", "250"), bar("2026-09-14", "250"), bar("2026-09-15", "10"), bar("2026-09-16", "10")]
+def test_lazy_cache_invalidation_requires_coherent_close_and_action_revision(db, config, clock):
+    rows = [{**bar(day, close), "price_basis": "provider_split_adjusted"} for day, close in [
+        ("2025-09-16", "250"), ("2026-09-14", "250"), ("2026-09-15", "10"), ("2026-09-16", "10")]]
     result, source = collect(db, config, Provider([page(rows)]))
     before = instrument_statistics(db, ISIN)
-    original = db.split_snapshots.find_one()
+    original = list(db.quotes.find({"job_id": result["id"]}))
     clock[0] += timedelta(seconds=1)
-    # Publish a correction from a newer completed job without touching quotes
-    # or invoking the worker's force=True refresh.
-    revision = {**db.acquisition_jobs.find_one(), "_id": "correction", "requested_at": clock[0]}
-    db.acquisition_jobs.insert_one(revision)
-    db.split_snapshots.insert_one({**original, "_id": "correction", "collected_at": clock[0],
-        "requested_at": clock[0], "events": [{"date": "2026-09-15", "factor": "25"}]})
+    seed_yahoo(db, generation="correction", collected_at=clock[0],
+               rows=[{**row, "close": "10"} for row in rows])
+    db.split_snapshots.update_one({"_id": "correction"}, {"$set": {
+        "events": [{"date": "2026-09-15", "factor": "25"}]}})
     after = instrument_statistics(db, ISIN)
     assert before["daily_volatility"] > 0 and after["daily_volatility"] == 0
     assert before["historical_year_volatility"] > 0 and after["historical_year_volatility"] == 0
@@ -220,11 +235,14 @@ def test_lazy_cache_invalidation_on_split_only_revision(db, config, clock):
     assert before["historical_year_return"] == pytest.approx(-0.96)
     assert after["historical_year_return"] == 0
     assert before["quote_count"] == after["quote_count"] == 4
+    assert list(db.quotes.find({"job_id": result["id"]})) == original
+    with pytest.raises(md.DataError, match="superseded"):
+        instrument_statistics(db, ISIN, generation=result["id"])
     item = md.acquired_instruments(db)["items"][0]
     for key, value in after.items():
         if key.startswith("historical_year_"):
             assert item[key] == value
-    assert len(source.calls) == 3
+    assert len(source.calls) == 2
 
 
 def test_version_six_split_cache_refreshes_trailing_year_fields_without_provider_calls(db, config, monkeypatch):
@@ -240,7 +258,7 @@ def test_version_six_split_cache_refreshes_trailing_year_fields_without_provider
     original_quotes = list(db.quotes.find())
     used = md.budget_status(db, config)["used"]
     provider = Mock(side_effect=AssertionError("Cache refresh must use saved evidence only"))
-    monkeypatch.setattr(md, "MarketstackClient", provider)
+    monkeypatch.setattr(md, "provider_client", provider)
     assert instrument_statistics(db, ISIN) == expected
     assert db.instrument_statistics.find_one({"_id": ISIN})["signature"]["version"] > 6
     assert list(db.quotes.find()) == original_quotes
@@ -248,16 +266,19 @@ def test_version_six_split_cache_refreshes_trailing_year_fields_without_provider
     provider.assert_not_called()
 
 
-def test_failed_split_refresh_does_not_reuse_an_old_successful_snapshot(db, config, clock):
-    collect(db, config, Provider([page([bar("2026-09-14", "250"), bar("2026-09-15", "10")])],
-                                 splits=[page([event()])]))
-    assert instrument_statistics(db, ISIN)["daily_mean_log_return"] == 0
+def test_failed_action_refresh_preserves_preceding_complete_vintage(db, config, clock):
+    rows = [{**bar(day, "10"), "price_basis": "provider_split_adjusted"}
+            for day in ("2026-09-14", "2026-09-15")]
+    first, _ = collect(db, config, Provider([page(rows)], splits=[page([event()])]))
+    before = instrument_statistics(db, ISIN)
+    assert before["daily_mean_log_return"] == 0
     clock[0] += timedelta(seconds=1)
-    failed, _ = collect(db, config, Provider(splits=[MarketstackError("quota_exceeded", "Quota exhausted")]))
+    failed, _ = collect(db, config, Provider([MarketDataError("quota_exceeded", "Quota exhausted")]))
     assert failed["status"] == "failed" and db.split_snapshots.count_documents({}) == 1
     stats = instrument_statistics(db, ISIN)
-    assert stats["daily_mean_log_return"] is None
-    assert any("Split history download is incomplete" in w for w in stats["warnings"])
+    assert stats["generation"] == first["id"] and stats["daily_mean_log_return"] == 0
+    assert not any("incomplete" in warning for warning in stats["warnings"])
+    assert all(row["close"] == "10" for row in md.read_quotes(db, ISIN)["items"])
 
 
 def test_historical_split_snapshot_ignores_job_failure_after_cutoff(db, config, clock):
@@ -276,10 +297,12 @@ def test_historical_split_snapshot_ignores_job_failure_after_cutoff(db, config, 
     after = instrument_statistics(db, ISIN, as_of=cutoff, point_in_time=True)
     assert after == before
 
-    # A failure already known at the cutoff must still invalidate the older snapshot.
+    # Failed attempts never replace the preceding complete Yahoo vintage.
     failed_at_cutoff = instrument_statistics(db, ISIN, as_of=clock[0], point_in_time=True)
-    assert not failed_at_cutoff["eligible"]
-    assert any("Split history download is incomplete" in w for w in failed_at_cutoff["warnings"])
+    assert failed_at_cutoff["eligible"]
+    assert failed_at_cutoff["generation"] == before["generation"]
+    assert failed_at_cutoff["daily_mean_log_return"] == before["daily_mean_log_return"]
+    assert not any("Split history download is incomplete" in w for w in failed_at_cutoff["warnings"])
 
 
 def test_uncovered_snapshot_never_falls_back_to_adj_close():
@@ -292,15 +315,19 @@ def test_uncovered_snapshot_never_falls_back_to_adj_close():
 def test_snapshot_listing_and_knowledge_time_isolation(db, config, clock):
     collect(db, config, Provider(splits=[page([event()])]))
     assert load_split_snapshot(db, ISIN, LISTING, NOW)["events"]
-    assert load_split_snapshot(db, ISIN, LISTING, NOW - timedelta(seconds=1)) is None
-    assert load_split_snapshot(db, ISIN, {**LISTING, "exchange": "XLON"}, NOW) is None
+    assert load_split_snapshot(db, ISIN, LISTING, NOW - timedelta(seconds=1))["events"]
+    # Collection/publication time is not a strict historical-origin cutoff.
+    with pytest.raises(md.DataError, match="latest Yahoo listing changed") as error:
+        load_split_snapshot(db, ISIN, {**LISTING, "exchange": "XLON"}, NOW)
+    assert error.value.status == 409
 
 
 def test_monte_carlo_uses_corrected_estimates_from_explicit_acquisition(api, db, config):
     rows = history()
     for i, row in enumerate(rows):
         # Leave provider adj_close deliberately stale/inconsistent.
-        row.update(close="250" if i < 40 else "10", adj_close="250" if i < 40 else "10")
+        row.update(close="10", adj_close="250" if i < 40 else "999",
+                   price_basis="provider_split_adjusted")
     split = event(day=rows[40]["date"][:10])
     collect(db, config, Provider([page(rows)], splits=[page([split])]))
     client, _ = api
@@ -318,8 +345,9 @@ def test_backfill_still_downloads_splits_through_present(db, config, clock):
     job = enqueue(db, config, mode="backfill")
     source = Provider([page([bar("2026-09-14")])], splits=[page([event()])])
     assert md.run_acquisition(db, config, job["id"], source.factory)["status"] == "succeeded"
-    assert source.calls[1][4] == "2026-09-14"
-    assert source.calls[2][3] == "2026-09-16"
+    assert [call[0] for call in source.calls] == ["tickerinfo", "eod"]
+    assert source.calls[1][3:5] == ("2010-05-19", "2026-09-17")
+    assert db.split_snapshots.find_one({"_id": job["id"]})["date_to"] == "2026-09-17"
 
 
 @pytest.mark.parametrize("random", [False, True])
@@ -331,8 +359,9 @@ def test_calibration_training_and_cash_flows_use_split_series(db, config, random
     rows = rows_between(flat=True)
     for row in rows:
         # Both the training and outcome intervals cross this action.
-        row["close"] = "100" if row["date"] < "2024-02-01" else "4"
-        row["adj_close"] = row["close"]
+        row["close"] = "4"
+        row["price_basis"] = "provider_split_adjusted"
+        row["adj_close"] = "100" if row["date"] < "2024-02-01" else "999"
     collect(db, config, Provider([page(rows)], splits=[page([event("2024-02-01")])]))
     body = (RandomCalibrationInputs(mode="random", scenario_count=12, min_horizon_months=6,
                                    max_horizon_months=6, lookback_months=6, seed=42)
@@ -346,8 +375,9 @@ def test_calibration_training_and_cash_flows_use_split_series(db, config, random
         assert {**actual, "price_basis": "adj_close"} == reference
 
 
-def test_split_requests_share_job_limit(db, config):
-    config.marketstack_max_calls_per_job = 2
+def test_chart_actions_need_no_extra_request_under_current_job_limit(db, config):
+    config.market_data_max_calls_per_job = 2
     result, source = collect(db, config)
-    assert result["status"] == "failed" and "safety limit" in result["error"]
-    assert len(source.calls) == 2 and db.raw_split_pages.count_documents({}) == 0
+    assert result["status"] == "succeeded" and result["calls"] == len(source.calls) == 2
+    assert db.raw_split_pages.count_documents({}) == 1
+    assert db.marketstack_usage.count_documents({}) == 0

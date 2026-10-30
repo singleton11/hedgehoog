@@ -34,6 +34,8 @@ def full_receipt_ledger(tracker, db):
     db.instrument_state.update_one({"_id": ISIN}, {"$set": {"listing": listing}})
     db.instruments.update_many({"instrument_id": ISIN}, {"$set": listing})
     db.quotes.update_many({"instrument_id": ISIN}, {"$set": listing})
+    db.acquisition_jobs.update_many({"instrument_id": ISIN}, {"$set": {"listing": listing}})
+    db.split_snapshots.update_many({"instrument_id": ISIN}, {"$set": listing})
     db.etfs.update_many({"isin": ISIN}, {"$set": {"name": instrument["name"]}})
     assert rec.ledger.acquired_instrument(db, ISIN, rec.md.utcnow()) == instrument
     record(client, url, cash(amount="1000000000"))

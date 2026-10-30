@@ -23,19 +23,6 @@ def config():
 
 
 class Yahoo(Provider):
-    def eod_page(self, *args, **kwargs):
-        result = super().eod_page(*args, **kwargs)
-        splits = next(self.splits)
-        if isinstance(splits, Exception):
-            result["raw"] = {"chart": {"error": {"code": "Synthetic action failure"}}}
-        else:
-            events = {}
-            for index, event in enumerate(splits["data"]):
-                timestamp = int(datetime.fromisoformat(event["date"]).replace(tzinfo=timezone.utc).timestamp())
-                events[str(index)] = {"date": timestamp, "numerator": event["split_factor"], "denominator": "1"}
-            result["raw"] = {"chart": {"result": [{"meta": {"symbol": args[0], "exchangeTimezoneName": "UTC"}, "events": {"splits": events}}]}}
-        return result
-
     def factory(self, key, before_request):
         self.before_request = before_request
         return self

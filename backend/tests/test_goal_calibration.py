@@ -15,7 +15,7 @@ from goal_calibration import CalibrationInputs, RandomCalibrationInputs, calibra
 from goal_simulation import add_months
 from return_statistics import calculate_statistics
 from test_goal_planner import login, seed_history, seed_profile
-from test_market_data import ISIN, LISTING, NOW, api, clock, config, db
+from test_market_data import ISIN, LISTING, NOW, api, clock, config, db, seed_yahoo
 
 
 def rows_between(start=date(2022, 1, 3), end=date(2025, 12, 31), *, flat=False):
@@ -329,7 +329,7 @@ def test_api_auth_origin_saved_history_only_and_reproducible_seed(api, db, confi
     seed_history(db, rows_between())
     seed_profile(db)
     provider = Mock(side_effect=AssertionError("Calibration must never acquire or use full-history estimates"))
-    monkeypatch.setattr(md, "MarketstackClient", provider)
+    monkeypatch.setattr(md, "provider_client", provider)
     monkeypatch.setattr(gs, "instrument_statistics", provider)
     assert client.post("/goals/calibrate", json=body()).status_code == 401
     login(client)
@@ -350,7 +350,8 @@ def test_api_auth_origin_saved_history_only_and_reproducible_seed(api, db, confi
     assert list(db.quotes.find()) == quotes
     assert db.instrument_statistics.count_documents({}) == 0
     assert md.budget_status(db, config)["used"] == 0
-    assert db.acquisition_jobs.count_documents({}) == 0
+    assert db.acquisition_jobs.count_documents({}) == 1
+    assert db.acquisition_jobs.find_one({"_id": "seed-history"})["status"] == "succeeded"
     provider.assert_not_called()
     publish.assert_not_called()
 
@@ -394,7 +395,7 @@ def test_api_rechecks_acquired_membership_missing_history_and_active_acquisition
     client, _ = api
     login(client)
     seed_history(db, rows_between())
-    assert "acquired universe" in client.post("/goals/calibrate", json=body()).json()["detail"]
+    assert "published Yahoo history" in client.post("/goals/calibrate", json=body()).json()["detail"]
     seed_profile(db)
     db.acquisition_jobs.insert_one({"instrument_id": ISIN, "active": True, "status": "running", "heartbeat_at": NOW})
     assert "Wait" in client.post("/goals/calibrate", json=body()).json()["detail"]
@@ -403,35 +404,43 @@ def test_api_rechecks_acquired_membership_missing_history_and_active_acquisition
     assert client.post("/goals/calibrate", json=body()).status_code == 422
 
 
-def test_saved_snapshot_filters_listing_future_dates_collection_time_and_latest_revision(api, db, clock):
+def test_saved_snapshot_filters_unpublished_rows_and_uses_latest_complete_revision(api, db, clock):
     client, _ = api
     login(client)
     seed_history(db, rows_between())
     seed_profile(db)
     request = body(start_date="2023-01-01", end_date="2023-12-31")
     before = client.post("/goals/calibrate", json=request).json()
-    original = db.quotes.find_one({"date": "2023-04-03"})
+    saved = list(db.quotes.find({"job_id": "seed-history"}).sort("date", 1))
+    original = next(row for row in saved if row["date"] == "2023-04-03")
     for name, changes in [
-        ("wrong-listing", {"symbol": "OTHER"}), ("future-date", {"date": "2099-01-01"}),
-        ("future-knowledge", {"collected_at": NOW + timedelta(days=1)}),
+        ("wrong-listing", {"symbol": "OTHER", "job_id": "seed-history"}),
+        ("future-date", {"date": "2099-01-01", "job_id": "seed-history"}),
+        ("unpublished", {"collected_at": NOW + timedelta(days=1)}),
     ]:
         db.quotes.insert_one({**original, "_id": name, "job_id": name,
-                             "data": {**original["data"], "adj_close": "0.01"}, **changes})
+                             "data": {**original["data"], "close": "0.01", "adj_close": "0.01"}, **changes})
     assert_same_calculation(before, client.post("/goals/calibrate", json=request).json())
-    clock[0] += timedelta(hours=1)
-    db.quotes.insert_one({**original, "_id": "revision", "job_id": "revision", "collected_at": clock[0],
-                         "data": {**original["data"], "adj_close": "0.01"}})
+    seed_yahoo(db, generation="revision", collected_at=NOW + timedelta(hours=1), rows=[
+        {**row["data"], **({"close": "0.01", "adj_close": "0.01"} if row["date"] == original["date"] else {})}
+        for row in saved
+    ])
     after = client.post("/goals/calibrate", json=request).json()
     assert after["history_fingerprint"] != before["history_fingerprint"]
     assert after["forecasts"] != before["forecasts"]
-    assert after["data_as_of"] != before["data_as_of"]
+    assert after["data_as_of"] == before["data_as_of"] == md.public(NOW)
     assert any("not strict point-in-time" in warning for warning in after["warnings"])
+    clock[0] += timedelta(hours=2)
+    replay = client.post("/goals/calibrate", json=request).json()
+    assert_same_calculation({**after, "data_as_of": md.public(clock[0])}, replay)
+    assert replay["history_fingerprint"] == after["history_fingerprint"]
 
 
 def test_strategy_specific_calibration_dispatch_and_unsupported_strategies(api, db, monkeypatch):
     client, _ = api
     login(client)
     definition = gs.get_strategy("buy_and_hold_single_instrument")
+    seed_history(db, rows_between())
     seed_profile(db)
     unsupported = replace(definition, id="unsupported", calibrate=None)
     monkeypatch.setitem(gs.STRATEGIES, unsupported.id, unsupported)

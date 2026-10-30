@@ -12,7 +12,7 @@ import pytest
 import degiro_import as importer
 import portfolio_tracker as ledger
 from test_portfolio_tracker import (ISIN, LISTING, api, cash, clock, config, customer, db,
-                                    detail, portfolio, record, tracker, trade)
+                                    detail, portfolio, quote, record, tracker, trade)
 
 ORDER_A = "11111111-1111-4111-8111-111111111111"
 ORDER_B = "22222222-2222-4222-8222-222222222222"
@@ -297,8 +297,7 @@ def test_listing_and_portfolio_changes_invalidate_preview(tracker, db):
     content = statement(sample_rows())
     plan = preview(client, url, content)
     # Currency remains EUR but the resolved listing changes between review/save.
-    db.instrument_state.update_one({"_id": ISIN}, {"$set": {"listing": {"symbol": "NEW", "exchange": "XETR"}, "price_currency_override": "EUR"}})
-    db.instruments.update_many({"instrument_id": ISIN}, {"$set": {"symbol": "NEW", "exchange": "XETR"}})
+    quote(db, "2026-09-16", "110", listing={"symbol": "NEW", "exchange": "XETR"})
     assert commit(client, url, content, plan).status_code == 409
     plan = preview(client, url, content)
     client.patch(url, json={"name": "Changed"})

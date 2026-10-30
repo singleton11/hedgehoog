@@ -15,9 +15,6 @@ SECOND_LISTING = {'symbol': '^EURTEST', 'exchange': 'YAHOO'}
 def second_instrument(db, days=('2026-09-15', '2026-09-16')):
     db.indices.insert_one({'instrument_id': SECOND_ISIN, 'name': 'EUR overnight index',
                            'symbol': SECOND_LISTING['symbol'], 'currency': 'EUR'})
-    db.instrument_state.insert_one({'_id': SECOND_ISIN, 'listing': SECOND_LISTING})
-    db.instruments.insert_one({'instrument_id': SECOND_ISIN, **SECOND_LISTING,
-                               'collected_at': NOW, 'data': {}})
     for day, close in zip(days, ('20', '30')):
         quote(db, day, close, isin=SECOND_ISIN, listing=SECOND_LISTING)
 from test_portfolio_performance import get, invest, index_history
@@ -216,12 +213,20 @@ def test_sparse_calendar_sampling_matches_daily_oracle_and_extra_benchmark_dates
         assert by_date[point['date']]['sortino'] == point['sortino']
 
 
-def test_proxy_history_never_uses_future_observations(tracker, db):
+def test_proxy_uses_latest_complete_history_not_unpublished_or_future_quote_dates(tracker, db):
     from datetime import timedelta
     client, _, _, url = tracker
     invest(client, url)
     second_instrument(db, days=('2026-09-14', '2026-09-16'))
     configure(client)
     before = get(client, url)['summary']
-    quote(db, '2026-09-16', '999', isin=SECOND_ISIN, listing=SECOND_LISTING, collected_at=NOW + timedelta(days=1))
+    quote(db, '2026-09-16', '999', isin=SECOND_ISIN, listing=SECOND_LISTING,
+          collected_at=NOW + timedelta(days=1), publish=False)
+    quote(db, '2026-09-18', '999', isin=SECOND_ISIN, listing=SECOND_LISTING)
     assert get(client, url)['summary'] == before
+    # Collection time is not a point-in-time cutoff for a newly published vintage.
+    quote(db, '2026-09-16', '21', isin=SECOND_ISIN, listing=SECOND_LISTING,
+          collected_at=NOW + timedelta(days=1))
+    revised = get(client, url)['summary']
+    assert revised['twr_percent'] == before['twr_percent']
+    assert revised['sharpe'] != before['sharpe']

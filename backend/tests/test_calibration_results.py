@@ -161,7 +161,9 @@ def test_failed_recalculation_keeps_all_history_and_reports_survive_instrument_r
     assert client.post("/goals/calibrate", json=body(seed=44)).status_code == 422
     db.instruments.delete_many({})
     db.instrument_state.delete_many({})
-    assert client.post("/goals/calibrate", json=body(seed=44)).status_code == 422
+    stale = client.post("/goals/calibrate", json=body(seed=44))
+    assert stale.status_code == 409
+    assert "latest Yahoo listing changed" in stale.json()["detail"]
     assert client.get(URL).json()["result"] == second
     assert client.get(f"{HISTORY}/{first['id']}").json()["result"] == first
     assert client.get(f"{HISTORY}/{second['id']}").json()["result"] == second
@@ -218,6 +220,7 @@ def test_old_slow_run_is_retained_but_latest_uses_start_order_and_owner_strategy
 def test_concurrent_requests_allocate_start_order_before_work_and_keep_both_successes(api, db, monkeypatch):
     client, _ = api
     login(client)
+    seed_history(db, rows_between())
     seed_profile(db)
     started, release = Event(), Event()
 
@@ -288,6 +291,7 @@ def test_invalid_history_pagination_is_rejected_before_reads(api, db, monkeypatc
 def test_new_strategy_snapshots_name_and_retired_runs_remain_readable(api, db, monkeypatch):
     client, _ = api
     login(client)
+    seed_history(db, rows_between())
     seed_profile(db)
     definition = replace(gs.STRATEGIES[STRATEGY], id="future-strategy", name="Original future name",
                          calibrate=Mock(return_value=result(9)))
@@ -320,6 +324,7 @@ def test_legacy_import_precedes_every_entrypoint_is_once_and_preserves_source(ap
     upsert = Mock(wraps=db.calibration_runs.update_one)
     monkeypatch.setattr(db.calibration_runs, "update_one", upsert)
     if first_read == "save":
+        seed_history(db, rows_between())
         seed_profile(db)
         monkeypatch.setitem(gs.STRATEGIES, STRATEGY, replace(gs.STRATEGIES[STRATEGY], calibrate=Mock(return_value=result(7))))
         assert client.post("/goals/calibrate", json=body()).status_code == 200
@@ -381,6 +386,7 @@ def test_legacy_discovery_is_owner_and_registered_strategy_scoped_without_global
 def test_failed_atomic_insert_never_changes_an_existing_report(api, db, monkeypatch):
     client, _ = api
     login(client)
+    seed_history(db, rows_between())
     seed_profile(db)
     monkeypatch.setitem(gs.STRATEGIES, STRATEGY, replace(gs.STRATEGIES[STRATEGY], calibrate=Mock(return_value=result())))
     first = client.post("/goals/calibrate", json=body()).json()
