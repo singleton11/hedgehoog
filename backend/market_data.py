@@ -265,23 +265,17 @@ def history_bounds_pipeline(seeds):
     return pipeline
 
 
-def saved_history_bounds(db, observations, as_of=None):
-    """Protect all selected vintages through validation and compact endpoint probes."""
-    from contextlib import ExitStack
-    from market_data_retention import reader
+def saved_history_bounds(db, observations, as_of=None, *, leases_held=False):
+    """Probe exact endpoints under the caller's leases, or acquire a batch lease."""
+    from contextlib import nullcontext
+    from market_data_retention import reader_many
 
     cutoff = aware(as_of) if as_of is not None else utcnow()
-    bounds, seeds = {}, []
-    with ExitStack() as readers:
-        for row in observations:
-            if not row["listing"]:
-                continue
-            requested = row.get("job_id") if row.get("provider") == "yfinance" else "legacy"
-            published_history(db, row["_id"], row["listing"], generation=requested)
-            generation = readers.enter_context(reader(db, row["_id"], row["listing"], requested))
-            if generation is not None:
-                seeds.append({"instrument_id": row["_id"], **row["listing"], "generation": generation,
-                              "provider": "yfinance", "date_to": cutoff.date().isoformat()})
+    bounds = {}
+    selected = [row for row in observations if row["listing"]]
+    with nullcontext() if leases_held else reader_many(db, selected):
+        seeds = [{"instrument_id": row["_id"], **row["listing"], "generation": row["job_id"],
+                  "provider": "yfinance", "date_to": cutoff.date().isoformat()} for row in selected]
         command = lambda batch: {"aggregate": "instruments", "pipeline": history_bounds_pipeline(batch), "cursor": {}}
         for batch in _history_batches(seeds, command):
             records = list(db.instruments.aggregate(history_bounds_pipeline(batch)))
@@ -329,7 +323,7 @@ def _nonnegative_returns(statistics):
 def acquired_instruments(db, limit=20, offset=0, min_history_years=None, *, hide_negative_returns=False):
     """Latest complete Yahoo profiles with generation-consistent history/returns."""
     from contextlib import ExitStack
-    from market_data_retention import reader
+    from market_data_retention import reader, reader_many
     from return_statistics import acquired_statistics
 
     cutoff = utcnow()
@@ -356,9 +350,12 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None, *, hide
             publications = _acquired_publications(db)
         for row in publications:
             job = row["publication"]
-            generation = readers.enter_context(reader(db, row["_id"], job["listing"], job["_id"]))
+            generation = (readers.enter_context(reader(db, row["_id"], job["listing"], job["_id"]))
+                          if unfiltered else job["_id"])
             selected.append({"_id": row["_id"], "listing": job["listing"], "job_id": generation,
                              "provider": "yfinance", "history_summary": job.get("history_summary")})
+        if not unfiltered:
+            readers.enter_context(reader_many(db, selected))
         mark("publications_and_leases_ms")
         identity = lambda row: {**listing_filter(row["_id"], row["listing"]), "provider": "yfinance", "job_id": row["job_id"]}
         command = lambda batch: {"find": "instruments", "filter": {"$or": [identity(row) for row in batch]}}
@@ -378,7 +375,7 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None, *, hide
         if min_history_years is not None:
             bounds = {row["_id"]: summary for row in observations
                       if (summary := published_history_summary(row, cutoff)) is not None}
-            bounds.update(saved_history_bounds(db, [row for row in observations if row["_id"] not in bounds], cutoff))
+            bounds.update(saved_history_bounds(db, [row for row in observations if row["_id"] not in bounds], cutoff, leases_held=True))
             matching = []
             for observation in observations:
                 span = bounds.get(observation["_id"], {})
