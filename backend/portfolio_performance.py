@@ -31,7 +31,7 @@ class SavedMarks:
     """Last derived portfolio close on/before a date, retaining invalid rows.
 
     Never backfill from the future. Portfolio-only trailing stale marks are
-    explicit; quote_rows pins listing and bounds effective/knowledge times.
+    explicit; quote_rows pins the latest Yahoo vintage and bounds quote dates.
     """
 
     def __init__(self, rows, *, required_currency=None, currency_override=None):
@@ -65,13 +65,14 @@ def percent(growth):
 def benchmark_history(db, identifier, now, policy=None):
     record = require_index(db, identifier)
     instrument = {"instrument_id": identifier, "symbol": record["symbol"], "exchange": "YAHOO"}
-    rows = ledger.quote_rows(db, instrument, now, policy=policy)
-    # Read only: index_detail also expires jobs, which is inappropriate here.
-    profile = db.instruments.find_one({**md.observation_filter(db, identifier, instrument, now),
-                                      "collected_at": {"$lte": now}}, sort=[("collected_at", -1), ("_id", -1)])
-    currency = record.get("currency") or (profile or {}).get("data", {}).get("currency")
-    return {"instrument_id": identifier, "name": record["name"], "symbol": record["symbol"],
-            "currency": currency, "return_variant": record.get("return_variant", "unknown")}, SavedMarks(rows)
+    from market_data_retention import reader
+    with reader(db, identifier, instrument):
+        rows = ledger.quote_rows(db, instrument, now, policy=policy)
+        # Read only: index_detail also expires jobs, which is inappropriate here.
+        profile = db.instruments.find_one({**md.observation_filter(db, identifier, instrument, now)}, sort=[("collected_at", -1), ("_id", -1)])
+        currency = record.get("currency") or (profile or {}).get("data", {}).get("currency")
+        return {"instrument_id": identifier, "name": record["name"], "symbol": record["symbol"],
+                "currency": currency, "return_variant": record.get("return_variant", "unknown")}, SavedMarks(rows)
 
 
 class RiskRatios:
@@ -118,9 +119,22 @@ def performance(db, document, benchmark_id=None, *, now=None):
     today = now.date().isoformat()
     events = sorted((event for event in ledger.active_events(document["transactions"]) if event["date"] <= today),
                     key=lambda item: (item["date"], item["sequence"]))
+    proxy = read_settings(db)["proxy"]
+    sources = [event["instrument"] for event in events if "instrument" in event]
+    if benchmark_id:
+        record = require_index(db, benchmark_id)
+        sources.append({"instrument_id": benchmark_id, "symbol": record["symbol"], "exchange": "YAHOO"})
+    if proxy:
+        sources.append(proxy)
+    # Keep every source current through currency checks and the derived series.
+    with ledger.history_readers(db, sources):
+        return _performance(db, document, events, proxy, benchmark_id, now)
+
+
+def _performance(db, document, events, proxy, benchmark_id, now):
+    today = now.date().isoformat()
     policy = read_policy(db)
     benchmark, benchmark_marks = benchmark_history(db, benchmark_id, now, policy) if benchmark_id else (None, None)
-    proxy = read_settings(db)["proxy"]
     proxy_marks = None
     if proxy:
         state = db.instrument_state.find_one({"_id": proxy["instrument_id"]}) or {}
@@ -133,7 +147,12 @@ def performance(db, document, benchmark_id=None, *, now=None):
     ratios = RiskRatios()
     result = {"portfolio_id": document["_id"], "currency": "EUR", "method": "daily_twr",
               "cash_flow_timing": "deposits_start_withdrawals_end", "as_of": _timestamp(now),
-              "start_date": None, "end_date": None, "points": [], "benchmark": benchmark, "warnings": [],
+              "start_date": None, "end_date": None, "points": [], "benchmark": benchmark,
+              "warnings": [
+                  "Historical portfolio returns, benchmarks and risk ratios use the latest complete Yahoo published "
+                  "history, restricted to quote dates on or before each valuation date. This is not strict "
+                  "point-in-time data: later provider corrections and corporate-action adjustments may revise "
+                  "historical prices and introduce look-ahead bias."],
               "quote_fill_policy": policy,
               "risk_proxy": proxy, "ratio_method": "since_inception_calendar_daily_log_excess_365",
               "summary": {"twr_percent": None, "sharpe": None, "sortino": None}}

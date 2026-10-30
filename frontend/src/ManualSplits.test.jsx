@@ -237,18 +237,15 @@ describe('manual split controls', () => {
     expect(await screen.findByRole('button', { name: 'Add manual split' })).toBeDisabled();
   });
 
-  it('invalidates the instrument statistics refresh key after a manual save', async () => {
+  it('does not expose legacy manual split writes from the Yahoo-only instrument page', async () => {
     useInstrument.mockReturnValue({ detail: {
       instrument_id: ISIN, catalogue: { name: 'ETF', inception_date: '2010-05-19' }, listing,
       summary: { quote_count: 1 }, provider_configured: false, acquisition: null,
     }, quotes: [], quotesLoading: false });
     render(<InstrumentDetail isin={ISIN} />);
-    const before = statistics.mock.lastCall[0].refreshKey;
     fireEvent.click(screen.getByText('Splits', { selector: 'summary' }));
-    await screen.findByRole('button', { name: 'Add manual split' });
-    await form();
-    fireEvent.click(screen.getByRole('button', { name: 'Save split' }));
-    await screen.findByText('Manual split saved.');
-    expect(statistics.mock.lastCall[0].refreshKey).not.toBe(before);
+    expect(screen.getByText(/Yahoo Finance prices are already provider split-adjusted/)).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Add manual split' })).not.toBeInTheDocument();
+    expect(request).not.toHaveBeenCalled();
   });
 });

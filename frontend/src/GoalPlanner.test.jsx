@@ -473,8 +473,9 @@ describe('explicit monthly simulation', () => {
     expect(view.getByText('€230,000.99')).toBeInTheDocument();
     expect(view.getByRole('img', { name: 'Monte Carlo portfolio projection' })).toBeInTheDocument();
     expect(view.getByText('Goal: €100,000.00')).toBeInTheDocument();
-    expect(view.queryByText('Historical parameters may not persist.')).not.toBeInTheDocument();
-    expect(view.queryByRole('list', { name: 'Simulation warnings' })).not.toBeInTheDocument();
+    expect(view.getByRole('note')).toBeVisible();
+    expect(view.getByRole('note')).toHaveTextContent('look-ahead bias');
+    expect(view.getByRole('list', { name: 'Simulation warnings' })).toHaveTextContent('Historical parameters may not persist.');
     expect(view.queryByText(/simulated paths · seed/)).not.toBeInTheDocument();
     expect(screen.queryByText('Model assumptions and limitations')).not.toBeInTheDocument();
     expect(screen.queryByText(/Independent, normally distributed log returns/)).not.toBeInTheDocument();
@@ -493,7 +494,7 @@ describe('explicit monthly simulation', () => {
     expect(view.getByText('17.39%')).toBeVisible();
   });
 
-  it('keeps data-quality warnings in calculation details without model caveats', async () => {
+  it('shows simulation warnings and snapshot bias without hiding data-quality warnings in calculation details', async () => {
     const server = mockServer();
     server.simulate = async (body) => simulation(body, {
       parameter_statistics: { instrument: statistics(A, { warnings: ['Some rows were unusable.'] }) },
@@ -505,7 +506,8 @@ describe('explicit monthly simulation', () => {
     expect(view.getByText('Calculation details').closest('details')).not.toHaveAttribute('open');
     fireEvent.click(view.getByText('Calculation details'));
     expect(view.getByRole('list', { name: 'Statistics warnings' })).toHaveTextContent('Some rows were unusable.');
-    expect(view.queryByText('Historical parameters may not persist.')).not.toBeInTheDocument();
+    expect(view.getByRole('list', { name: 'Simulation warnings' })).toHaveTextContent('Historical parameters may not persist.');
+    expect(view.getByRole('note')).toHaveTextContent('latest saved Yahoo Finance snapshot');
   });
 
   it('handles a zero monthly contribution without claiming certainty', async () => {

@@ -46,7 +46,7 @@ def test_tables_use_latest_saved_close_for_newer_trades(
     before = deepcopy(list(db.portfolios.find()))
     saved_quotes = deepcopy(list(db.quotes.find()))
     provider = Mock(side_effect=AssertionError("Summary reads must not fetch prices"))
-    monkeypatch.setattr(md, "MarketstackClient", provider)
+    monkeypatch.setattr(md, "provider_client", provider)
     for result in table_summaries(client, cid, metadata["id"]):
         assert result["today_pnl_eur"] == expected
         assert (result["today_from_date"], result["today_to_date"]) == ("2026-09-15", "2026-09-16")

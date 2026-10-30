@@ -12,6 +12,7 @@ from pymongo.errors import ConnectionFailure, DuplicateKeyError
 import market_data as md
 from config import Settings
 from main import create_app
+from market_provider import MarketDataError
 from marketstack import MarketstackError
 
 ISIN = "IE00B5BMR087"
@@ -29,7 +30,7 @@ def page(rows=None, total=None, offset=0):
 
 
 class Provider:
-    """No network; service tests exercise quota callbacks and all Mongo writes."""
+    """Synthetic Yahoo chart/profile adapter; never constructs a network client."""
     def __init__(self, pages=None, profile=None, splits=None):
         self.pages = iter(pages or [page()])
         self.splits = iter(splits if splits is not None else [page([])])
@@ -37,7 +38,7 @@ class Provider:
         self.calls = []
 
     def factory(self, key, before_request):
-        assert key == "test-marketstack-key"
+        assert key == ""
         self.before_request = before_request
         return self
 
@@ -66,7 +67,19 @@ class Provider:
         result = next(self.pages)
         if isinstance(result, Exception):
             raise result
-        return deepcopy(result)
+        result = deepcopy(result)
+        # Yahoo supplies split actions with the chart, not a separate request.
+        if "raw" not in result:
+            actions = next(self.splits, page([]))
+            if isinstance(actions, Exception):
+                result["raw"] = {"chart": {"error": {"code": "Synthetic action failure"}}}
+            else:
+                events = {}
+                for index, event in enumerate(actions["data"]):
+                    timestamp = int(datetime.fromisoformat(event["date"]).replace(tzinfo=timezone.utc).timestamp())
+                    events[str(index)] = {"date": timestamp, "numerator": event["split_factor"], "denominator": "1"}
+                result["raw"] = {"chart": {"result": [{"meta": {"symbol": symbol, "exchangeTimezoneName": "UTC"}, "events": {"splits": events}}]}}
+        return result
 
 
 @pytest.fixture
@@ -78,7 +91,7 @@ def clock(monkeypatch):
 
 @pytest.fixture
 def config():
-    return Settings(_env_file=None, market_data_provider="marketstack", jwt_secret="test-secret-" * 5, marketstack_api_key="test-marketstack-key", marketstack_monthly_budget=30)
+    return Settings(_env_file=None, market_data_provider="yfinance", jwt_secret="test-secret-" * 5)
 
 
 @pytest.fixture
@@ -115,6 +128,26 @@ def collect(db, config, provider=None):
     source = provider or Provider()
     result = md.run_acquisition(db, config, job["id"], source.factory)
     return result, source
+
+
+def seed_yahoo(db, isin=ISIN, generation=None, listing=None, collected_at=NOW, rows=(), profile=None):
+    """Publish an explicit synthetic Yahoo generation, never legacy fallback data."""
+    generation = generation or isin
+    listing = listing or LISTING
+    db.instrument_state.update_one({"_id": isin}, {"$set": {"listing": listing}}, upsert=True)
+    db.acquisition_jobs.insert_one({"_id": generation, "instrument_id": isin, "listing": listing,
+                                    "provider": "yfinance", "published": True, "status": "succeeded",
+                                    "active": False, "requested_at": collected_at, "published_at": collected_at})
+    db.instruments.insert_one({"instrument_id": isin, **listing, "provider": "yfinance", "published": True,
+                               "job_id": generation, "collected_at": collected_at, "data": profile or {}})
+    db.split_snapshots.insert_one({"_id": generation, "instrument_id": isin, **listing, "job_id": generation,
+                                   "provider": "yfinance", "collected_at": collected_at, "events": []})
+    for row in rows:
+        db.quotes.insert_one({"instrument_id": isin, **listing, "provider": "yfinance", "job_id": generation,
+                              "collected_at": collected_at, "collection_date": collected_at.date().isoformat(),
+                              "date": row["date"][:10],
+                              "data": {**row, "price_basis": "provider_split_adjusted"}})
+    return generation
 
 
 @pytest.mark.parametrize("metadata", [
@@ -224,7 +257,8 @@ def test_acquired_list_excludes_catalogue_only_cached_and_unsaved_jobs(db, confi
     empty = {"items": [], "total": 0, "limit": 20, "offset": 0}
     assert md.acquired_instruments(db) == empty
     job = enqueue(db, config)
-    assert db.instrument_state.find_one()["listing"] == LISTING
+    assert db.acquisition_jobs.find_one({"_id": job["id"]})["listing"] == LISTING
+    assert db.instrument_state.find_one() is None  # No published history yet.
     assert md.acquired_instruments(db) == empty
     db.acquisition_jobs.update_one({"_id": job["id"]}, {"$set": {"status": "failed", "active": False}})
     assert md.acquired_instruments(db) == empty
@@ -242,10 +276,11 @@ def test_acquired_universe_is_complete_lightweight_and_uses_saved_profiles(db, m
     assert md.acquired_universe(db) == {"items": [], "total": 0}
     ids = [f"IE{index:010d}" for index in range(105)]
     for isin in reversed(ids):
-        # Profiles without quotes remain selectable, including legacy partial data.
-        db.instruments.insert_one({"instrument_id": isin, "collected_at": NOW})
+        seed_yahoo(db, isin)
+    seed_yahoo(db, ids[0], generation="newest", collected_at=NOW + timedelta(hours=1))
+    seed_yahoo(db, ISIN)
     db.instruments.insert_many([
-        {"instrument_id": ids[0], "collected_at": NOW + timedelta(hours=1)},
+        {"instrument_id": "IE8888888888", "collected_at": NOW + timedelta(hours=1)},
         {"instrument_id": ids[0], "collected_at": NOW + timedelta(hours=2), "provider": "yfinance", "published": False},
         {"instrument_id": "IE9999999999", "provider": "yfinance", "published": False},
         {"instrument_id": "idx-test", "collected_at": NOW},
@@ -262,7 +297,7 @@ def test_acquired_universe_is_complete_lightweight_and_uses_saved_profiles(db, m
         "instrument_id": ISIN, "name": "Latest name", "ticker": "NEW", "collected_at": "2026-09-17T12:00:00Z",
     }
     # A later publication changes only a subsequent capture, never a paginated read.
-    db.instruments.insert_one({"instrument_id": "IE9999999999", "provider": "yfinance", "published": True, "collected_at": NOW})
+    seed_yahoo(db, "IE9999999999")
     assert md.acquired_universe(db)["total"] == universe["total"] + 1
     assert len(universe["items"]) == len(ids) + 1
 
@@ -286,16 +321,20 @@ def test_acquired_universe_route_is_authenticated_and_db_only(api, db, config):
     assert md.budget_status(db, config)["used"] == used
 
 
-def test_acquired_list_includes_profile_only_after_failed_download(db, config):
-    result, _ = collect(db, config, Provider([MarketstackError("quota", "Quota exhausted")]))
+def test_acquired_list_excludes_failed_unpublished_profile_then_includes_complete_history(db, config):
+    result, _ = collect(db, config, Provider([MarketDataError("transient", "Temporary failure")]))
     assert result["status"] == "failed"
+    assert db.instruments.count_documents({"job_id": result["id"]}) == 1
+    assert md.acquired_instruments(db) == {"items": [], "total": 0, "limit": 20, "offset": 0}
+    complete, _ = collect(db, config)
+    assert complete["status"] == "succeeded"
     page = md.acquired_instruments(db)
     assert page["total"] == 1
     assert page["items"] == [{
         "instrument_id": ISIN, "isin": ISIN, "name": "iShares Core S&P 500 UCITS ETF",
         "ticker": "SXR8", "listing": LISTING, "collected_at": "2026-09-17T12:00:00Z",
         "asset_class": None, "index": None,
-        "quote_count": 0, "first_date": None, "last_date": None,
+        "quote_count": 1, "first_date": "2026-09-15", "last_date": "2026-09-15",
         "annualized_mean_log_return": None, "annualized_volatility": None,
         "historical_year_return": None, "historical_year_start_date": None,
         "historical_year_end_date": None, "historical_year_price_basis": None,
@@ -309,7 +348,7 @@ def test_acquired_list_includes_profile_only_after_failed_download(db, config):
 def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config, clock):
     collect(db, config)
     clock[0] += timedelta(hours=1)
-    collect(db, config, Provider([page([bar("2026-09-16")])]))
+    collect(db, config, Provider([page([bar("2026-09-15"), bar("2026-09-16")])]))
     original = db.quotes.find_one({"date": "2026-09-15"})
     db.quotes.insert_one({**original, "_id": "revision", "job_id": "revision", "collected_at": clock[0]})
     db.quotes.insert_one({**original, "_id": "different-listing", "job_id": "different-listing", "symbol": "OTHER.L", "date": "2000-01-01"})
@@ -317,7 +356,8 @@ def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config
     # Same collection time: ISIN is the deterministic tie-breaker. This ETF has
     # only a profile, not quotes. Multiple observations still count as one ETF.
     second = "IE00B4L5Y983"
-    db.instruments.insert_one({"instrument_id": second, "symbol": "EUNL.F", "exchange": "XFRA", "collected_at": clock[0], "job_id": "second-profile", "data": {"private_payload": "not in list"}})
+    seed_yahoo(db, second, generation="second-profile", listing={"symbol": "EUNL.F", "exchange": "XFRA"},
+               collected_at=clock[0], profile={"private_payload": "not in list"})
     first_page = md.acquired_instruments(db, limit=1)
     assert first_page["total"] == 2
     assert first_page["items"][0]["instrument_id"] == second
@@ -340,7 +380,7 @@ def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config
     # Later failed updates do not remove already acquired observations.
     db.acquisition_jobs.update_many({}, {"$set": {"status": "failed", "active": False}})
     assert md.acquired_instruments(db)["total"] == 2
-    db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "collected_at": clock[0] + timedelta(hours=1), "job_id": "newest"})
+    seed_yahoo(db, ISIN, generation="newest", collected_at=clock[0] + timedelta(hours=1))
     assert md.acquired_instruments(db)["items"][0]["instrument_id"] == ISIN
 
 
@@ -357,14 +397,13 @@ def test_acquired_list_deduplicates_profiles_and_quotes_and_paginates(db, config
 def test_acquired_return_filter_requires_two_finite_nonnegative_numbers(db, monkeypatch, historical, statistical, keep):
     import return_statistics
 
-    db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "collected_at": NOW})
-    db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
+    seed_yahoo(db)
     statistics = {"historical_year_return": historical, "annualized_mean_log_return": statistical,
                   "annualized_volatility": None, "historical_year_volatility": None}
     refresh = Mock(return_value=(statistics, {"listing": LISTING}))
     monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
     assert md.acquired_instruments(db, hide_negative_returns=True)["total"] == int(keep)
-    refresh.assert_called_once_with(db, ISIN, generation="legacy", as_of=NOW)
+    refresh.assert_called_once_with(db, ISIN, generation=ISIN, as_of=NOW)
     # All remains a display-only path: no return membership rule, even with unavailable volatility.
     assert md.acquired_instruments(db, hide_negative_returns=False)["total"] == 1
     statistics.clear()  # Missing keys must not coerce to zero.
@@ -379,10 +418,8 @@ def test_acquired_return_filter_counts_all_candidates_before_paging(db, monkeypa
     for index in range(12):
         isin = f"IE{index:010d}"
         values[isin] = {"historical_year_return": 0.1, "annualized_mean_log_return": 0.2 if index % 2 else -0.2}
-        db.instruments.insert_one({"instrument_id": isin, **LISTING, "collected_at": NOW})
-        db.instrument_state.insert_one({"_id": isin, "listing": LISTING})
-        for day in ("1990-01-01", "2020-01-01" if index != 11 else "1991-01-01"):
-            db.quotes.insert_one({"instrument_id": isin, **LISTING, "date": day, "collected_at": NOW})
+        seed_yahoo(db, isin, rows=[bar(day) for day in
+                   ("1990-01-01", "2020-01-01" if index != 11 else "1991-01-01")])
     # A newer duplicate must not affect one-row membership or deterministic tie ordering.
     db.instruments.insert_one({"instrument_id": "IE0000000001", **LISTING, "collected_at": NOW, "job_id": "duplicate"})
     db.instruments.insert_one({"instrument_id": "idx-excluded", **LISTING, "collected_at": NOW})
@@ -405,7 +442,7 @@ def test_acquired_return_filter_counts_all_candidates_before_paging(db, monkeypa
         assert dates.call_count == labels.call_count == len(expected)
         assert refresh.call_count == (12 if years is None else 11)
         assert len({call.args[1] for call in refresh.call_args_list}) == refresh.call_count
-        assert all(call.kwargs == {"generation": "legacy", "as_of": NOW} for call in refresh.call_args_list)
+        assert all(call.kwargs == {"generation": call.args[1], "as_of": NOW} for call in refresh.call_args_list)
     assert md.acquired_universe(db)["total"] == 12
 
 
@@ -419,10 +456,12 @@ def test_acquired_return_filter_treats_listing_mismatch_as_unavailable(db, confi
         db.instrument_state.delete_one({"_id": ISIN})
     else:
         db.instrument_state.update_one({"_id": ISIN}, {"$set": {"listing": {**LISTING, "symbol": "OTHER"}}})
-    refresh = Mock(side_effect=AssertionError("Must not read another listing's statistics"))
+    refresh = Mock(wraps=return_statistics.refresh_statistics)
     monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
-    assert md.acquired_instruments(db, hide_negative_returns=True)["total"] == 0
-    refresh.assert_not_called()
+    with pytest.raises(md.DataError, match="latest Yahoo listing changed") as error:
+        md.acquired_instruments(db, hide_negative_returns=True)
+    assert error.value.status == 409
+    assert refresh.call_count == 1  # A stale state cannot silently remove a published candidate.
 
 
 @pytest.mark.parametrize("invalid", ["unpublished", "instrument", "listing", "cutoff"])
@@ -440,13 +479,20 @@ def test_acquired_return_filter_propagates_invalid_publication(db, invalid):
     else:
         publication["published_at"] = NOW + timedelta(seconds=1)
     db.acquisition_jobs.insert_one(publication)
-    with pytest.raises(md.DataError, match="not published") as error:
-        md.acquired_instruments(db, hide_negative_returns=True)
-    assert error.value.status == 409
+    if invalid == "unpublished":
+        assert md.acquired_instruments(db, hide_negative_returns=True)["total"] == 0
+    elif invalid == "cutoff":
+        db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
+        assert md.acquired_instruments(db, hide_negative_returns=True)["total"] == 0  # Empty returns, not a time cutoff.
+        assert md.acquired_instruments(db)["total"] == 1
+    else:
+        with pytest.raises(md.DataError, match="latest Yahoo profile") as error:
+            md.acquired_instruments(db, hide_negative_returns=True)
+        assert error.value.status == 409
 
 
 @pytest.mark.parametrize("published", [True, False])
-def test_acquired_return_filter_resolves_missing_job_or_pins_legacy(db, monkeypatch, published):
+def test_acquired_return_filter_requires_attributable_published_profile_no_legacy_fallback(db, monkeypatch, published):
     import return_statistics
     from bson import ObjectId
 
@@ -463,18 +509,25 @@ def test_acquired_return_filter_resolves_missing_job_or_pins_legacy(db, monkeypa
     db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "date": "1800-01-01", "provider": "yfinance", "job_id": "hidden"})
     refresh = Mock(return_value=({"historical_year_return": 0, "annualized_mean_log_return": 0}, {"listing": LISTING}))
     monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
-    result = md.acquired_instruments(db, hide_negative_returns=True)
-    assert result["total"] == 1
-    assert result["items"][0]["listing"] == LISTING
-    assert result["items"][0]["quote_count"] == 0
-    refresh.assert_called_once_with(db, ISIN, generation="resolved" if published else "legacy", as_of=NOW)
+    if published:
+        with pytest.raises(md.DataError, match="latest Yahoo profile") as error:
+            md.acquired_instruments(db, hide_negative_returns=True)
+        assert error.value.status == 409
+        # Only an explicitly attributed profile makes this published history readable.
+        db.instruments.update_one({"_id": ObjectId("000000000000000000000002")}, {"$set": {"job_id": "resolved"}})
+        result = md.acquired_instruments(db, hide_negative_returns=True)
+        assert result["total"] == 1 and result["items"][0]["listing"] == LISTING
+        assert result["items"][0]["quote_count"] == 0
+        refresh.assert_called_once_with(db, ISIN, generation="resolved", as_of=NOW)
+    else:
+        assert md.acquired_instruments(db, hide_negative_returns=True)["total"] == 0
+        refresh.assert_not_called()
 
 
 def test_acquired_return_filter_does_not_hide_database_failures(db, monkeypatch):
     import return_statistics
 
-    db.instruments.insert_one({"instrument_id": ISIN, **LISTING, "collected_at": NOW})
-    db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
+    seed_yahoo(db)
     monkeypatch.setattr(return_statistics, "refresh_statistics", Mock(side_effect=ConnectionFailure("offline")))
     with pytest.raises(ConnectionFailure, match="offline"):
         md.acquired_instruments(db, hide_negative_returns=True)
@@ -497,16 +550,12 @@ def test_acquired_return_filter_pins_publication_during_and_after_profile_select
 
     publish("previous", "50")
     db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
-    aggregate = db.instruments.aggregate
+    publications = md._acquired_publications
 
-    def select_with_publication(pipeline, *args, **kwargs):
-        if not any("$group" in stage for stage in pipeline):
-            return aggregate(pipeline, *args, **kwargs)
-        def cursor():
-            clock[0] += timedelta(seconds=1)
-            publish("selected", "121")
-            yield from aggregate(pipeline, *args, **kwargs)
-        return cursor()
+    def select_with_publication(database):
+        clock[0] += timedelta(seconds=1)
+        publish("selected", "121")
+        yield from publications(database)
 
     refresh = return_statistics.refresh_statistics
     calls = []
@@ -519,19 +568,18 @@ def test_acquired_return_filter_pins_publication_during_and_after_profile_select
         publish("failed", "1", published=False)
         return result
 
-    monkeypatch.setattr(db.instruments, "aggregate", select_with_publication)
+    monkeypatch.setattr(md, "_acquired_publications", select_with_publication)
     monkeypatch.setattr(return_statistics, "refresh_statistics", refresh_then_publish)
     dates = Mock(wraps=md.quote_dates)
     monkeypatch.setattr(md, "quote_dates", dates)
-    result = md.acquired_instruments(db, min_history_years=years, hide_negative_returns=True)
-    assert result["total"] == 1
-    item = result["items"][0]
-    assert item["historical_year_return"] == pytest.approx(121 / 90 - 1)
-    assert item["annualized_mean_log_return"] > 0
-    assert item["quote_count"] == 5
-    cutoff = NOW + timedelta(seconds=1)
-    assert calls == [{"generation": "selected", "as_of": cutoff}]
-    dates.assert_called_once_with(db, ISIN, LISTING, generation="selected", publication_as_of=cutoff)
+    with pytest.raises(md.DataError, match="superseded") as error:
+        md.acquired_instruments(db, min_history_years=years, hide_negative_returns=True)
+    assert error.value.status == 409
+    assert calls == [{"generation": "selected", "as_of": NOW}]
+    assert all(not job.get("reader_leases") for job in db.acquisition_jobs.find())
+    assert dates.call_count <= 1
+    if dates.called:
+        dates.assert_called_once_with(db, ISIN, LISTING, as_of=NOW, generation="selected")
 
 
 @pytest.mark.parametrize("change", ["prices", "fill", "splits", "generation"])
@@ -543,30 +591,28 @@ def test_acquired_return_filter_validates_cached_statistics(db, config, clock, m
     cached = db.instrument_statistics.find_one({"_id": ISIN})
     clock[0] += timedelta(hours=1)
     if change == "prices":
-        db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "date": "2026-09-16", "collected_at": clock[0],
-                              "job_id": "revised", "data": bar("2026-09-16", "50")})
+        from test_portfolio_tracker import quote
+        quote(db, "2026-09-16", "50")
     elif change == "fill":
         # Reuse the real policy shape, changing one validated signature input.
         policy = dict(cached["signature"]["quote_fill_policy"])
         policy["method"] = "none" if policy["method"] != "none" else "smooth"
         monkeypatch.setattr(return_statistics, "read_policy", lambda db: policy)
-    elif change == "splits":
-        db.split_snapshots.insert_one({"_id": "new-splits", "instrument_id": ISIN, **LISTING,
-                                      "requested_at": clock[0], "collected_at": clock[0], "data": [], "status": "succeeded"})
     else:
-        db.instruments.update_many({}, {"$set": {"provider": "yfinance", "published": True, "job_id": "new-generation"}})
-        db.acquisition_jobs.insert_one({"_id": "new-generation", "instrument_id": ISIN, "listing": LISTING,
-                                        "provider": "yfinance", "published": True, "published_at": clock[0]})
+        rows = [row["data"] for row in db.quotes.find({"job_id": cached["signature"]["generation"]})]
+        seed_yahoo(db, generation="new-generation", rows=rows if change == "splits" else (), collected_at=clock[0])
+        if change == "splits":
+            db.split_snapshots.update_one({"_id": "new-generation"}, {"$set": {"error": "Conflicting split evidence"}})
     latest_rows = Mock(wraps=return_statistics._latest_rows)
     monkeypatch.setattr(return_statistics, "_latest_rows", latest_rows)
     filtered = md.acquired_instruments(db, hide_negative_returns=True)
     assert latest_rows.call_count == 1
     updated = db.instrument_statistics.find_one({"_id": ISIN})
     assert updated["signature"] != cached["signature"]
-    if change in ("prices", "generation", "splits"):
-        # A conflicting replacement split snapshot invalidates derived returns.
+    if change in ("prices", "generation"):
         assert filtered["total"] == 0
     else:
+        # Already adjusted Yahoo Close does not depend on reapplying split evidence.
         assert filtered["total"] == 1
     latest_rows.reset_mock()
     assert md.acquired_instruments(db, hide_negative_returns=True) == filtered
@@ -596,13 +642,9 @@ def test_acquired_history_filter_precedes_pagination(db, monkeypatch, years):
     monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
     ids = ["IE0000000001", "IE0000000002", "IE0000000003", "IE0000000004"]
     for index, isin in enumerate(ids):
-        db.instruments.insert_one({"instrument_id": isin, **LISTING, "collected_at": NOW, "job_id": isin})
         # First row is just short; second and third match exactly; last is profile-only.
-        if index == 3:
-            continue
         end = f"{1990 + years}-01-01" if index else f"{1989 + years}-12-31"
-        for day in ["1990-01-01", end]:
-            db.quotes.insert_one({"instrument_id": isin, **LISTING, "date": day, "collected_at": NOW, "job_id": isin})
+        seed_yahoo(db, isin, rows=[] if index == 3 else [bar(day) for day in ("1990-01-01", end)])
     # Neither other listings nor unpublished Yahoo history may extend coverage.
     db.quotes.insert_one({"instrument_id": ids[0], **LISTING, "symbol": "OTHER", "date": "1900-01-01", "collected_at": NOW})
     db.instruments.insert_one({"instrument_id": "IE0000000005", **LISTING, "collected_at": NOW, "provider": "yfinance", "published": False})
@@ -644,24 +686,18 @@ def test_history_filter_accepts_publication_during_profile_selection(db, clock, 
 
     publish("previous", ("2024-01-01", "2025-01-01"))
     db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
-    aggregate = db.instruments.aggregate
+    publications = md._acquired_publications
 
-    def select_with_refresh(pipeline, *args, **kwargs):
-        if not any("$group" in stage for stage in pipeline):
-            return aggregate(pipeline, *args, **kwargs)
-
-        def cursor():
-            # A refresh becomes visible while the inventory cursor is consumed.
-            clock[0] += timedelta(seconds=1)
-            publish("refreshed", ("2020-01-01", "2025-01-01"))
-            yield from aggregate(pipeline, *args, **kwargs)
-
-        return cursor()
+    def select_with_refresh(database):
+        # A refresh becomes visible while the publication cursor is consumed.
+        clock[0] += timedelta(seconds=1)
+        publish("refreshed", ("2020-01-01", "2025-01-01"))
+        yield from publications(database)
 
     bounds = Mock(wraps=md.saved_history_bounds)
     dates = Mock(wraps=md.quote_dates)
     statistics = Mock(wraps=return_statistics.refresh_statistics)
-    monkeypatch.setattr(db.instruments, "aggregate", select_with_refresh)
+    monkeypatch.setattr(md, "_acquired_publications", select_with_refresh)
     monkeypatch.setattr(md, "saved_history_bounds", bounds)
     monkeypatch.setattr(md, "quote_dates", dates)
     monkeypatch.setattr(return_statistics, "refresh_statistics", statistics)
@@ -672,9 +708,10 @@ def test_history_filter_accepts_publication_during_profile_selection(db, clock, 
     assert item["instrument_id"] == ISIN
     assert item["collected_at"] == md.public(clock[0])
     assert (item["first_date"], item["last_date"], item["quote_count"]) == ("2020-01-01", "2025-01-01", 2)
-    assert bounds.call_args.args[2] == clock[0] == NOW + timedelta(seconds=1)
-    dates.assert_called_once_with(db, ISIN, LISTING, generation="refreshed", publication_as_of=clock[0])
-    statistics.assert_called_once_with(db, ISIN, generation="refreshed", as_of=clock[0])
+    assert bounds.call_args.args[2] == NOW
+    assert clock[0] == NOW + timedelta(seconds=1)
+    dates.assert_called_once_with(db, ISIN, LISTING, generation="refreshed", as_of=NOW)
+    statistics.assert_called_once_with(db, ISIN, generation="refreshed", as_of=NOW)
     print({"scenario": "publication during saved-profile selection", "total": result["total"],
            "instrument_id": item["instrument_id"], "generation": "refreshed",
            "publication_cutoff": md.public(clock[0]), "first_date": item["first_date"],
@@ -688,9 +725,7 @@ def test_history_endpoint_pipeline_and_batch_operation_bounds(db, monkeypatch, h
 
     for index in range(123):
         isin = f"IE{index:010d}"
-        db.instruments.insert_one({"instrument_id": isin, **LISTING, "collected_at": NOW})
-        for day in ("1990-01-01", "2020-01-01"):
-            db.quotes.insert_one({"instrument_id": isin, **LISTING, "date": day})
+        seed_yahoo(db, isin, rows=[bar(day) for day in ("1990-01-01", "2020-01-01")])
     dates = Mock(wraps=md.quote_dates)
     distinct = Mock(wraps=db.quotes.distinct)
     refresh = Mock(return_value=({}, {"listing": LISTING}))
@@ -709,8 +744,10 @@ def test_history_endpoint_pipeline_and_batch_operation_bounds(db, monkeypatch, h
             lookup = stage["$lookup"]
             assert lookup["from"] == "quotes"
             assert lookup["pipeline"][1:] == [{"$sort": {"date": direction}}, {"$limit": 1}, {"$project": {"_id": 0, "date": 1}}]
-            assert lookup["pipeline"][0]["$match"]["provider"] == {"$ne": "yfinance"}
-            assert len(lookup["pipeline"][0]["$match"]["$expr"]["$and"]) == 3
+            assert lookup["pipeline"][0]["$match"]["date"] == {"$lte": NOW.date().isoformat()}
+            assert len(lookup["pipeline"][0]["$match"]["$expr"]["$and"]) == 5
+            assert all(seed["provider"] == "yfinance" and seed["generation"] == seed["instrument_id"]
+                       for seed in pipeline[1]["$project"]["candidate"]["$literal"])
             probes += len(pipeline[1]["$project"]["candidate"]["$literal"])
     assert probes == 246  # Internal probes, not client commands or examined keys.
     print({"scenario": "synthetic saved-history 30y filter, page after 100 matches",
@@ -731,9 +768,10 @@ def test_history_endpoint_pipeline_and_batch_operation_bounds(db, monkeypatch, h
 def test_history_seed_size_bound_and_disappearing_carrier(db, monkeypatch):
     from bson import BSON
 
-    observations = [{"_id": f"IE{index:010d}", "listing": {"symbol": "$" + "X" * 2000, "exchange": "XETR"}}
-                    for index in range(5)]
-    seeds = [{"instrument_id": row["_id"], **row["listing"], "generation": "legacy"} for row in observations]
+    observations = [{"_id": f"IE{index:010d}", "listing": {"symbol": "$" + "X" * 2000, "exchange": "XETR"},
+                     "provider": "yfinance", "job_id": f"generation-{index}"} for index in range(5)]
+    seeds = [{"instrument_id": row["_id"], **row["listing"], "generation": row["job_id"], "provider": "yfinance"}
+             for row in observations]
     command = lambda batch: {"aggregate": "instruments", "pipeline": md.history_bounds_pipeline(batch), "cursor": {}}
     # A deliberately low cap exercises BSON splitting before the count cap.
     monkeypatch.setattr(md, "HISTORY_COMMAND_BYTES", len(BSON.encode(command(seeds[:2]))) + md.HISTORY_COMMAND_OVERHEAD)
@@ -747,9 +785,14 @@ def test_history_seed_size_bound_and_disappearing_carrier(db, monkeypatch):
     monkeypatch.setattr(md, "HISTORY_COMMAND_BYTES", 512 * 1024)
     assert md.saved_history_bounds(db, []) == {}
     assert md.acquired_instruments(db, min_history_years=30)["total"] == 0
+    for row in observations:
+        seed_yahoo(db, row["_id"], generation=row["job_id"], listing=row["listing"])
+    original = db.instruments.aggregate
+    monkeypatch.setattr(db.instruments, "aggregate", lambda pipeline: iter([]) if pipeline[0] == {"$limit": 1} else original(pipeline))
     with pytest.raises(md.DataError, match="inventory changed") as error:
         md.saved_history_bounds(db, observations)
     assert error.value.status == 409
+    assert all(not job.get("reader_leases") for job in db.acquisition_jobs.find())
 
 
 @pytest.mark.parametrize("years", [5, 15, 30])
@@ -788,7 +831,9 @@ def test_history_filter_full_payload_equivalence(db, years, provider):
             anniversary = date(start.year + years, 2, 28)
         if end >= anniversary:
             matching.append(item)
-    assert len(matching) == 2
+    assert len(matching) == (2 if provider == "yfinance" else 0)
+    if provider == "legacy":
+        assert all_items == []  # Legacy profiles and quotes never enter the Yahoo inventory.
     for offset in (0, 1, 2, 20):
         assert md.acquired_instruments(db, limit=1, offset=offset, min_history_years=years) == {
             "items": matching[offset:offset + 1], "total": len(matching), "limit": 1, "offset": offset,
@@ -810,9 +855,18 @@ def test_history_filter_rejects_invalid_pinned_publication(db, invalid):
     else:
         publication["published_at"] = NOW + timedelta(seconds=1)
     db.acquisition_jobs.insert_one(publication)
-    with pytest.raises(md.DataError, match="not published") as error:
-        md.acquired_instruments(db, min_history_years=5)
-    assert error.value.status == 409
+    if invalid == "unpublished":
+        assert md.acquired_instruments(db, min_history_years=5)["total"] == 0
+    elif invalid == "cutoff":
+        db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
+        for day in ("2020-01-01", "2025-01-01"):
+            db.quotes.insert_one({"instrument_id": ISIN, **LISTING, "provider": "yfinance", "job_id": "pinned", "date": day,
+                                  "data": {**bar(day), "price_basis": "provider_split_adjusted"}})
+        assert md.acquired_instruments(db, min_history_years=5)["total"] == 1
+    else:
+        with pytest.raises(md.DataError, match="latest Yahoo profile") as error:
+            md.acquired_instruments(db, min_history_years=5)
+        assert error.value.status == 409
 
 
 def test_history_publications_are_batched_pinned_and_keep_request_cutoff(db, monkeypatch, history_lookup_calls):
@@ -839,8 +893,8 @@ def test_history_publications_are_batched_pinned_and_keep_request_cutoff(db, mon
     find = Mock(wraps=db.acquisition_jobs.find)
     monkeypatch.setattr(db.acquisition_jobs, "find", find)
     bounds = md.saved_history_bounds(db, observations, NOW)
-    assert find.call_count == 3
-    assert all(call.args[0]["published_at"] == {"$lte": NOW} for call in find.call_args_list)
+    assert find.call_count <= 5 * len(observations)  # Per-reader validation, not batched publication-time filtering.
+    assert all("published_at" not in call.args[0] for call in find.call_args_list)
     assert len(history_lookup_calls) == 3
     assert all((row["first_date"], row["last_date"]) == ("2020-01-01", "2025-01-01") for row in bounds.values())
     for pipeline in history_lookup_calls:
@@ -853,17 +907,18 @@ def test_history_publications_are_batched_pinned_and_keep_request_cutoff(db, mon
 
     def after_membership(*args, **kwargs):
         result = original(*args, **kwargs)
-        monkeypatch.setattr(md, "utcnow", lambda: NOW + timedelta(days=1))
+        monkeypatch.setattr(md, "utcnow", lambda: NOW + timedelta(seconds=1))
         return result
 
     monkeypatch.setattr(md, "saved_history_bounds", after_membership)
     page = md.acquired_instruments(db, limit=1, min_history_years=5)
     assert page["items"][0]["quote_count"] == 2
-    assert quote_dates.call_args.kwargs == {"generation": "current-0", "publication_as_of": NOW}
+    assert quote_dates.call_args.kwargs == {"generation": "current-0", "as_of": NOW}
     assert refresh.call_args.kwargs == {"generation": "current-0", "as_of": NOW}
 
 
 def test_history_filter_keeps_previous_publication_after_failed_refresh(db):
+    db.instrument_state.insert_one({"_id": ISIN, "listing": LISTING})
     db.instruments.insert_many([
         {"instrument_id": ISIN, **LISTING, "job_id": "current", "provider": "yfinance",
          "published": True, "collected_at": NOW},
@@ -882,7 +937,8 @@ def test_history_filter_keeps_previous_publication_after_failed_refresh(db):
     ]:
         for day in days:
             db.quotes.insert_one({"instrument_id": isin, **LISTING, "job_id": generation,
-                                  "provider": "yfinance", "date": day})
+                                  "provider": "yfinance", "date": day,
+                                  "data": {**bar(day), "price_basis": "provider_split_adjusted"}})
     item = md.acquired_instruments(db, min_history_years=5)["items"][0]
     assert (item["first_date"], item["last_date"], item["quote_count"]) == ("2020-01-01", "2025-01-01", 2)
     assert md.acquired_instruments(db, min_history_years=15)["total"] == 0
@@ -896,16 +952,21 @@ def test_history_latest_profile_ties_missing_job_and_legacy_fallback(db):
                               (ObjectId("000000000000000000000002"), new)]:
         db.instruments.insert_one({"_id": identity, "instrument_id": ISIN, **listing,
                                    "provider": "yfinance", "published": True, "collected_at": NOW})
-    # No pinned job: preserve published_history's lookup and legacy fallback.
+    # Unattributed profiles/quotes are never a substitute for a complete publication.
     for listing, days in [(old, ("1800-01-01", "2025-01-01")), (new, ("2000-01-01", "2020-01-01"))]:
         for day in days:
             db.quotes.insert_one({"instrument_id": ISIN, **listing, "date": day})
     assert md.acquired_instruments(db, min_history_years=30)["total"] == 0
-    assert md.acquired_instruments(db, min_history_years=15)["items"][0]["listing"] == new
+    assert md.acquired_instruments(db, min_history_years=15)["total"] == 0
     db.acquisition_jobs.insert_one({"_id": "resolved", "instrument_id": ISIN, "listing": new,
                                     "provider": "yfinance", "published": True, "published_at": NOW})
+    with pytest.raises(md.DataError, match="latest Yahoo profile"):
+        md.acquired_instruments(db, min_history_years=5)
+    db.instruments.update_one({"_id": ObjectId("000000000000000000000002")}, {"$set": {"job_id": "resolved"}})
+    db.instrument_state.insert_one({"_id": ISIN, "listing": new})
     for day in ("2020-01-01", "2025-01-01"):
-        db.quotes.insert_one({"instrument_id": ISIN, **new, "job_id": "resolved", "provider": "yfinance", "date": day})
+        db.quotes.insert_one({"instrument_id": ISIN, **new, "job_id": "resolved", "provider": "yfinance", "date": day,
+                              "data": {**bar(day), "price_basis": "provider_split_adjusted"}})
     assert md.acquired_instruments(db, min_history_years=15)["total"] == 0
     assert md.acquired_instruments(db, min_history_years=5)["items"][0]["quote_count"] == 2
 
@@ -914,15 +975,14 @@ def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(
     import return_statistics
 
     rows = [bar("2025-09-16", "90")] + [bar(f"2026-09-{day}", close) for day, close in [(14, "100"), (15, "110"), (16, "99")]]
-    collect(db, config, Provider([page(rows)]))
-    db.instruments.insert_one({"instrument_id": "IE00B4L5Y983", **LISTING,
-                              "collected_at": NOW - timedelta(hours=1), "job_id": "other-profile"})
+    initial, _ = collect(db, config, Provider([page(rows)]))
+    seed_yahoo(db, "IE00B4L5Y983", generation="other-profile", collected_at=NOW - timedelta(hours=1))
     db.instrument_statistics.delete_many({})  # Previously acquired, not yet calculated.
     original_quotes = list(db.quotes.find())
     refresh = Mock(wraps=return_statistics.refresh_statistics)
     monkeypatch.setattr(return_statistics, "refresh_statistics", refresh)
     item = md.acquired_instruments(db, limit=1)["items"][0]
-    refresh.assert_called_once_with(db, ISIN, generation="legacy")
+    refresh.assert_called_once_with(db, ISIN, generation=initial["id"], as_of=NOW)
     assert db.instrument_statistics.count_documents({}) == 1  # Not the off-page ETF.
     logs = [math.log(1.1), math.log(0.9)]
     assert item["annualized_mean_log_return"] == pytest.approx(mean(logs) * 252)
@@ -941,9 +1001,8 @@ def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(
     clock[0] += timedelta(hours=1)
     assert md.acquired_instruments(db, limit=1)["items"][0] == item
     assert db.instrument_statistics.find_one({"_id": ISIN}) == cached
-    revised = original_quotes[-1]
-    db.quotes.insert_one({**revised, "_id": "revision", "job_id": "revision", "collected_at": clock[0],
-                          "data": {**revised["data"], "close": "121"}})
+    from test_portfolio_tracker import quote
+    quote(db, "2026-09-16", "121")
     updated = md.acquired_instruments(db, limit=1)["items"][0]
     assert updated["quote_count"] == 4
     assert updated["annualized_mean_log_return"] == pytest.approx(math.log(1.1) * 252)
@@ -951,9 +1010,7 @@ def test_acquired_annual_statistics_refresh_saved_history_only_for_current_page(
     assert updated["historical_year_volatility"] == pytest.approx(0)
     assert updated["historical_year_return"] == pytest.approx(121 / 90 - 1)
     # Revising the year-ago endpoint also invalidates the cached actual return.
-    revised = original_quotes[0]
-    db.quotes.insert_one({**revised, "_id": "start-revision", "job_id": "start-revision", "collected_at": clock[0],
-                          "data": {**revised["data"], "close": "100"}})
+    quote(db, "2025-09-16", "100")
     assert md.acquired_instruments(db, limit=1)["items"][0]["historical_year_return"] == pytest.approx(0.21)
 
 
@@ -964,14 +1021,10 @@ def test_acquired_annual_statistics_never_use_a_different_listing(db, config, mi
     db.instruments.update_many({}, {"$set": {"symbol": "PROFILE.DE"}})
     if missing_state:
         db.instrument_state.delete_one({"_id": ISIN})
-    item = md.acquired_instruments(db)["items"][0]
-    assert item["listing"]["symbol"] == "PROFILE.DE"
-    assert item["annualized_mean_log_return"] is None
-    assert item["annualized_volatility"] is None
-    for key in ("historical_year_return", "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis",
-                "historical_year_volatility", "historical_year_volatility_start_date", "historical_year_volatility_end_date",
-                "historical_year_volatility_price_basis", "historical_year_volatility_return_count"):
-        assert item[key] is None
+    with pytest.raises(md.DataError, match="latest Yahoo profile") as error:
+        md.acquired_instruments(db)
+    assert error.value.status == 409
+    assert all(not job.get("reader_leases") for job in db.acquisition_jobs.find())
 
 
 def test_request_queues_only_once_and_does_not_collect(db, config):
@@ -1000,9 +1053,10 @@ def test_publish_failure_is_sanitized_and_retriable(db, config):
 def test_initial_history_snapshots_exact_numbers_and_no_duplicate_redelivery(db, config):
     result, provider = collect(db, config)
     assert result["status"] == "succeeded"
-    assert result["calls"] == 3 and result["rows"] == 1
-    assert provider.calls[1][3:] == ("2010-05-19", "2026-09-16", 0)
-    assert md.budget_status(db, config)["used"] == 3
+    assert result["calls"] == 2 and result["rows"] == 1
+    assert provider.calls[1][3:] == ("2010-05-19", "2026-09-17", 0)
+    assert md.budget_status(db, config)["used"] == 0
+    assert db.marketstack_usage.count_documents({}) == 0
     snapshot = db.instruments.find_one()
     assert snapshot["collection_date"] == "2026-09-17"
     assert snapshot["data"] == provider.profile
@@ -1025,31 +1079,34 @@ def test_incremental_only_after_last_quote_and_fresh_profile(db, config, clock):
     clock[0] += timedelta(hours=1)
     source = Provider([page([bar("2026-09-16")])], {"ticker": "SXR8.DE", "name": "Updated", "new_field": 123})
     result, source = collect(db, config, source)
-    assert result["mode"] == "update"
-    assert source.calls[1][3:] == ("2026-09-16", "2026-09-16", 0)
+    assert result["mode"] == "refresh"
+    assert source.calls[1][3:] == ("2010-05-19", "2026-09-17", 0)
     assert db.instruments.count_documents({}) == 2
-    assert md.read_quotes(db, ISIN)["total"] == 2
+    assert md.read_quotes(db, ISIN)["total"] == 1  # A full replacement never mixes the preceding vintage.
     assert md.instrument_detail(db, config, ISIN)["profile"]["data"]["new_field"] == 123
-    assert md.instrument_detail(db, config, ISIN, NOW + timedelta(minutes=30))["profile"]["data"]["name"] == "Example"
+    assert md.instrument_detail(db, config, ISIN, NOW + timedelta(minutes=30))["profile"]["data"]["name"] == "Updated"
 
 
 def test_empty_increment_does_not_skip_late_published_quotes(db, config):
     collect(db, config)
     result, source = collect(db, config, Provider([page([])]))
-    assert result["status"] == "succeeded" and "no quotes" in result["warning"]
+    assert result["status"] == "failed"  # Empty replacement must not erase readable history.
     assert db.instrument_state.find_one()["last_complete_quote_date"] == "2026-09-15"
+    assert md.read_quotes(db, ISIN)["total"] == 1
     new = enqueue(db, config)
-    assert db.acquisition_jobs.find_one({"_id": new["id"]})["date_from"] == "2026-09-16"
+    assert db.acquisition_jobs.find_one({"_id": new["id"]})["date_from"] == "2010-05-19"
 
 
-def test_explicit_backfill_queries_only_the_older_gap(db, config):
+def test_explicit_backfill_is_full_yahoo_refresh_with_monotone_watermark(db, config, clock):
     collect(db, config)
+    clock[0] += timedelta(seconds=1)
     job = enqueue(db, config, mode="backfill")
     provider = Provider([page([bar("2020-01-02")])])
     result = md.run_acquisition(db, config, job["id"], provider.factory)
-    assert result["mode"] == "backfill"
-    assert provider.calls[1][3:5] == ("2010-05-19", "2026-09-14")
+    assert result["mode"] == "refresh"
+    assert provider.calls[1][3:5] == ("2010-05-19", "2026-09-17")
     assert db.instrument_state.find_one()["last_complete_quote_date"] == "2026-09-15"
+    assert result["status"] == "succeeded"
     assert md.read_quotes(db, ISIN)["items"][0]["date"] == "2020-01-02"
 
 
@@ -1058,10 +1115,11 @@ def test_failed_pagination_does_not_advance_watermark(db, config):
     result, _ = collect(db, config, provider)
     assert result["status"] == "failed"
     assert db.quotes.count_documents({}) == 1
-    assert db.instrument_state.find_one()["last_complete_quote_date"] is None
+    assert db.instrument_state.find_one() is None  # Failed first download never publishes listing/watermark.
+    assert md.read_quotes(db, ISIN)["items"] == []
     new = enqueue(db, config)
     assert db.acquisition_jobs.find_one({"_id": new["id"]})["date_from"] == "2010-05-19"
-    assert new["mode"] == "initial"
+    assert new["mode"] == "refresh"
 
 
 def test_database_retry_resumes_profile_and_idempotent_page_writes(db, config, clock, monkeypatch):
@@ -1084,9 +1142,9 @@ def test_database_retry_resumes_profile_and_idempotent_page_writes(db, config, c
     provider = Provider()
     result = md.run_acquisition(db, config, job["id"], provider.factory)
     assert result["status"] == "succeeded"
-    assert [call[0] for call in provider.calls] == ["splits"]  # Reuse saved EOD, fetch only missing splits.
+    assert provider.calls == []  # Reuse saved EOD and its exact split actions, entirely offline.
     assert db.instruments.count_documents({}) == db.quotes.count_documents({}) == 1
-    assert result["calls"] == 3
+    assert result["calls"] == 2
 
 
 def test_completed_download_can_be_finalized_offline_after_statistics_failure(db, config, monkeypatch):
@@ -1137,27 +1195,23 @@ def test_successful_page_checkpoint_resumes_at_next_offset(db, config, clock):
     assert md.read_quotes(db, ISIN)["total"] == 2
 
 
-def test_budget_and_job_limits_stop_before_http(db, config):
-    config.marketstack_monthly_budget = 1
+def test_retired_budget_is_ignored_but_current_job_limits_stop_before_http(db, config):
+    db.marketstack_usage.insert_one({"_id": "2026-09", "used": 10**9})
     result, source = collect(db, config)
-    assert result["status"] == "failed"
-    assert len(source.calls) == 1
-    assert result["calls"] == 1
-    assert md.budget_status(db, config)["remaining"] == 0
-    assert db.quotes.count_documents({}) == 0
-    with pytest.raises(md.DataError, match="budget"):
-        enqueue(db, config)
-    config.marketstack_monthly_budget = 30
-    config.marketstack_max_calls_per_job = 1
+    assert result["status"] == "succeeded" and result["calls"] == len(source.calls) == 2
+    assert md.budget_status(db, config)["remaining"] is None
+    assert db.marketstack_usage.find_one()["used"] == 10**9
+    config.market_data_max_calls_per_job = 1
     result, source = collect(db, config)
     assert result["status"] == "failed" and "safety limit" in result["error"]
-    assert len(source.calls) == 1
+    assert result["calls"] == len(source.calls) == 1
+    assert md.read_quotes(db, ISIN)["total"] == 1  # Retain the preceding complete vintage.
 
 
 def test_provider_isin_mismatch_is_preserved_without_blocking_download(db, config):
     result, source = collect(db, config, Provider(profile={"ticker": "SXR8.DE", "isin": "IE00B4L5Y983"}))
     assert result["status"] == "succeeded"
-    assert len(source.calls) == 3
+    assert len(source.calls) == 2
     assert db.instruments.find_one()["data"]["isin"] == "IE00B4L5Y983"
     assert db.quotes.count_documents({}) == 1
 
@@ -1192,16 +1246,20 @@ def test_orphaned_queued_request_can_be_retried_and_late_delivery_skips(db, conf
 
 def test_quote_observations_as_of_and_pagination(db, config, clock):
     first, _ = collect(db, config)
-    original = db.quotes.find_one()
-    revised = {**original, "_id": "revision", "job_id": "revision", "collected_at": NOW + timedelta(hours=1), "data": bar(close="100.5")}
-    db.quotes.insert_one(revised)
-    clock[0] += timedelta(hours=2)
+    from test_portfolio_tracker import quote
+    quote(db, "2026-09-15", "999", publish=False)
+    assert md.read_quotes(db, ISIN)["items"][0]["close"] == "101.1234567890123456789"
+    clock[0] += timedelta(hours=1)
+    quote(db, "2026-09-15", "100.5")
+    clock[0] += timedelta(hours=1)
     assert md.read_quotes(db, ISIN)["items"][0]["close"] == "100.5"
-    assert md.read_quotes(db, ISIN, as_of=NOW + timedelta(minutes=30))["items"][0]["close"] == "101.1234567890123456789"
-    assert md.read_quotes(db, ISIN, as_of=NOW - timedelta(seconds=1))["total"] == 0
+    assert md.read_quotes(db, ISIN, as_of=NOW + timedelta(minutes=30))["items"][0]["close"] == "100.5"
+    assert md.read_quotes(db, ISIN, as_of=NOW - timedelta(days=3))["total"] == 0
     assert md.read_quotes(db, ISIN, limit=1, offset=1)["items"] == []
     assert md.read_quotes(db, ISIN)["total"] == 1
-    assert md.instrument_detail(db, config, ISIN, NOW - timedelta(seconds=1))["profile"] is None
+    assert md.instrument_detail(db, config, ISIN, NOW - timedelta(seconds=1))["profile"] is not None
+    with pytest.raises(md.DataError, match="superseded"):
+        md.read_quotes(db, ISIN, generation=first["id"])
 
 
 @pytest.fixture
@@ -1243,7 +1301,7 @@ def test_routes_auth_validation_and_db_only_reads(api, db, config):
     assert response.status_code == 202
     assert response.json()["job"]["status"] == "queued"
     publish.assert_called_once()
-    assert config.marketstack_api_key.get_secret_value() not in response.text
+    assert "access_key" not in response.text and "private-crumb" not in response.text
 
 
 def test_budget_route_reads_current_global_usage_without_consuming_quota(api, db, config, clock):
@@ -1254,12 +1312,10 @@ def test_budget_route_reads_current_global_usage_without_consuming_quota(api, db
     for _ in range(2):
         response = client.get("/instruments/budget")
         assert response.status_code == 200
-        assert response.json() == {"month": "2026-09", "limit": 30, "used": 7, "remaining": 23}
+        assert response.json() == {"provider": "yfinance", "metered": False, "month": "2026-09", "limit": None, "used": 0, "remaining": None}
     assert db.marketstack_usage.find_one({"_id": "2026-09"})["used"] == 7
-    config.marketstack_monthly_budget = 5
-    assert client.get("/instruments/budget").json()["remaining"] == 0
     clock[0] = datetime(2026, 10, 1, tzinfo=timezone.utc)
-    assert client.get("/instruments/budget").json() == {"month": "2026-10", "limit": 5, "used": 0, "remaining": 5}
+    assert client.get("/instruments/budget").json() == {"provider": "yfinance", "metered": False, "month": "2026-10", "limit": None, "used": 0, "remaining": None}
     publish.assert_not_called()
 
 
@@ -1267,8 +1323,8 @@ def test_budget_route_reads_current_global_usage_without_consuming_quota(api, db
 def test_price_currency_api_persists_supported_values_without_acquisition(api, db, config, monkeypatch, currency):
     client, publish = api
     provider = Mock(side_effect=AssertionError("Currency edits must not call Marketstack"))
-    monkeypatch.setattr(md, "MarketstackClient", provider)
-    config.marketstack_monthly_budget = 0  # Manual metadata does not need provider quota.
+    monkeypatch.setattr(md, "provider_client", provider)
+    config.market_data_max_calls_per_job = 1  # Manual metadata does not reserve any provider requests.
     catalogue = list(db.etfs.find())
     base = f"/instruments/{ISIN}"
     assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).status_code == 200
@@ -1356,7 +1412,7 @@ def test_price_currency_updates_preserve_state_and_raw_observations_including_as
     collections = ("etfs", "instruments", "quotes", "raw_eod_pages", "acquisition_jobs", "marketstack_usage")
     stored = {name: list(db[name].find()) for name in collections}
     provider = Mock(side_effect=AssertionError("Currency edits and reads must not call Marketstack"))
-    monkeypatch.setattr(md, "MarketstackClient", provider)
+    monkeypatch.setattr(md, "provider_client", provider)
     client, publish = api
     base = f"/instruments/{ISIN}"
     historical = {"as_of": NOW.isoformat()}
@@ -1386,7 +1442,7 @@ def test_price_currency_updates_preserve_state_and_raw_observations_including_as
 
 
 @pytest.mark.parametrize("already_acquired", [False, True], ids=["initial", "update"])
-def test_price_currency_override_survives_provider_acquisition(api, db, config, already_acquired):
+def test_price_currency_override_survives_provider_acquisition(api, db, config, clock, already_acquired):
     if already_acquired:
         result, _ = collect(db, config)
         assert result["status"] == "succeeded"
@@ -1395,13 +1451,14 @@ def test_price_currency_override_survives_provider_acquisition(api, db, config, 
     base = f"/instruments/{ISIN}"
     assert client.patch(base + "/price-currency", json={"price_currency": "CHF"}).status_code == 200
     used = md.budget_status(db, config)["used"]
+    clock[0] += timedelta(seconds=1)
     source = Provider([page([{**bar("2026-09-16"), "price_currency": "GBP"}])],
                       profile={"ticker": "SXR8.DE", "price_currency": "USD"})
     result, source = collect(db, config, source)
     assert result["status"] == "succeeded"
-    assert result["mode"] == ("update" if already_acquired else "initial")
-    assert len(source.calls) == 3
-    assert md.budget_status(db, config)["used"] == used + 3
+    assert result["mode"] == "refresh"
+    assert len(source.calls) == result["calls"] == 2
+    assert md.budget_status(db, config)["used"] == used == 0
     state = db.instrument_state.find_one({"_id": ISIN})
     assert state["price_currency_override"] == "CHF"
     assert state["listing"] == LISTING
@@ -1435,7 +1492,7 @@ def test_price_currency_override_is_shared_between_authenticated_users(api, db):
 def test_acquired_api_returns_saved_data_without_provider_calls(api, db, config, monkeypatch):
     collect(db, config, Provider([page([bar("2025-09-16", "90"), bar("2026-09-14", "100"), bar("2026-09-15", "110"), bar("2026-09-16", "99")])]))
     provider = Mock(side_effect=AssertionError("Browsing must not call Marketstack"))
-    monkeypatch.setattr(md, "MarketstackClient", provider)
+    monkeypatch.setattr(md, "provider_client", provider)
     used = md.budget_status(db, config)["used"]
     client, publish = api
     client.post("/auth/login", json={"login": "admin", "password": "admin"})
@@ -1454,7 +1511,7 @@ def test_acquired_api_returns_saved_data_without_provider_calls(api, db, config,
         assert item[key] == stats[key]
     assert response.json()["total"] == 1
     assert "data" not in response.json()["items"][0]
-    assert config.marketstack_api_key.get_secret_value() not in response.text
+    assert "access_key" not in response.text and "private-crumb" not in response.text
     assert md.budget_status(db, config)["used"] == used
     provider.assert_not_called()
     publish.assert_not_called()

@@ -3,6 +3,7 @@
 Tokens are reproducible hashes of server state, not authorization credentials.
 The bounded portfolio document retains receipts even when ledger events are removed.
 """
+from contextlib import ExitStack
 from datetime import date as Date, timedelta
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, localcontext
 from hashlib import sha256
@@ -119,21 +120,31 @@ def target_contract(plan, today, snapshot):
     return contract, targets, policy
 
 
-def market_snapshot(db, isins, positions, now):
+def market_snapshot(db, isins, positions, now, *, readers=None):
     """Raw observations only. Filled/carried marks never become trade defaults."""
+    with ExitStack() as local_readers:
+        return _market_snapshot(db, isins, positions, now,
+                                readers if readers is not None else local_readers)
+
+
+def _market_snapshot(db, isins, positions, now, readers):
     market = {}
     for isin in sorted(isins):
         item = {"instrument_id": isin, "eligible": False, "price_eur": None, "blockers": []}
         state = db.instrument_state.find_one({"_id": isin}) or {}
         item["state_token"] = digest(state)
         try:
+            from market_data_retention import reader
+            listing = state.get("listing")
+            # Retain earlier instruments through all allocation/preview derivation.
+            readers.enter_context(reader(db, isin, listing))
             instrument = ledger.acquired_instrument(db, isin, now)
             pinned = positions.get(isin, {}).get("instrument")
             if pinned and any(pinned[key] != instrument[key] for key in ("symbol", "exchange", "currency")):
                 raise md.DataError(422, "Pinned listing no longer matches acquired listing.")
             item.update(eligible=True, listing=instrument)
             query = {**md.observation_filter(db, isin, instrument, now),
-                     "date": {"$lte": now.date().isoformat()}, "collected_at": {"$lte": now}}
+                     "date": {"$lte": now.date().isoformat()}}
             raw = db.quotes.find_one(query, sort=[("date", -1), ("collected_at", -1), ("_id", -1)])
             item["quote_token"] = digest(raw)
             data = (raw or {}).get("data", {})
@@ -150,6 +161,8 @@ def market_snapshot(db, isins, positions, now):
                 number(price, positive=True, places=8)
                 item["price_eur"] = str(price)
         except (md.DataError, ValueError, ArithmeticError) as exc:
+            if isinstance(exc, md.DataError) and exc.status == 409:
+                raise
             item["blockers"].append(str(exc))
         market[isin] = item
     return market
@@ -272,13 +285,15 @@ def compute_actions(funding, weights, cash, positions, market, policy, today, es
     return targets, actions, [], {"complete": True, "equity_eur": ledger.euros(equity), "max_deviation": str(drift)}
 
 
-def recommendation_snapshot(db, owner, customer_id, document, now):
-    with localcontext() as context:
+def recommendation_snapshot(db, owner, customer_id, document, now, readers=None):
+    with ExitStack() as local_readers, localcontext() as context:
         context.prec = 80
-        return _recommendation_snapshot(db, owner, customer_id, document, now)
+        return _recommendation_snapshot(db, owner, customer_id, document, now,
+                                        readers=readers if readers is not None else local_readers)
 
 
-def _recommendation_snapshot(db, owner, customer_id, document, now, estimated_fees=ZERO, sale_overrides=None):
+def _recommendation_snapshot(db, owner, customer_id, document, now, estimated_fees=ZERO, sale_overrides=None,
+                             *, readers):
     day = now.date()
     result = {"plan_id": document.get("plan_id"), "revision": document["revision"], "date": day.isoformat(),
               "status": "blocked", "funding": None, "targets": [], "actions": [], "blockers": [],
@@ -299,7 +314,8 @@ def _recommendation_snapshot(db, owner, customer_id, document, now, estimated_fe
         last = document.get("recommendation_last_rebalance")
         policy["last_rebalance_date"] = last.get("date") if last else None
         policy["next_eligible_date"] = (Date.fromisoformat(last["date"]) + timedelta(days=policy["cooldown_days"])).isoformat() if last else None
-        market = market_snapshot(db, set(positions) | {isin for isin in weights if isin is not None}, positions, now)
+        market = market_snapshot(db, set(positions) | {isin for isin in weights if isin is not None}, positions, now,
+                                 readers=readers)
         targets, actions, blockers, allocation = compute_actions(
             funding, weights, cash, positions, market, policy, day, estimated_fees, sale_overrides)
         for action in actions:
@@ -391,13 +407,13 @@ def normalized_review(body):
 
 
 def prepare_preview(db, owner, customer_id, document, body, now):
-    with localcontext() as context:
+    with ExitStack() as readers, localcontext() as context:
         context.prec = 80
-        return _prepare_preview(db, owner, customer_id, document, body, now)
+        return _prepare_preview(db, owner, customer_id, document, body, now, readers)
 
 
-def _prepare_preview(db, owner, customer_id, document, body, now):
-    snapshot = recommendation_snapshot(db, owner, customer_id, document, now)
+def _prepare_preview(db, owner, customer_id, document, body, now, readers):
+    snapshot = recommendation_snapshot(db, owner, customer_id, document, now, readers)
     if body.date != now.date() or snapshot["snapshot_token"] != body.snapshot_token:
         raise md.DataError(409, "Recommendations changed. Refresh and review again.")
     original = {a["id"]: a for a in snapshot["actions"]}
@@ -414,7 +430,8 @@ def _prepare_preview(db, owner, customer_id, document, body, now):
     if estimated_fees or sale_overrides:
         # Revalue edited sales before sizing the group, so holdings bound sales
         # and cent-settled effective proceeds fund the dependent purchases.
-        adjusted = _recommendation_snapshot(db, owner, customer_id, document, now, estimated_fees, sale_overrides)
+        adjusted = _recommendation_snapshot(db, owner, customer_id, document, now, estimated_fees, sale_overrides,
+                                            readers=readers)
         snapshot["actions"] = adjusted["actions"]
         saved_prices = {t["instrument_id"]: t["price_eur"] for t in snapshot["targets"]}
         snapshot["targets"] = [{**t, "price_eur": saved_prices[t["instrument_id"]]} for t in adjusted["targets"]]
@@ -513,7 +530,7 @@ def _prepare_preview(db, owner, customer_id, document, body, now):
                                   for key, override in body.overrides.items() if key in ordinary_ids}
             baseline_request = PreviewRequest(snapshot_token=body.snapshot_token, date=body.date.isoformat(),
                                               action_ids=ordinary_ids, overrides=ordinary_overrides)
-            baseline_review, _ = _prepare_preview(db, owner, customer_id, document, baseline_request, now)
+            baseline_review, _ = _prepare_preview(db, owner, customer_id, document, baseline_request, now, readers)
             baseline = baseline_review["after"]
         if Decimal(projected["max_deviation"]) >= Decimal(baseline["max_deviation"]):
             raise md.DataError(422, "Rebalance must improve allocation over cash and contribution purchases alone.")

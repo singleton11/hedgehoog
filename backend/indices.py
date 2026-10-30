@@ -9,7 +9,7 @@ from uuid import UUID, uuid4, uuid5
 from pymongo import ASCENDING, DESCENDING
 from pymongo.errors import DuplicateKeyError
 
-from market_data import (DataError, expire_stalled_jobs, history_generation,
+from market_data import (DataError, expire_stalled_jobs,
                          observation_filter, public, public_job, quote_dates, utcnow)
 
 HISTORY_START = "1900-01-01"
@@ -123,14 +123,21 @@ def add_index(db, values, requested_by):
 
 
 def index_detail(db, instrument_id, *, record=None):
+    from market_data_retention import reader
+
+    state = db.instrument_state.find_one({"_id": instrument_id}) or {}
+    with reader(db, instrument_id, state.get("listing")) as generation:
+        return _index_detail(db, instrument_id, generation, record=record)
+
+
+def _index_detail(db, instrument_id, generation, *, record=None):
     record = record if record is not None else require_index(db, instrument_id)
     expire_stalled_jobs(db, instrument_id)
     state = db.instrument_state.find_one({"_id": instrument_id}) or {}
     listing = state.get("listing")
-    generation = history_generation(db, instrument_id, listing)
-    dates = quote_dates(db, instrument_id, listing, generation=generation)
+    dates = quote_dates(db, instrument_id, listing, as_of=utcnow(), generation=generation)
     profile = None
-    if listing and generation != "legacy":
+    if listing and generation is not None:
         observation = db.instruments.find_one(observation_filter(db, instrument_id, listing, generation=generation))
         if observation:
             profile = {key: observation[key] for key in ("collected_at", "collection_date", "data")}
@@ -150,7 +157,8 @@ def index_detail(db, instrument_id, *, record=None):
                        "verified_generation": generation if verified else None,
                        "currency_source": "catalogue" if record.get("currency") else "yahoo_chart" if currency else None},
         "generation": generation, "acquisition": public_job(job), "profile": profile,
-        "summary": {"quote_count": len(dates), "first_date": dates[0] if dates else None, "last_date": dates[-1] if dates else None},
+        "summary": {"quote_count": len(dates), "first_date": dates[0] if dates else None, "last_date": dates[-1] if dates else None,
+                    "warning": "Request Yahoo acquisition before reading history." if generation is None else None},
         "history_request": {"requested_from": HISTORY_START, "scope": "full_available_history",
                             "warning": "Requests Yahoo history from 1900-01-01 through yesterday. This is a request boundary, not an inception date or a completeness guarantee."},
     })

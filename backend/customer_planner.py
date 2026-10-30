@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 from pymongo import ReturnDocument
 
 from auth import CurrentUser
-from goal_planner import GoalRequest, simulation_cutoff
+from goal_planner import GoalRequest, simulate_with_history, simulation_cutoff
 from goal_simulation import Money, SimulationSettings, contribution_dates, money_string
 from goal_strategies import StrategySelection, get_strategy
 import market_data as md
@@ -275,8 +275,7 @@ def simulate(customer_id: str, goal_id: str, body: SimulationRequest, request: R
     parameters = strategy.resolve_parameters(inputs.strategy.parameters, db)
     # Dispatch through the same fresh eligibility checks and exact solver as
     # /goals/simulate. Nothing here changes the numerical model.
-    result = strategy.simulate(parameters, inputs, db, cutoff.date())
-    result = {**result, "data_as_of": md.public(cutoff)}
+    result = simulate_with_history(strategy, parameters, inputs, db, cutoff)
     now = md.utcnow()
     normalized_inputs = {**inputs.model_dump(mode="json", exclude_none=True), "goal_eur": money_string(inputs.goal_eur),
                          "starting_capital_eur": money_string(inputs.starting_capital_eur)}

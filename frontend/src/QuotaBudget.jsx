@@ -14,7 +14,7 @@ export default function QuotaBudget() {
     async function refresh() {
       try {
         const data = await request('/instruments/budget', { signal: controller.signal });
-        if (!controller.signal.aborted) setBudget(data);
+        if (!controller.signal.aborted) setBudget(data?.provider === 'yfinance' && data.metered === false ? data : null);
       } catch {
         if (!controller.signal.aborted) setBudget(null);
       } finally {
@@ -31,13 +31,9 @@ export default function QuotaBudget() {
     };
   }, [request]);
 
-  const unlimited = budget && budget.metered === false;
-  const label = budget?.provider === 'yfinance' ? 'Yahoo Finance · experimental' : 'Local budget';
   return <div className="budget" role="group" aria-label="Provider status">
-    {budget ? <>{unlimited ? <p title={`${budget.month} · unmetered experimental provider.`}>
-      <strong>{label}</strong>
-    </p> : <><p title={`${budget.month} · ${budget.used} used. Excludes requests outside Hedgehoog.`}>
-      <strong>{label}:</strong> {budget.remaining.toLocaleString()} / {budget.limit.toLocaleString()} calls left
-    </p><span className="budget-track" aria-hidden="true"><span style={{ width: `${budget.limit > 0 ? Math.max(0, Math.min(100, budget.remaining / budget.limit * 100)) : 0}%` }} /></span></>}</> : <p className="muted">{loading ? 'Loading provider status…' : 'Provider status unavailable.'}</p>}
+    {budget ? <p title={`${budget.month} · unmetered experimental provider.`}>
+      <strong>Yahoo Finance · experimental</strong>
+    </p> : <p className="muted">{loading ? 'Loading provider status…' : 'Provider status unavailable.'}</p>}
   </div>;
 }

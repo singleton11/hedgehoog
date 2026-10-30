@@ -351,7 +351,7 @@ def test_api_explicit_generated_batch_auth_seed_and_no_provider_calls(api, db, c
     login(client)
     assert client.post("/goals/calibrate", json=body(), headers={"Origin": "https://evil.example"}).status_code == 403
     provider = Mock(side_effect=AssertionError("No full-history fitting or provider requests"))
-    monkeypatch.setattr(md, "MarketstackClient", provider)
+    monkeypatch.setattr(md, "provider_client", provider)
     monkeypatch.setattr(gs, "instrument_statistics", provider)
     monkeypatch.setattr("goal_calibration.secrets.randbits", Mock(return_value=12345))
     generated = client.post("/goals/calibrate", json=body(seed=None))
@@ -417,7 +417,7 @@ def test_calibration_requires_strategy_handler_and_acquired_membership(api, db, 
     client, _ = api
     login(client)
     seed_history(db, rows_between())
-    assert "acquired universe" in client.post("/goals/calibrate", json=body()).json()["detail"]
+    assert "published Yahoo history" in client.post("/goals/calibrate", json=body()).json()["detail"]
     seed_profile(db)
     original = gs.get_strategy("buy_and_hold_single_instrument")
     simulation = Mock(side_effect=AssertionError("Do not fall back to goal simulation"))

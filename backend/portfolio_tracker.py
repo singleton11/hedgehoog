@@ -5,6 +5,7 @@ cash/holdings across processes without requiring a replica set or transactions.
 All accounting uses Decimal; rounded EUR settlement amounts, never JSON floats.
 """
 
+from contextlib import ExitStack, contextmanager
 from datetime import date as Date, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 from typing import Annotated, Literal
@@ -116,9 +117,18 @@ def require_portfolio(db, owner, customer_id, portfolio_id):
 
 
 def quote_rows(db, instrument, now, *, policy=None, carry_trailing=False):
-    """Latest observation per distinct effective date, on the pinned listing only."""
-    query = {**md.observation_filter(db, instrument["instrument_id"], instrument, now),
-             "date": {"$lte": now.date().isoformat()}, "collected_at": {"$lte": now}}
+    """Lease the latest Yahoo vintage through quote loading and derived fills."""
+    from market_data_retention import reader
+
+    with reader(db, instrument["instrument_id"], instrument) as generation:
+        if generation is None:
+            return []
+        return _quote_rows(db, instrument, now, generation, policy=policy, carry_trailing=carry_trailing)
+
+
+def _quote_rows(db, instrument, now, generation, *, policy=None, carry_trailing=False):
+    query = {**md.observation_filter(db, instrument["instrument_id"], instrument, generation=generation),
+             "date": {"$lte": now.date().isoformat()}}
     rows = db.quotes.aggregate([
         {"$match": query}, {"$sort": {"date": 1, "collected_at": -1, "_id": -1}},
         {"$group": {"_id": "$date", "data": {"$first": {
@@ -172,14 +182,24 @@ def currency_supported(db, instrument, rows):
 
 
 def acquired_instrument(db, isin, now):
+    from market_data_retention import reader
+
     if isin.startswith("idx-"):
         raise md.DataError(422, "Indices are reference data, not tradable portfolio instruments.")
+    state = db.instrument_state.find_one({"_id": isin}) or {}
+    with reader(db, isin, state.get("listing")) as generation:
+        if generation is None:
+            raise md.DataError(422, "Request Yahoo acquisition for this instrument before trading.")
+        return _acquired_instrument(db, isin, now, generation)
+
+
+def _acquired_instrument(db, isin, now, generation):
     state = db.instrument_state.find_one({"_id": isin}) or {}
     listing = state.get("listing") or {}
     if not all(isinstance(listing.get(key), str) and listing[key].strip() and len(listing[key].encode("utf-8")) <= 200
                for key in ("symbol", "exchange")):
         raise md.DataError(422, "Acquire a EUR instrument listing before trading.")
-    if not db.instruments.find_one(md.observation_filter(db, isin, listing, now)):
+    if not db.instruments.find_one(md.observation_filter(db, isin, listing, generation=generation)):
         raise md.DataError(422, "Acquire the selected instrument listing before trading.")
     catalogue = md.latest_catalogue(db, isin) or {}
     instrument = {"instrument_id": isin, "name": str(catalogue.get("name") or isin)[:200],
@@ -271,17 +291,43 @@ def replay(events, anchors=None):
         return cash, realized, positions
 
 
+@contextmanager
+def history_readers(db, instruments):
+    """Keep all portfolio sources current through the complete derived read."""
+    from market_data_retention import reader
+
+    with ExitStack() as readers:
+        selected = set()
+        for instrument in instruments:
+            key = tuple(instrument[field] for field in ("instrument_id", "symbol", "exchange"))
+            if key not in selected:
+                readers.enter_context(reader(db, instrument["instrument_id"], instrument))
+                selected.add(key)
+        yield
+
+
 def _cached_quote_rows(db, instrument, now, cache):
     key = tuple(instrument[field] for field in ("instrument_id", "symbol", "exchange"))
+    generation = md.history_generation(db, instrument["instrument_id"], instrument)
+    identity = (generation, now.date().isoformat())
     if "quote_fill_policy" not in cache:
         from quote_fill import read_policy
         cache["quote_fill_policy"] = read_policy(db)
+    if key in cache and cache.get(("history_identity", key)) != identity:
+        raise md.DataError(409, "Portfolio history changed during valuation. Refresh using the latest Yahoo history.")
     if key not in cache:
         cache[key] = quote_rows(db, instrument, now, policy=cache["quote_fill_policy"], carry_trailing=True)
+        cache[("history_identity", key)] = identity
     return cache[key]
 
 
 def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
+    with history_readers(db, (position["instrument"] for position in replay(document["transactions"])[2].values()
+                             if position["quantity"])):
+        return _valuation(db, document, now=now, quote_cache=quote_cache, exact_totals=exact_totals)
+
+
+def _valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
     """Public rounded totals by default; retain Decimal totals for aggregation."""
     with localcontext() as context:
         context.prec = 80
@@ -368,6 +414,12 @@ def valuation(db, document, *, now=None, quote_cache=None, exact_totals=False):
 
 
 def _daily_pnl(db, documents, now, quote_cache):
+    with history_readers(db, (event["instrument"] for document in documents
+                             for event in active_events(document["transactions"]) if "instrument" in event)):
+        return _daily_pnl_protected(db, documents, now, quote_cache)
+
+
+def _daily_pnl_protected(db, documents, now, quote_cache):
     """Current equity movement from a shared prior close, using latest saved marks.
 
     Include all trades after the prior close, even newer than the latest mark,
@@ -443,6 +495,18 @@ def _daily_pnl_interval(db, documents, rows, pairs, start, end):
 
 
 def customer_portfolio_summaries(db, owner, customer_ids):
+    if not customer_ids:
+        return {}
+    documents = list(db.portfolios.find(
+        {"user_id": owner, "customer_id": {"$in": customer_ids}},
+        {field: 1 for field in (*META_FIELDS, "transactions")},
+    ))
+    with history_readers(db, (event["instrument"] for document in documents
+                             for event in active_events(document["transactions"]) if "instrument" in event)):
+        return _customer_portfolio_summaries(db, customer_ids, documents)
+
+
+def _customer_portfolio_summaries(db, customer_ids, documents):
     """All portfolios for one owner/customer page; exact totals, never partials.
 
     Net worth preserves the sum of displayed portfolio equities. PnL totals
@@ -461,10 +525,6 @@ def customer_portfolio_summaries(db, owner, customer_ids):
         totals = {customer_id: dict.fromkeys(fields, ZERO) for customer_id in customer_ids}
         grouped = {customer_id: [] for customer_id in customer_ids}
         now, quote_cache = md.utcnow(), {}
-        documents = db.portfolios.find(
-            {"user_id": owner, "customer_id": {"$in": customer_ids}},
-            {field: 1 for field in (*META_FIELDS, "transactions")},
-        )
         for document in documents:
             customer_id = document["customer_id"]
             grouped[customer_id].append(document)
@@ -485,6 +545,12 @@ def customer_portfolio_summaries(db, owner, customer_ids):
 
 
 def portfolio_summary(db, document, now, quote_cache):
+    with history_readers(db, (event["instrument"] for event in active_events(document["transactions"])
+                             if "instrument" in event)):
+        return _portfolio_summary(db, document, now, quote_cache)
+
+
+def _portfolio_summary(db, document, now, quote_cache):
     """List-only metrics with the same accounting as customer summaries."""
     with localcontext() as context:
         context.prec = 80
@@ -506,7 +572,9 @@ def instruments(request: Request, user: CurrentUser, limit: Limit = 20, offset: 
     for isin in sorted(db.instruments.distinct("instrument_id")):
         try:
             items.append(acquired_instrument(db, isin, now))
-        except md.DataError:
+        except md.DataError as error:
+            if error.status == 409:
+                raise
             continue
     return {"items": items[offset:offset + limit], "total": len(items), "limit": limit, "offset": offset}
 
@@ -540,6 +608,8 @@ def portfolio(customer_id: str, portfolio_id: str, request: Request, user: Curre
 
 @router.get(BASE + "/{portfolio_id}/plan-tracking")
 def portfolio_plan_tracking(customer_id: str, portfolio_id: str, request: Request, user: CurrentUser):
+    from goal_strategies import get_strategy
+    from market_data_retention import reader
     from plan_tracking import track_plan
 
     db, owner = request.app.state.database, str(user["_id"])
@@ -548,7 +618,23 @@ def portfolio_plan_tracking(customer_id: str, portfolio_id: str, request: Reques
         raise md.DataError(422, "Assign a saved plan to this portfolio to track its progress.")
     plan = _plan(db, owner, customer_id, document["plan_id"])
     now = md.utcnow()
-    return track_plan(db, plan, valuation(db, document, now=now), now.date())
+    try:
+        selection = plan["inputs"]["strategy"]
+        strategy = get_strategy(selection["id"])
+        parameters = strategy.parameters_model.model_validate(selection["parameters"])
+    except (KeyError, ValueError, TypeError):
+        raise md.DataError(422, "The saved plan does not contain a supported simulation snapshot.") from None
+    sources = [position["instrument"] for position in replay(document["transactions"])[2].values()
+               if position["quantity"]]
+    # Equity and the forecast must use the same still-current selected histories.
+    with ExitStack() as readers:
+        readers.enter_context(history_readers(db, sources))
+        for key, field in parameters.__class__.model_fields.items():
+            isin = getattr(parameters, key)
+            if (field.json_schema_extra or {}).get("parameter_type") == "instrument" and isin is not None:
+                state = db.instrument_state.find_one({"_id": isin}) or {}
+                readers.enter_context(reader(db, isin, state.get("listing")))
+        return track_plan(db, plan, valuation(db, document, now=now), now.date())
 
 
 @router.patch(BASE + "/{portfolio_id}")

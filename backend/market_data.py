@@ -14,7 +14,6 @@ from bson import BSON, Decimal128, ObjectId
 from pymongo import ASCENDING, DESCENDING, ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
-from marketstack import MarketstackClient  # Explicit legacy adapter; never a fallback.
 from market_provider import MarketDataError
 from request_pacing import wait_for_yahoo_request
 
@@ -27,15 +26,13 @@ def provider_name(settings):
 
 
 def configured(settings):
-    return provider_name(settings) == "yfinance" or bool(settings.marketstack_api_key.get_secret_value())
+    return provider_name(settings) == "yfinance"
 
 
 def provider_client(settings, name, before_request):
     if name == "yfinance":
         from yahoo_finance import YahooFinanceClient
         return YahooFinanceClient(before_request=before_request, timeout=settings.market_data_timeout_seconds)
-    if name == "marketstack":
-        return MarketstackClient(settings.marketstack_api_key.get_secret_value(), before_request=before_request)
     raise MarketDataError("unknown_provider", "This acquisition uses an unsupported provider.")
 
 LEASE_SECONDS = 300
@@ -130,30 +127,32 @@ def search_catalogue(db, query, limit):
     return [{**record, "instrument_id": record["isin"]} for record in records]
 
 
-def acquired_universe(db):
-    """Capture selector/bulk-update membership without paginating a changing list.
-
-    Only read saved profiles and catalogue labels, never quote histories or
-    return statistics. Later acquisitions appear on the next explicit load.
-    """
-    profiles = list(db.instruments.aggregate([
-        {"$match": {"instrument_id": {"$not": {"$regex": "^idx-"}}, "$or": [{"provider": {"$ne": "yfinance"}}, {"published": True}]}},
-        {"$group": {"_id": "$instrument_id", "collected_at": {"$max": "$collected_at"}}},
+def _acquired_publications(db):
+    return db.acquisition_jobs.aggregate([
+        {"$match": {"instrument_id": {"$not": {"$regex": "^idx-"}}, "provider": "yfinance", "published": True}},
+        {"$sort": {"requested_at": -1, "published_at": -1, "_id": -1}},
+        {"$group": {"_id": "$instrument_id", "publication": {"$first": "$$ROOT"}}},
         {"$sort": {"_id": 1}},
-    ]))
-    labels = {}
-    for record in db.etfs.find(
-        {"isin": {"$in": [profile["_id"] for profile in profiles]}},
-        {"_id": 0, "isin": 1, "name": 1, "ticker": 1, "import_date": 1},
-    ).sort("import_date", DESCENDING):
-        labels.setdefault(record["isin"], record)
-    items = [{
-        "instrument_id": profile["_id"],
-        "name": labels.get(profile["_id"], {}).get("name"),
-        "ticker": labels.get(profile["_id"], {}).get("ticker"),
-        "collected_at": profile.get("collected_at"),
-    } for profile in profiles]
-    return public({"items": items, "total": len(items)})
+    ])
+
+
+def acquired_universe(db):
+    """Capture only latest published Yahoo profiles, never quote histories."""
+    from contextlib import ExitStack
+    from market_data_retention import reader
+
+    items = []
+    with ExitStack() as readers:
+        for row in _acquired_publications(db):
+            job = row["publication"]
+            generation = readers.enter_context(reader(db, row["_id"], job["listing"], job["_id"]))
+            profile = db.instruments.find_one(observation_filter(db, row["_id"], job["listing"], generation=generation))
+            if profile is None:
+                raise DataError(409, "The latest Yahoo profile is unavailable. Request Yahoo history again.")
+            catalogue = latest_catalogue(db, row["_id"]) or {}
+            items.append({"instrument_id": row["_id"], "name": catalogue.get("name"),
+                          "ticker": catalogue.get("ticker"), "collected_at": profile.get("collected_at")})
+        return public({"items": items, "total": len(items)})
 
 
 HISTORY_BATCH_SIZE = 50
@@ -178,37 +177,18 @@ def _history_batches(records, command):
         yield batch
 
 
-def _history_publication_query(seeds, cutoff):
-    queries = []
-    for seed in seeds:
-        query = {"instrument_id": seed["instrument_id"],
-                 "listing": {"symbol": seed["symbol"], "exchange": seed["exchange"]}}
-        if seed["generation"] is not None:
-            query["_id"] = seed["generation"]
-        queries.append(query)
-    return {"published": True, "published_at": {"$lte": cutoff}, "$or": queries}
-
-
 def history_bounds_pipeline(seeds):
-    """Two correlated, index-ordered endpoint probes per literal candidate.
-
-    Separate legacy and pinned batches keep job_id equality usable by the
-    existing (job_id, date) index; legacy uses the listing/date index instead.
-    The initial row is only a carrier, never a mutable profile reselection.
-    """
+    """Two generation-pinned, index-ordered endpoint probes per candidate."""
     if not seeds:
         raise ValueError("History endpoint probes require a nonempty batch")
-    legacy = seeds[0]["generation"] == "legacy"
-    if any((seed["generation"] == "legacy") != legacy for seed in seeds):
-        raise ValueError("Legacy and pinned history probes need separate batches")
+    if any(seed["generation"] in (None, "legacy") or seed.get("provider") != "yfinance" for seed in seeds):
+        raise DataError(409, "History bounds require the latest published Yahoo generation.")
     comparisons = [{"$eq": [f"${field}", f"$${field}"]}
                    for field in ("instrument_id", "symbol", "exchange")]
-    if not legacy:
-        comparisons += [{"$eq": ["$job_id", "$$generation"]}, {"$eq": ["$provider", "$$provider"]}]
+    comparisons += [{"$eq": ["$job_id", "$$generation"]}, {"$eq": ["$provider", "$$provider"]}]
     match = {"$expr": {"$and": comparisons}}
-    if legacy:
-        # Query $ne (unlike expression $ne) also accepts missing provider metadata.
-        match["provider"] = {"$ne": "yfinance"}
+    if "date_to" in seeds[0]:
+        match["date"] = {"$lte": seeds[0]["date_to"]}
     pipeline = [
         {"$limit": 1},
         {"$project": {"_id": 0, "candidate": {"$literal": seeds}}},
@@ -231,46 +211,30 @@ def history_bounds_pipeline(seeds):
 
 
 def saved_history_bounds(db, observations, as_of=None):
-    """Resolve publication visibility in batches, returning only compact extrema.
+    """Protect all selected vintages through validation and compact endpoint probes."""
+    from contextlib import ExitStack
+    from market_data_retention import reader
 
-    Membership never enumerates quote dates. Publication time is shared across
-    batches, but legacy quote observations retain their existing live semantics.
-    """
-    cutoff = as_of or utcnow()
-    seeds = [{"instrument_id": row["_id"], **row["listing"],
-              "generation": row.get("job_id") if row.get("provider") == "yfinance" else "legacy"}
-             for row in observations if row["listing"]]
-    publications = {}
-    needs_publication = [seed for seed in seeds if seed["generation"] != "legacy"]
-    validation_command = lambda batch: {"find": "acquisition_jobs", "filter": _history_publication_query(batch, cutoff)}
-    for batch in _history_batches(needs_publication, validation_command):
-        records = db.acquisition_jobs.find(
-            _history_publication_query(batch, cutoff),
-            {"instrument_id": 1, "listing": 1, "provider": 1, "requested_at": 1, "published_at": 1},
-        ).sort([("requested_at", DESCENDING), ("published_at", DESCENDING), ("_id", DESCENDING)])
-        for publication in records:
-            publications.setdefault(publication["instrument_id"], publication)
-        for seed in batch:
-            publication = publications.get(seed["instrument_id"])
-            if publication is None:
-                if seed["generation"] is not None:
-                    raise DataError(409, "This history generation is not published for this instrument and cutoff. Refresh instrument details.")
-                seed["generation"] = "legacy"
-            else:
-                seed.update(generation=publication["_id"], provider=publication["provider"])
-    bounds = {}
-    for legacy in (True, False):
-        candidates = [seed for seed in seeds if (seed["generation"] == "legacy") == legacy]
+    cutoff = aware(as_of) if as_of is not None else utcnow()
+    bounds, seeds = {}, []
+    with ExitStack() as readers:
+        for row in observations:
+            if not row["listing"]:
+                continue
+            requested = row.get("job_id") if row.get("provider") == "yfinance" else "legacy"
+            published_history(db, row["_id"], row["listing"], generation=requested)
+            generation = readers.enter_context(reader(db, row["_id"], row["listing"], requested))
+            if generation is not None:
+                seeds.append({"instrument_id": row["_id"], **row["listing"], "generation": generation,
+                              "provider": "yfinance", "date_to": cutoff.date().isoformat()})
         command = lambda batch: {"aggregate": "instruments", "pipeline": history_bounds_pipeline(batch), "cursor": {}}
-        for batch in _history_batches(candidates, command):
+        for batch in _history_batches(seeds, command):
             records = list(db.instruments.aggregate(history_bounds_pipeline(batch)))
-            # If the carrier vanished after inventory selection, do not return a
-            # plausible but incorrect empty total. The caller can retry the read.
             if len(records) != len(batch) or {row["instrument_id"] for row in records} != {seed["instrument_id"] for seed in batch}:
                 raise DataError(409, "Saved instrument inventory changed during filtering. Refresh the acquired list.")
             for row in records:
                 bounds[row["instrument_id"]] = row
-    return bounds
+        return bounds
 
 
 def _nonnegative_returns(statistics):
@@ -287,53 +251,36 @@ def _nonnegative_returns(statistics):
 
 
 def acquired_instruments(db, limit=20, offset=0, min_history_years=None, *, hide_negative_returns=False):
-    """One row per saved ETF profile, including partial/failed acquisitions.
-
-    The worker saves tickerinfo before any EOD pages, so profiles are the
-    acquisition inventory. A queued job or cached listing alone is not data.
-    Apply saved-history and optional return membership before counting/paging.
-    Without return filtering, refresh statistics only for the resulting page.
-    """
+    """Latest complete Yahoo profiles with generation-consistent history/returns."""
+    from contextlib import ExitStack
+    from market_data_retention import reader
     from return_statistics import refresh_statistics
 
-    pipeline = [
-        {"$match": {"instrument_id": {"$not": {"$regex": "^idx-"}}, "$or": [{"provider": {"$ne": "yfinance"}}, {"published": True}]}},
-        {"$project": {"instrument_id": 1, "symbol": 1, "exchange": 1, "collected_at": 1, "job_id": 1, "provider": 1, "asset_class": 1, "index": 1}},
-        {"$sort": {"instrument_id": 1, "collected_at": -1, "_id": -1}},
-        {"$group": {
-            "_id": "$instrument_id",
-            "listing": {"$first": {"symbol": "$symbol", "exchange": "$exchange"}},
-            "collected_at": {"$first": "$collected_at"},
-            "asset_class": {"$first": "$asset_class"},
-            "index": {"$first": "$index"},
-            "job_id": {"$first": "$job_id"}, "provider": {"$first": "$provider"},
-        }},
-        {"$sort": {"collected_at": -1, "_id": 1}},
-    ]
-    bounds = {}
-    page_statistics = {}
-    page_generations = {}
-    if min_history_years is None and not hide_negative_returns:
-        pipeline.append({"$facet": {"count": [{"$count": "total"}], "items": [{"$skip": offset}, {"$limit": limit}]}})
-        result = list(db.instruments.aggregate(pipeline))[0]
-    else:
-        observations = list(db.instruments.aggregate(pipeline))
-        # Profiles published while the cursor is consumed must pass validation.
-        publication_cutoff = utcnow()
+    cutoff = utcnow()
+    observations, page_statistics = [], {}
+    with ExitStack() as readers:
+        for row in _acquired_publications(db):
+            job = row["publication"]
+            generation = readers.enter_context(reader(db, row["_id"], job["listing"], job["_id"]))
+            profile = db.instruments.find_one(observation_filter(db, row["_id"], job["listing"], generation=generation))
+            if profile is None:
+                raise DataError(409, "The latest Yahoo profile is unavailable. Request Yahoo history again.")
+            observations.append({"_id": row["_id"], "listing": job["listing"], "job_id": generation,
+                                 "provider": "yfinance", **{key: profile.get(key) for key in ("collected_at", "asset_class", "index")}})
+        observations.sort(key=lambda row: row["_id"])
+        observations.sort(key=lambda row: aware(row["collected_at"]), reverse=True)
         if min_history_years is not None:
-            bounds = saved_history_bounds(db, observations, publication_cutoff)
+            bounds = saved_history_bounds(db, observations, cutoff)
             matching = []
             for observation in observations:
                 span = bounds.get(observation["_id"], {})
                 if not span.get("first_date") or not span.get("last_date"):
                     continue
                 start, end = date.fromisoformat(span["first_date"]), date.fromisoformat(span["last_date"])
-                # Calendar anniversaries, clamping leap day to February 28.
-                anniversary_year = start.year + min_history_years
                 try:
-                    anniversary = start.replace(year=anniversary_year)
+                    anniversary = start.replace(year=start.year + min_history_years)
                 except ValueError:
-                    anniversary = date(anniversary_year, 2, 28)
+                    anniversary = date(start.year + min_history_years, 2, 28)
                 if end >= anniversary:
                     matching.append(observation)
             observations = matching
@@ -341,71 +288,40 @@ def acquired_instruments(db, limit=20, offset=0, min_history_years=None, *, hide
             matching = []
             for observation in observations:
                 isin = observation["_id"]
-                if min_history_years is not None:
-                    generation = bounds[isin]["generation"]
-                elif observation.get("provider") == "yfinance":
-                    publication = published_history(db, isin, observation["listing"], publication_cutoff, observation.get("job_id"))
-                    generation = publication["_id"] if publication else "legacy"
-                else:
-                    generation = "legacy"
-                # A published generation belongs to the selected profile, not a
-                # concurrently changed state listing. Missing state is unavailable.
-                state = db.instrument_state.find_one({"_id": isin}) or {}
-                if state.get("listing") != observation["listing"]:
-                    continue
-                statistics, state = refresh_statistics(db, isin, generation=generation, as_of=publication_cutoff)
+                statistics, state = refresh_statistics(db, isin, generation=observation["job_id"], as_of=cutoff)
                 if state.get("listing") != observation["listing"] or not _nonnegative_returns(statistics):
                     continue
                 if offset <= len(matching) < offset + limit:
                     page_statistics[isin] = statistics
-                    page_generations[isin] = generation
                 matching.append(observation)
             observations = matching
-        result = {"items": observations[offset:offset + limit], "count": [{"total": len(observations)}]}
-    items = []
-    for observation in result["items"]:
-        isin = observation["_id"]
-        catalogue = db.etfs.find_one(
-            {"isin": isin}, {"_id": 0, "name": 1, "ticker": 1},
-            sort=[("import_date", DESCENDING)],
-        ) or {}
-        generation = observation.get("job_id") if observation.get("provider") == "yfinance" else "legacy"
-        if hide_negative_returns:
-            generation = page_generations[isin]
-            dates = quote_dates(db, isin, observation["listing"], generation=generation, publication_as_of=publication_cutoff)
-            statistics = page_statistics[isin]
-        else:
-            if min_history_years is not None:
-                generation = bounds[isin]["generation"]
-                dates = quote_dates(db, isin, observation["listing"], generation=generation, publication_as_of=publication_cutoff)
-                statistics, state = refresh_statistics(db, isin, generation=generation, as_of=publication_cutoff)
+        items = []
+        for observation in observations[offset:offset + limit]:
+            isin = observation["_id"]
+            catalogue = latest_catalogue(db, isin) or {}
+            dates = quote_dates(db, isin, observation["listing"], as_of=cutoff, generation=observation["job_id"])
+            if hide_negative_returns:
+                statistics = page_statistics[isin]
             else:
-                dates = quote_dates(db, isin, observation["listing"], generation=generation)
-                statistics, state = refresh_statistics(db, isin, generation=generation)
-            # Never attach another listing's returns to the displayed profile.
-            if state.get("listing") != observation["listing"]:
-                statistics = {}
-        items.append({
-            "instrument_id": isin, "isin": isin,
-            "name": catalogue.get("name"), "ticker": catalogue.get("ticker"),
-            "listing": observation["listing"], "collected_at": observation["collected_at"],
-            "asset_class": observation.get("asset_class"), "index": observation.get("index"),
-            "quote_count": len(dates), "first_date": dates[0] if dates else None,
-            "last_date": dates[-1] if dates else None,
-            "annualized_mean_log_return": statistics.get("annualized_mean_log_return"),
-            "annualized_volatility": statistics.get("annualized_volatility"),
-            "historical_year_return": statistics.get("historical_year_return"),
-            "historical_year_start_date": statistics.get("historical_year_start_date"),
-            "historical_year_end_date": statistics.get("historical_year_end_date"),
-            "historical_year_price_basis": statistics.get("historical_year_price_basis"),
-            "historical_year_carried_from_date": statistics.get("historical_year_carried_from_date"),
-            "historical_year_volatility": statistics.get("historical_year_volatility"),
-            "historical_year_volatility_start_date": statistics.get("historical_year_volatility_start_date"),
-            "historical_year_volatility_end_date": statistics.get("historical_year_volatility_end_date"),
-            "historical_year_volatility_price_basis": statistics.get("historical_year_volatility_price_basis"),
-            "historical_year_volatility_return_count": statistics.get("historical_year_volatility_return_count"),
-        })
-    return public({"items": items, "total": result["count"][0]["total"] if result["count"] else 0, "limit": limit, "offset": offset})
+                statistics, state = refresh_statistics(db, isin, generation=observation["job_id"], as_of=cutoff)
+                if state.get("listing") != observation["listing"]:
+                    statistics = {}
+            items.append({
+                "instrument_id": isin, "isin": isin,
+                "name": catalogue.get("name"), "ticker": catalogue.get("ticker"),
+                "listing": observation["listing"], "collected_at": observation["collected_at"],
+                "asset_class": observation.get("asset_class"), "index": observation.get("index"),
+                "quote_count": len(dates), "first_date": dates[0] if dates else None,
+                "last_date": dates[-1] if dates else None,
+                **{key: statistics.get(key) for key in (
+                    "annualized_mean_log_return", "annualized_volatility", "historical_year_return",
+                    "historical_year_start_date", "historical_year_end_date", "historical_year_price_basis",
+                    "historical_year_carried_from_date", "historical_year_volatility",
+                    "historical_year_volatility_start_date", "historical_year_volatility_end_date",
+                    "historical_year_volatility_price_basis", "historical_year_volatility_return_count",
+                )},
+            })
+        return public({"items": items, "total": len(observations), "limit": limit, "offset": offset})
 
 
 def remove_acquired_instrument(db, isin):
@@ -438,29 +354,8 @@ def remove_acquired_instrument(db, isin):
 
 
 def budget_status(db, settings):
-    month = utcnow().strftime("%Y-%m")
-    if provider_name(settings) == "yfinance":
-        return {"provider": "yfinance", "metered": False, "month": month, "limit": None, "used": 0, "remaining": None}
-    record = db.marketstack_usage.find_one({"_id": month}) or {}
-    used = record.get("used", 0)
-    limit = settings.marketstack_monthly_budget
-    return {"month": month, "limit": limit, "used": used, "remaining": max(0, limit - used)}
-
-
-def reserve_credit(db, settings):
-    month = utcnow().strftime("%Y-%m")
-    limit = settings.marketstack_monthly_budget
-    if limit <= 0:
-        raise MarketstackError("local_budget_exhausted", "Marketstack collection is disabled by the local request budget.")
-    try:
-        db.marketstack_usage.insert_one({"_id": month, "used": 0})
-    except DuplicateKeyError:
-        pass
-    result = db.marketstack_usage.find_one_and_update(
-        {"_id": month, "used": {"$lt": limit}}, {"$inc": {"used": 1}}, return_document=ReturnDocument.AFTER,
-    )
-    if result is None:
-        raise MarketstackError("local_budget_exhausted", "The local monthly Marketstack request budget is exhausted.")
+    return {"provider": "yfinance", "metered": False, "month": utcnow().strftime("%Y-%m"),
+            "limit": None, "used": 0, "remaining": None}
 
 
 def quote_date(value):
@@ -533,47 +428,49 @@ def listing_filter(isin, listing):
 
 
 def published_history(db, isin, listing, as_of=None, generation=None):
-    """Only the atomic, owner-fenced job transition makes a generation visible.
+    """Select the latest complete Yahoo vintage, never a knowledge-time snapshot.
 
-    Evidence/publication records alone do not grant visibility. A timestamp is
-    a knowledge-time bound, NOT a stable cursor: callers pin the returned UUID.
+    as_of remains a compatibility argument; only callers' quote-date predicates
+    bound history. Retired job tombstones must not resurrect an older vintage.
     """
-    if not listing or generation == "legacy":
-        return None
-    saved_listing = {"symbol": listing["symbol"], "exchange": listing["exchange"]}
-    query = {"instrument_id": isin, "listing": saved_listing, "published": True,
-             "published_at": {"$lte": as_of or utcnow()}}
-    if generation is not None:
-        query["_id"] = generation
-    publication = db.acquisition_jobs.find_one(query, sort=[("requested_at", DESCENDING), ("published_at", DESCENDING), ("_id", DESCENDING)])
-    if generation is not None and publication is None:
-        raise DataError(409, "This history generation is not published for this instrument and cutoff. Refresh instrument details.")
+    publication = db.acquisition_jobs.find_one(
+        {"instrument_id": isin, "provider": "yfinance", "published": True},
+        sort=[("requested_at", DESCENDING), ("published_at", DESCENDING), ("_id", DESCENDING)],
+    )
+    saved_listing = {key: listing[key] for key in ("symbol", "exchange")} if listing else None
+    if publication and publication.get("listing") != saved_listing:
+        raise DataError(409, "The latest Yahoo listing changed. Refresh instrument details before reading history.")
+    if generation is not None and (publication is None or generation != publication["_id"]):
+        raise DataError(409, "This history generation is unavailable or superseded. Refresh instrument details and retry using the latest Yahoo history.")
+    if publication and publication.get("retention_state") in ("retiring", "pruned"):
+        raise DataError(409, "The latest Yahoo history generation is unavailable. Request Yahoo history again.")
     return publication
 
 
 def history_generation(db, isin, listing, as_of=None):
     publication = published_history(db, isin, listing, as_of)
-    return publication["_id"] if publication else "legacy"
+    return publication["_id"] if publication else None
 
 
 def observation_filter(db, isin, listing, as_of=None, generation=None):
-    query = listing_filter(isin, listing)
     publication = published_history(db, isin, listing, as_of, generation)
-    if publication:
-        query.update(job_id=publication["_id"], provider=publication["provider"])
-    else:
-        # The explicit legacy cursor also pins the absence of any publication.
-        query["provider"] = {"$ne": "yfinance"}
+    query = listing_filter(isin, listing) if listing else {"instrument_id": isin}
+    # Match nothing when Yahoo has never published; legacy evidence is not history.
+    query.update(provider="yfinance", job_id=publication["_id"] if publication else {"$in": []})
     return query
 
 
 def quote_dates(db, isin, listing, as_of=None, generation=None, *, publication_as_of=None):
-    if not listing:
-        return []
-    query = observation_filter(db, isin, listing, publication_as_of or as_of, generation)
-    if as_of:
-        query["collected_at"] = {"$lte": as_of}
-    return sorted(db.quotes.distinct("date", query))
+    from market_data_retention import reader
+
+    published_history(db, isin, listing, generation=generation)
+    with reader(db, isin, listing, generation) as generation:
+        if generation is None:
+            return []
+        query = observation_filter(db, isin, listing, generation=generation)
+        if as_of:
+            query["date"] = {"$lte": aware(as_of).date().isoformat()}
+        return sorted(db.quotes.distinct("date", query))
 
 
 def coverage(catalogue, dates):
@@ -604,56 +501,59 @@ def set_price_currency(db, isin, currency):
 
 
 def instrument_detail(db, settings, isin, as_of=None):
+    from market_data_retention import reader
+
     catalogue = require_catalogue(db, isin)
     expire_stalled_jobs(db, isin)
     state = db.instrument_state.find_one({"_id": isin}) or {}
     listing = state.get("listing")
     cutoff = as_of or utcnow()
-    generation = history_generation(db, isin, listing, cutoff)
-    profile = None
-    if listing:
-        query = observation_filter(db, isin, listing, cutoff, generation)
-        if as_of:
-            query["collected_at"] = {"$lte": as_of}
-        observation = db.instruments.find_one(query, sort=[("collected_at", DESCENDING), ("_id", DESCENDING)])
-        if observation:
-            profile = {key: observation.get(key) for key in ("collected_at", "collection_date", "data", "asset_class", "index")}
-    job = db.acquisition_jobs.find_one({"instrument_id": isin}, sort=[("requested_at", DESCENDING), ("_id", DESCENDING)])
-    summary = coverage(catalogue, quote_dates(db, isin, listing, cutoff, generation))
-    if job is None:
-        summary["history_status"] = "not_requested"
-    return public({"instrument_id": isin, "generation": generation, "catalogue": {key: value for key, value in catalogue.items() if key != "_id"}, "listing": listing, "listing_resolution": state.get("listing_resolution"), "price_currency_override": state.get("price_currency_override"), "profile": profile, "acquisition": public_job(job), "summary": summary, "provider": provider_name(settings), "price_basis": "provider_split_adjusted" if provider_name(settings) == "yfinance" else "unadjusted", "provider_configured": configured(settings), "budget": None if provider_name(settings) == "yfinance" else budget_status(db, settings)})
+    with reader(db, isin, listing) as generation:
+        profile = None
+        if generation is not None:
+            observation = db.instruments.find_one(observation_filter(db, isin, listing, generation=generation))
+            if observation:
+                profile = {key: observation.get(key) for key in ("collected_at", "collection_date", "data", "asset_class", "index")}
+        job = db.acquisition_jobs.find_one({"instrument_id": isin}, sort=[("requested_at", DESCENDING), ("_id", DESCENDING)])
+        summary = coverage(catalogue, quote_dates(db, isin, listing, cutoff, generation))
+        if generation is None:
+            summary.update(history_status="not_requested" if job is None else "empty",
+                           warning="No published Yahoo history is available. Request Yahoo acquisition before reading history.")
+        return public({"instrument_id": isin, "generation": generation, "catalogue": {key: value for key, value in catalogue.items() if key != "_id"}, "listing": listing, "listing_resolution": state.get("listing_resolution"), "price_currency_override": state.get("price_currency_override"), "profile": profile, "acquisition": public_job(job), "summary": summary, "provider": provider_name(settings), "price_basis": "provider_split_adjusted", "provider_configured": configured(settings), "budget": None})
 
 
 def read_quotes(db, isin, limit=1000, offset=0, as_of=None, generation=None):
+    from market_data_retention import reader
+
     require_market_catalogue(db, isin)
     as_of = as_of or utcnow()
     snapshot = public(as_of)
     state = db.instrument_state.find_one({"_id": isin}) or {}
     listing = state.get("listing")
-    if not listing:
-        return {"items": [], "total": 0, "limit": limit, "offset": offset, "as_of": snapshot, "generation": "legacy"}
-    generation = generation or history_generation(db, isin, listing, as_of)
-    query = observation_filter(db, isin, listing, as_of, generation)
-    if as_of:
-        query["collected_at"] = {"$lte": as_of}
-    latest = [
-        {"$match": query},
-        {"$sort": {"date": 1, "collected_at": -1, "_id": -1}},
-        {"$group": {"_id": "$date", "observation": {"$first": "$$ROOT"}}},
-        {"$sort": {"_id": 1}},
-        {"$facet": {"count": [{"$count": "total"}], "items": [{"$skip": offset}, {"$limit": limit}]}},
-    ]
-    result = list(db.quotes.aggregate(latest))[0]
-    items = []
-    for record in result["items"]:
-        observation = record["observation"]
-        item = {**observation["data"], "provider_date": observation["data"].get("date"), "date": observation["date"], "collected_at": observation["collected_at"], "collection_date": observation["collection_date"], "quality_flags": observation.get("quality_flags", [])}
-        for field in PRICE_FIELDS:
-            if type(item.get(field)) in (int, float, Decimal, Decimal128):
-                item[field] = str(item[field])
-        items.append(public(item))
-    return {"items": items, "total": result["count"][0]["total"] if result["count"] else 0, "limit": limit, "offset": offset, "as_of": snapshot, "generation": generation}
+    published_history(db, isin, listing, generation=generation)
+    with reader(db, isin, listing, generation) as generation:
+        if generation is None:
+            return {"items": [], "total": 0, "limit": limit, "offset": offset, "as_of": snapshot, "generation": None,
+                    "warning": "No published Yahoo history is available. Request Yahoo acquisition first."}
+        query = observation_filter(db, isin, listing, generation=generation)
+        query["date"] = {"$lte": aware(as_of).date().isoformat()}
+        latest = [
+            {"$match": query},
+            {"$sort": {"date": 1, "collected_at": -1, "_id": -1}},
+            {"$group": {"_id": "$date", "observation": {"$first": "$$ROOT"}}},
+            {"$sort": {"_id": 1}},
+            {"$facet": {"count": [{"$count": "total"}], "items": [{"$skip": offset}, {"$limit": limit}]}},
+        ]
+        result = list(db.quotes.aggregate(latest))[0]
+        items = []
+        for record in result["items"]:
+            observation = record["observation"]
+            item = {**observation["data"], "provider_date": observation["data"].get("date"), "date": observation["date"], "collected_at": observation["collected_at"], "collection_date": observation["collection_date"], "quality_flags": observation.get("quality_flags", [])}
+            for field in PRICE_FIELDS:
+                if type(item.get(field)) in (int, float, Decimal, Decimal128):
+                    item[field] = str(item[field])
+            items.append(public(item))
+        return {"items": items, "total": result["count"][0]["total"] if result["count"] else 0, "limit": limit, "offset": offset, "as_of": snapshot, "generation": generation}
 
 
 def incremental_requires_full_history(db, job, page):
@@ -713,27 +613,28 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
         if inception > utcnow().date():
             raise DataError(422, "The instrument inception date is in the future")
     name = "yfinance" if is_index else provider_name(settings)
-    if not is_index and not configured(settings):
-        raise DataError(503, "Configure the selected market-data provider on the API and worker before requesting data")
+    if name != "yfinance":
+        raise DataError(422, "Marketstack is retired. Request a Yahoo acquisition instead.")
     ensure_indexes(db)
     expire_stalled_jobs(db, isin)
     requested_listing = {"symbol": listing["symbol"], **({"exchange": listing["exchange"]} if listing.get("exchange") else {})} if listing else None
     if requested_listing is not None and not requested_listing.get("exchange") and name != "yfinance":
         raise DataError(422, "Supply both symbol and exchange for a manual listing override with this provider")
     state = db.instrument_state.find_one({"_id": isin}) or {}
+    if not db.acquisition_jobs.find_one({"instrument_id": isin, "provider": "yfinance", "published": True}):
+        # A retired provider's cached mapping is not a Yahoo symbol identity.
+        state = {key: value for key, value in state.items() if key not in ("listing", "listing_resolution", "last_complete_quote_date")}
     listing = requested_listing if complete_listing(requested_listing) else None
     if requested_listing is None:
         listing = state.get("listing")
     existing = db.acquisition_jobs.find_one({"instrument_id": isin, "active": True})
     if existing:
-        if existing.get("status") == "deleting":
-            raise DataError(409, "This ETF is being removed. Please retry after removal finishes.")
+        if existing.get("status") in ("deleting", "maintenance"):
+            raise DataError(409, "This instrument is undergoing removal or retention maintenance. Retry after it finishes.")
         existing_request = existing.get("requested_listing") or existing.get("listing")
         if requested_listing is not None and not same_request(existing_request, requested_listing):
             raise DataError(409, "Another listing is already being collected for this instrument")
         return public_job(existing)
-    if name == "marketstack" and budget_status(db, settings)["remaining"] < 1:
-        raise DataError(409, "The local monthly Marketstack request budget is exhausted")
     ticker = catalogue.get("ticker")
     ticker = ticker.strip().upper() if isinstance(ticker, str) else ""
     lookup_ticker = requested_listing["symbol"] if requested_listing and not requested_listing.get("exchange") else ticker
@@ -741,7 +642,7 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
         hint = "Supply a manual Yahoo symbol." if name == "yfinance" else "Supply a manual symbol and MIC."
         raise DataError(422, f"This instrument has no valid catalogue ticker. {hint}")
     state_listing = state.get("listing")
-    if state_listing and db.quotes.count_documents({"instrument_id": isin}, limit=1):
+    if state_listing and db.quotes.count_documents({"instrument_id": isin, "provider": "yfinance"}, limit=1):
         if requested_listing is None:
             requested_matches_saved = listing == state_listing
         elif requested_listing.get("exchange"):
@@ -753,11 +654,9 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
     same_listing = state_listing == listing
     last_complete = state.get("last_complete_quote_date") if same_listing else None
     dates = quote_dates(db, isin, listing) if listing else []
-    # Yahoo can publish the current day's completed bar after the previous
-    # UTC day ended. Request that inclusive boundary; the provider returns no
-    # bar when the market has not closed yet. Keep the legacy Marketstack
-    # boundary unchanged for compatibility with its incremental watermark.
-    collection_date = utcnow().date() if name == "yfinance" else utcnow().date() - timedelta(days=1)
+    # Request the inclusive current UTC day; the provider returns no bar when
+    # the market has not closed yet.
+    collection_date = utcnow().date()
     end = collection_date
     start = inception
     actual_mode = "initial"
@@ -797,62 +696,48 @@ def request_acquisition(db, settings, isin, listing, mode, requested_by, publish
         db.acquisition_jobs.insert_one(job)
     except DuplicateKeyError:
         existing = db.acquisition_jobs.find_one({"instrument_id": isin, "active": True})
-        if existing is None or existing.get("status") == "deleting":
+        if existing is None or existing.get("status") in ("deleting", "maintenance"):
             raise DataError(409, "Acquisition state changed; please retry") from None
         existing_request = existing.get("requested_listing") or existing.get("listing")
         if requested_listing is not None and not same_request(existing_request, requested_listing):
             raise DataError(409, "Another listing is already being collected for this instrument") from None
         return public_job(existing)
     try:
+        if job.get("base_generation"):
+            # Selection preceded the unique gate. Revalidate after insertion so
+            # maintenance cannot prune a base between selection and ownership.
+            current_base = published_history(db, isin, listing, generation=job["base_generation"])
+            if current_base is None:
+                raise DataError(409, "History changed during acquisition setup. Refresh and retry.")
         if listing and name != "yfinance":
             change = {"listing": listing}
             if not same_listing:
                 change.update(last_complete_quote_date=None, listing_resolution=None)
             db.instrument_state.update_one({"_id": isin}, {"$set": change}, upsert=True)
         publish(settings, job_id)
+    except DataError:
+        db.acquisition_jobs.update_one({"_id": job_id, "status": "queued"}, {"$set": {
+            "active": False, "status": "failed", "phase": "failed", "finished_at": utcnow(),
+            "error": "History changed during acquisition setup. Refresh and retry.",
+        }})
+        raise
     except Exception:
         db.acquisition_jobs.update_one({"_id": job_id, "status": "queued"}, {"$set": {"active": False, "status": "failed", "phase": "failed", "finished_at": utcnow(), "error": "Could not queue acquisition. Check RabbitMQ and try again."}})
         raise DataError(503, "Could not queue acquisition. Check RabbitMQ and try again.") from None
     return public_job(job)
 
 
-def resolve_listing(provider, ticker, isin):
-    """First named exact TICKER.suffix EOD candidate, in provider result order.
-
-    A suffix is not a MIC: only stock_exchange.mic supplies the exchange filter.
-    This is the user's selection heuristic, not independently verified identity.
-    Pagination remains bounded by the job's quota callback.
-    """
-    pattern = re.compile(re.escape(ticker) + r"\.[A-Z0-9]+", re.IGNORECASE)
-    offset = 0
-    while True:
-        page = provider.tickerslist_page(ticker, offset=offset)
-        for row in page["data"]:
-            if not isinstance(row, dict):
-                continue
-            symbol, name = row.get("ticker"), row.get("name")
-            exchange = row.get("stock_exchange")
-            mic = exchange.get("mic") if isinstance(exchange, dict) else None
-            if (
-                not isinstance(symbol, str) or len(symbol) > 64 or not pattern.fullmatch(symbol)
-                or not isinstance(name, str) or not name.strip()
-                or row.get("has_eod") is not True
-                or not isinstance(mic, str) or not re.fullmatch(r"[A-Z0-9]{4}", mic, re.IGNORECASE)
-            ):
-                continue
-            return {"symbol": symbol.upper(), "exchange": mic.upper()}, {
-                "source": "tickerslist", "query": ticker, "name": name.strip(),
-                "collected_at": utcnow(), "data": row,
-            }
-        offset += len(page["data"])
-        if not has_more_pages(page, offset):
-            break
-    raise MarketstackError("listing_not_found", "No named EOD listing matched the exact catalogue ticker.exchange pattern with a valid MIC. Supply a manual symbol and MIC to request data.")
-
-
 def run_acquisition(db, settings, job_id, provider_factory=None):
     """Run/resume a job. Only a fully processed range advances the watermark."""
     ensure_indexes(db)
+    # Reject pre-routing/retired deliveries before constructing any provider.
+    saved = db.acquisition_jobs.find_one({"_id": job_id})
+    if saved and saved.get("provider") != "yfinance":
+        db.acquisition_jobs.update_one({"_id": job_id}, {"$set": {
+            "active": False, "status": "retired", "phase": "retired",
+            "error": "Marketstack is retired. Request Yahoo history instead.",
+        }})
+        return public_job(db.acquisition_jobs.find_one({"_id": job_id}))
     now = utcnow()
     owner = str(uuid4())
     job = db.acquisition_jobs.find_one_and_update(
@@ -866,8 +751,7 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
             raise JobBusy()
         return public_job(existing)
     owned = {"_id": job_id, "owner": owner, "active": True, "status": "running"}
-    # Jobs created before provider routing were explicitly Marketstack jobs.
-    name = job.get("provider", "marketstack")
+    name = "yfinance"
 
     def checkpoint(values=None, increments=None):
         update = {"$set": {"lease_until": utcnow() + timedelta(seconds=LEASE_SECONDS), **(values or {})}}
@@ -880,22 +764,17 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
 
     def before_request():
         current = checkpoint()
-        cap = settings.market_data_max_calls_per_job if name == "yfinance" else settings.marketstack_max_calls_per_job
+        cap = settings.market_data_max_calls_per_job
         if current["calls"] >= cap:
             raise MarketDataError("job_request_limit", "This job reached its request safety limit. Its unfinished range was not marked complete.")
-        if name == "marketstack":
-            reserve_credit(db, settings)
-        else:
-            wait_for_yahoo_request(db, settings.yahoo_request_interval_seconds, checkpoint)
+        wait_for_yahoo_request(db, settings.yahoo_request_interval_seconds, checkpoint)
         checkpoint(increments={"calls": 1})
 
     try:
-        if name == "marketstack" and not settings.marketstack_api_key.get_secret_value():
-            raise MarketDataError("not_configured", "The worker has no legacy provider credentials configured.")
         listing = job["listing"]
         isin = job["instrument_id"]
         requested_listing = job.get("requested_listing")
-        client = (provider_factory(settings.marketstack_api_key.get_secret_value(), before_request=before_request)
+        client = (provider_factory("", before_request=before_request)
                   if provider_factory else provider_client(settings, name, before_request))
         with client as provider:
             if not listing:
@@ -912,13 +791,12 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
                     # A DB interruption can leave a cached mapping before the job
                     # checkpoint. Reuse it on redelivery rather than paying again.
                     state = db.instrument_state.find_one({"_id": isin}) or {}
-                    listing = state.get("listing")
+                    saved_yahoo = db.acquisition_jobs.find_one({"instrument_id": isin, "provider": "yfinance", "published": True})
+                    listing = state.get("listing") if saved_yahoo else None
                     if not listing:
                         if name == "yfinance":
                             listing, resolution = provider.resolve_listing(job["lookup_ticker"], isin)
                             resolution = {**resolution, "collected_at": utcnow()}
-                        else:
-                            listing, resolution = resolve_listing(provider, job["lookup_ticker"], isin)
                         if name != "yfinance":
                             checkpoint()
                             # Checkpointing alone cannot fence a paused worker's next
@@ -935,7 +813,7 @@ def run_acquisition(db, settings, job_id, provider_factory=None):
                                 state = db.instrument_state.find_one({"_id": isin})
                             listing = state["listing"]
                 state_listing = (db.instrument_state.find_one({"_id": isin}) or {}).get("listing")
-                if state_listing and state_listing != listing and db.quotes.count_documents({"instrument_id": isin}, limit=1):
+                if state_listing and state_listing != listing and db.quotes.count_documents({"instrument_id": isin, "provider": "yfinance"}, limit=1):
                     raise MarketDataError("listing_conflict", "A listing with stored quotes cannot be changed or mixed with another listing.")
                 update = {"listing": listing}
                 if resolution is not None:

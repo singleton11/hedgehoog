@@ -86,7 +86,8 @@ def test_seed_is_idempotent_separate_and_stable(db):
         UUID(row["instrument_id"].removeprefix("idx-"))
         assert row["currency"] is None and row["return_variant"] == "unknown"
         assert row["verification_status"] == "unverified" and row["acquisition"] is None
-        assert row["summary"] == {"quote_count": 0, "first_date": None, "last_date": None}
+        assert row["summary"] == {"quote_count": 0, "first_date": None, "last_date": None,
+                                  "warning": "Request Yahoo acquisition before reading history."}
         assert "isin" not in row and "inception_date" not in row
     assert db.etfs.count_documents({}) == 2 + 1
     assert md.search_catalogue(db, "NASDAQ", 10) == []
@@ -234,7 +235,9 @@ def test_failed_refresh_preserves_generation_metadata_and_pagination(db, config,
     clock[0] += timedelta(seconds=2)
     second, _ = run(db, config, index, IndexProvider(close="200"))
     assert md.read_quotes(db, index["instrument_id"])["generation"] == second["id"]
-    assert md.read_quotes(db, index["instrument_id"], generation=first["id"])["items"][0]["close"] == "100"
+    with pytest.raises(md.DataError, match="superseded") as error:
+        md.read_quotes(db, index["instrument_id"], generation=first["id"])
+    assert error.value.status == 409
 
 
 def test_empty_history_and_request_limit_do_not_publish(db, config, index):

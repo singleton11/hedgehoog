@@ -13,7 +13,7 @@ from plan_tracking import track_plan
 from return_statistics import calculate_daily_statistics, instrument_return_runs
 from test_customer_planner import planner, calculate, save, ttl_clock
 from test_goal_planner import goal_inputs, login, request_body, seed_history
-from test_market_data import ISIN, NOW, api, clock, config, db
+from test_market_data import ISIN, NOW, api, clock, config, db, seed_yahoo
 
 
 def test_blocks_preserve_contiguous_pairs_and_seeded_replay():
@@ -97,15 +97,25 @@ def test_bootstrap_uses_split_corrected_eligible_history_and_snapshot_tracks(pla
     assert client.get(url + "/simulations").json()["items"][0]["inputs"]["block_size"] == 10
 
 
-def test_return_runs_use_saved_history_and_pinned_cutoff(db):
+def test_return_runs_use_latest_complete_history_with_quote_date_cutoff(db):
     seed_history(db)
     runs = instrument_return_runs(db, ISIN, as_of=NOW)
     assert sum(map(len, runs)) == 80
     assert len(runs) == 1
     assert all(math.isfinite(value) for value in runs[0])
-    last = db.quotes.find_one({"date": max(row["date"] for row in db.quotes.find())})
-    revised = {**last, "_id": "later-revision", "collected_at": NOW + timedelta(hours=1),
-               "data": {**last["data"], "close": "250", "adj_close": "250"}}
+    saved = list(db.quotes.find({"job_id": "seed-history"}).sort("date", 1))
+    revised = {**saved[-1], "_id": "later-revision", "job_id": "unpublished-revision",
+               "provider": "yfinance", "collected_at": NOW + timedelta(hours=1),
+               "data": {**saved[-1]["data"], "close": "250", "adj_close": "250"}}
     db.quotes.insert_one(revised)
     assert instrument_return_runs(db, ISIN, as_of=NOW) == runs
-    assert instrument_return_runs(db, ISIN, as_of=NOW + timedelta(hours=2)) != runs
+    assert instrument_return_runs(db, ISIN, as_of=NOW + timedelta(hours=2)) == runs
+
+    # Later publication revises past prices even for an earlier as_of.
+    rows = [row["data"] for row in saved[:-1]] + [revised["data"]]
+    rows.append({**revised["data"], "date": "2099-01-01", "close": "0.01", "adj_close": "0.01"})
+    seed_yahoo(db, generation="published-revision", collected_at=NOW + timedelta(hours=1), rows=rows)
+    latest = instrument_return_runs(db, ISIN, as_of=NOW)
+    assert latest != runs
+    assert sum(map(len, latest)) == 80
+    assert instrument_return_runs(db, ISIN, as_of=NOW + timedelta(hours=2)) == latest

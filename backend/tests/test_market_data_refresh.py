@@ -46,7 +46,9 @@ def index(db, identifier="idx-example", *, removed=False):
 
 
 def success(db, identifier, finished_at, **extra):
+    state = db.instrument_state.find_one({"_id": identifier}) or {}
     db.acquisition_jobs.insert_one({"instrument_id": identifier, "status": "succeeded",
+                                   "listing": state.get("listing"),
                                    "provider": "yfinance", "published": True,
                                    "finished_at": finished_at, "date_to": finished_at.date().isoformat(), **extra})
 

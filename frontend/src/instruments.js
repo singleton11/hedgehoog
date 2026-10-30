@@ -35,29 +35,13 @@ export function olderJob(incoming, current) {
   return rank[incoming.status] < rank[current.status];
 }
 
-export function acquisitionEstimate(detail, mode, manualOverride = false) {
-  const summary = detail.summary;
-  const inception = summary.requested_from || detail.catalogue?.inception_date;
-  const yahoo = detail.provider === 'yfinance';
-  const incremental = !yahoo && mode === 'update' && summary.quote_count > 0 && summary.last_date;
-  const start = incremental ? summary.last_date : inception;
-  const timestamp = typeof start === 'string' ? Date.parse(start) : NaN;
-  // Calendar days deliberately overestimate trading days. This is an estimate,
-  // not a reservation or a claim that the provider will return older history.
-  const olderEnd = !yahoo && mode === 'backfill' && summary.first_date ? summary.first_date : null;
-  const end = olderEnd ? Date.parse(olderEnd) : Date.now();
-  const days = Number.isFinite(timestamp) && Number.isFinite(end)
-    ? Math.max(1, Math.ceil((end - timestamp) / 86400000) + 1) : null;
-  const pages = yahoo ? null : days === null ? null : Math.max(1, Math.ceil(days / 1000));
-  const from = incremental ? `New quotes after ${start}` : `Full history from ${start || 'catalogue inception'}`;
-  // An unresolved automatic listing needs a provider lookup. Cached listings and
-  // manual overrides skip lookup. Yahoo Search is unmetered for Hedgehoog.
-  const lookupCalls = detail.listing || manualOverride ? 0 : 1;
-  if (yahoo) return { pages, lookupCalls, minimumCalls: 0, calls: null,
-    range: `${from} ${olderEnd ? `to before ${olderEnd}` : 'to latest available'}` };
-  return { pages, lookupCalls, minimumCalls: 3 + lookupCalls, calls: pages === null ? null : lookupCalls + 2 + pages,
-    range: `${from} ${olderEnd ? `to before ${olderEnd}` : 'to latest available'}` };
+export function acquisitionEstimate(detail, _mode, manualOverride = false) {
+  const start = detail.summary.requested_from || detail.catalogue?.inception_date;
+  return { pages: null, lookupCalls: detail.listing || manualOverride ? 0 : 1, minimumCalls: 0, calls: null,
+    range: `Full history from ${start || 'catalogue inception'} to latest available` };
 }
+
+export const STALE_GENERATION_MESSAGE = 'The saved Yahoo Finance snapshot has changed. Refresh the latest snapshot to reload details, quotes and statistics. No provider download is started.';
 
 // Capture the lightweight universe in one response: background acquisitions can
 // change membership and collection-time ordering between ordinary inventory pages.
@@ -81,10 +65,14 @@ export async function loadAcquiredInstruments(request, signal) {
 export async function loadAllQuotes(request, isin, signal, snapshot = {}, resource = 'instruments') {
   const items = [];
   let total = null;
-  // Use the server's knowledge-time cutoff, not an untrusted browser clock.
-  // Reuse it for later pages if another acquisition finishes during loading.
+  // as_of bounds quote dates in the latest saved snapshot, not knowledge time.
+  // Pin both the server cutoff and generation so pagination never mixes refreshes.
   let asOf = snapshot.asOf || null;
   let generation = snapshot.generation || null;
+  // An explicit null detail generation pins absence; undefined allows discovery.
+  let pinned = snapshot.generation !== undefined;
+  const conflict = () => Object.assign(new Error(STALE_GENERATION_MESSAGE), { status: 409 });
+  if (generation === 'legacy') throw conflict();
   do {
     if (signal.aborted) return null;
     const query = new URLSearchParams({ limit: '1000', offset: String(items.length) });
@@ -98,14 +86,15 @@ export async function loadAllQuotes(request, isin, signal, snapshot = {}, resour
     }
     if (typeof page.as_of !== 'string' || !Number.isFinite(Date.parse(page.as_of))
         || (asOf && Date.parse(asOf) !== Date.parse(page.as_of))) {
-      throw new Error('Quote pagination returned an invalid observation cutoff. Please retry the chart.');
+      throw new Error('Quote pagination returned an invalid quote-date cutoff. Please retry the chart.');
     }
-    if ((generation && page.generation !== generation)
-        || (page.generation != null && (typeof page.generation !== 'string'
-          || !/^(legacy|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/.test(page.generation)))) {
-      throw new Error('Quote pagination changed history generation. Please retry the chart.');
+    if (pinned && (page.generation ?? null) !== generation) throw conflict();
+    if (page.generation != null && (typeof page.generation !== 'string'
+        || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(page.generation))) {
+      throw new Error('Quote pagination returned an invalid history generation. Please refresh the chart.');
     }
-    generation = page.generation || generation;
+    generation = page.generation ?? null;
+    pinned = true;
     asOf = page.as_of;
     total = page.total;
     if ((!page.items.length && items.length < total) || items.length + page.items.length > total) {

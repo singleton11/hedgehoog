@@ -13,7 +13,7 @@ import pytest
 import market_data as md
 from portfolio_performance import performance
 from test_goal_planner import login
-from test_market_data import ISIN, LISTING, NOW, api, clock, config, db
+from test_market_data import ISIN, LISTING, NOW, api, bar, clock, config, db, seed_yahoo
 from test_portfolio_tracker import (SECOND_ISIN, SECOND_LISTING, cash, customer, portfolio,
                                     quote, record, second_instrument, trade, tracker)
 
@@ -34,8 +34,8 @@ def index_history(db, rows, **changes):
     record = {"_id": identifier, "instrument_id": identifier, "name": "Test index", "symbol": "^TEST",
               "currency": "USD", "return_variant": "price", **changes}
     db.indices.insert_one(record)
-    for day, close in rows:
-        quote(db, day, close, isin=identifier, listing={"symbol": record["symbol"], "exchange": "YAHOO"}, currency=record["currency"])
+    seed_yahoo(db, identifier, listing={"symbol": record["symbol"], "exchange": "YAHOO"},
+               rows=[{**bar(day, close), "price_currency": record["currency"]} for day, close in rows])
     return identifier
 
 
@@ -50,7 +50,12 @@ def test_empty_and_cash_only_are_not_profit_and_refunding_preserves_chain(tracke
     assert result == {"portfolio_id": meta["id"], "currency": "EUR", "method": "daily_twr",
                       "cash_flow_timing": "deposits_start_withdrawals_end", "as_of": "2026-09-17T12:00:00.000000Z",
                       "start_date": None, "end_date": None, "points": [], "benchmark": None,
-                      "warnings": ["Sharpe and Sortino unavailable: select a saved EUR price-return proxy in Settings."],
+                      "warnings": [
+                          "Historical portfolio returns, benchmarks and risk ratios use the latest complete Yahoo published "
+                          "history, restricted to quote dates on or before each valuation date. This is not strict "
+                          "point-in-time data: later provider corrections and corporate-action adjustments may revise "
+                          "historical prices and introduce look-ahead bias.",
+                          "Sharpe and Sortino unavailable: select a saved EUR price-return proxy in Settings."],
                       "risk_proxy": None, "ratio_method": "since_inception_calendar_daily_log_excess_365",
                       "quote_fill_policy": {"version": 1, "method": "smooth", "seed": 0},
                       "summary": {"twr_percent": None, "sharpe": None, "sortino": None}}
@@ -237,7 +242,8 @@ def test_benchmark_has_common_baseline_without_fx_and_no_benchmark_means_only_tw
     client, _, _, url = tracker
     invest(client, url)
     benchmark = index_history(db, [("2026-09-14", "200"), ("2026-09-15", "220"), ("2026-09-16", "198")])
-    before = {name: list(db[name].find()) for name in db.list_collection_names()}
+    before = {name: [{key: value for key, value in row.items() if key != "reader_leases"}
+                     for row in db[name].find()] for name in db.list_collection_names()}
     plain = get(client, url)
     result = get(client, url, benchmark)
     assert points(plain) == points(result)
@@ -247,7 +253,9 @@ def test_benchmark_has_common_baseline_without_fx_and_no_benchmark_means_only_tw
                                     "currency": "USD", "return_variant": "price"}
     assert plain["benchmark"] is None and set(points(plain, "benchmark_percent").values()) == {None}
     assert result["warnings"] == plain["warnings"]
-    assert {name: list(db[name].find()) for name in db.list_collection_names()} == before
+    assert {name: [{key: value for key, value in row.items() if key != "reader_leases"}
+                   for row in db[name].find()] for name in db.list_collection_names()} == before
+    assert all(not job.get("reader_leases") for job in db.acquisition_jobs.find())
 
 
 def test_benchmark_uses_past_asof_close_not_future_baseline_and_can_have_unknown_metadata(tracker, db):
@@ -287,29 +295,29 @@ def test_benchmark_quote_dates_join_portfolio_dates_without_changing_portfolio_r
     assert compared["2026-09-12"] == 0
 
 
-def test_read_bounds_dates_knowledge_time_and_pinned_listing_not_current_listing(tracker, db):
+def test_read_bounds_quote_dates_and_excludes_unpublished_wrong_listing_evidence(tracker, db):
     client, _, _, url = tracker
     invest(client, url)
-    quote(db, "2026-09-16", "99999", collected_at=NOW + timedelta(seconds=1))
+    quote(db, "2026-09-16", "99999", collected_at=NOW + timedelta(seconds=1), publish=False)
     quote(db, "2026-09-18", "99999")
-    quote(db, "2026-09-16", "99999", listing=SECOND_LISTING)
+    quote(db, "2026-09-16", "99999", listing=SECOND_LISTING, publish=False)
     db.instrument_state.update_one({"_id": ISIN}, {"$set": {"listing": SECOND_LISTING}})
     result = get(client, url)
     assert points(result)["2026-09-17"] == 10
     assert "2026-09-18" not in points(result)
+    quote(db, "2026-09-16", "120", collected_at=NOW + timedelta(seconds=1))
+    assert points(get(client, url))["2026-09-17"] == 20
+    quote(db, "2026-09-16", "99999", listing=SECOND_LISTING)
+    assert client.get(url + "/performance").status_code == 409
 
 
 def test_unpublished_generations_do_not_leak_and_refresh_does_not_mix_old_history(tracker, db):
     client, _, _, url = tracker
     invest(client, url)
-    identifier = str(uuid4())
-    job = {"_id": identifier, "instrument_id": ISIN, "provider": "yfinance", "listing": LISTING,
-           "requested_at": NOW, "published_at": NOW, "published": False}
-    db.acquisition_jobs.insert_one(job)
-    for day, close in [("2026-09-15", "100"), ("2026-09-17", "120")]:
-        quote(db, day, close)
-        latest = db.quotes.find_one({"instrument_id": ISIN, "date": day}, sort=[("_id", -1)])
-        db.quotes.update_one({"_id": latest["_id"]}, {"$set": {"provider": "yfinance", "job_id": identifier}})
+    identifier = seed_yahoo(db, generation=str(uuid4()), collected_at=NOW + timedelta(seconds=1),
+                            rows=[{**bar(day, close), "price_currency": "EUR"}
+                                  for day, close in [("2026-09-15", "100"), ("2026-09-17", "120")]])
+    db.acquisition_jobs.update_one({"_id": identifier}, {"$set": {"published": False}})
     assert points(get(client, url))["2026-09-17"] == 10
     db.acquisition_jobs.update_one({"_id": identifier}, {"$set": {"published": True}})
     values = points(get(client, url))

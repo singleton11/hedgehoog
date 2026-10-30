@@ -15,7 +15,7 @@ import pytest
 import market_data as md
 import portfolio_tracker as tracker_api
 from test_goal_planner import login, seed_history, seed_profile
-from test_market_data import ISIN, LISTING, NOW, api, bar, clock, config, db
+from test_market_data import ISIN, LISTING, NOW, api, bar, clock, config, db, seed_yahoo
 
 SECOND_ISIN = "IE00B4L5Y983"
 SECOND_LISTING = {"symbol": "EUNL.F", "exchange": "XFRA"}
@@ -73,21 +73,39 @@ def detail(client, url):
     return response.json()
 
 
-def quote(db, day, close, *, isin=ISIN, listing=None, collected_at=NOW, currency="EUR", **data):
+def quote(db, day, close, *, isin=ISIN, listing=None, collected_at=NOW, currency="EUR", publish=True, **data):
+    """Refresh a complete synthetic vintage, or insert explicitly unpublished evidence."""
     listing = listing or LISTING
-    db.quotes.insert_one({
-        "instrument_id": isin, **listing, "date": day, "job_id": str(uuid4()),
-        "collected_at": collected_at, "collection_date": collected_at.date().isoformat(),
-        "data": {**bar(day, close), **listing, "price_currency": currency, **data},
-    })
+    row = {**bar(day, close), **listing, "price_currency": currency, **data}
+    if not publish:
+        db.quotes.insert_one({
+            "instrument_id": isin, **listing, "date": day, "job_id": str(uuid4()), "provider": "yfinance",
+            "collected_at": collected_at, "collection_date": collected_at.date().isoformat(),
+            "data": {**row, "price_basis": "provider_split_adjusted"},
+        })
+        return
+    previous = db.acquisition_jobs.find_one(
+        {"instrument_id": isin, "provider": "yfinance", "published": True},
+        sort=[("requested_at", -1), ("published_at", -1), ("_id", -1)],
+    )
+    history = {}
+    profile = None
+    if previous and previous["listing"] == listing:
+        for observation in db.quotes.find({"instrument_id": isin, **listing, "job_id": previous["_id"]}).sort(
+                [("collected_at", 1), ("_id", 1)]):
+            history[observation["date"]] = observation["data"]
+        profile = db.instruments.find_one({"job_id": previous["_id"], "instrument_id": isin})
+    history[day] = row
+    published_at = max(md.utcnow(), md.aware(previous["requested_at"]) + timedelta(milliseconds=1)) if previous else md.utcnow()
+    generation = seed_yahoo(db, isin, generation=str(uuid4()), listing=listing, collected_at=published_at,
+                            rows=[history[key] for key in sorted(history)], profile=profile.get("data") if profile else None)
+    db.quotes.update_many({"job_id": generation, "date": day}, {"$set": {"collected_at": collected_at}})
+    return generation
 
 
 def second_instrument(db, days=("2026-09-15", "2026-09-16")):
-    db.instrument_state.insert_one({"_id": SECOND_ISIN, "listing": SECOND_LISTING})
-    db.instruments.insert_one({"instrument_id": SECOND_ISIN, **SECOND_LISTING,
-                               "collected_at": NOW, "job_id": "second-profile", "data": {}})
-    for day, close in zip(days, ("20", "30")):
-        quote(db, day, close, isin=SECOND_ISIN, listing=SECOND_LISTING)
+    seed_yahoo(db, SECOND_ISIN, generation="second-profile", listing=SECOND_LISTING,
+               rows=[{**bar(day, close), "price_currency": "EUR"} for day, close in zip(days, ("20", "30"))])
 
 
 @pytest.fixture
@@ -338,7 +356,7 @@ def test_buys_and_instrument_picker_require_acquired_selected_listing(api, db, i
     assert client.get("/portfolio-instruments").json()["items"] == []
     response = client.post(url + "/transactions", json=trade())
     assert response.status_code == 422
-    assert "Acquire" in response.json()["detail"]
+    assert any(message in response.json()["detail"] for message in ("Acquire", "Request Yahoo acquisition"))
     assert detail(client, url)["cash_eur"] == "1000.00"
     assert client.get(url + "/transactions").json()["total"] == 1
 
@@ -370,22 +388,24 @@ def test_listing_is_pinned_for_valuation_and_sells_even_after_universe_changes(t
     record(client, url, cash())
     original = record(client, url, trade(quantity="2"))
     new_listing = {"symbol": "NEW.DE", "exchange": "XFRA"}
-    db.instrument_state.update_one({"_id": ISIN}, {"$set": {"listing": new_listing, "price_currency_override": "EUR"}})
-    db.instruments.insert_one({"instrument_id": ISIN, **new_listing, "collected_at": NOW, "job_id": "new"})
     quote(db, "2026-09-17", "999", listing=new_listing)
     assert client.get("/portfolio-instruments").json()["items"][0]["symbol"] == "NEW.DE"
     rejected = client.post(url + "/transactions", json=trade())
     assert rejected.status_code == 422
     assert "different listing" in rejected.json()["detail"]
-    position = detail(client, url)["positions"][0]
-    assert position["market_price_eur"] == "110" and position["position_value_eur"] == "220.00"
-    assert position["instrument"] == original["instrument"]
+    stale = client.get(url)
+    assert stale.status_code == 409  # Never value a pinned old listing from an obsolete vintage.
+    assert "latest Yahoo history" in stale.json()["detail"]
+    assert db.portfolios.find_one()["transactions"][-1]["instrument"] == original["instrument"]
     db.instruments.delete_many({})
     db.etfs.delete_many({})
     db.instrument_state.delete_many({})
     sold = record(client, url, trade("sell", quantity="1", price="120", day="2026-09-16"))
     assert sold["instrument"] == original["instrument"]
-    assert detail(client, url)["realized_pnl_eur"] == "20.00"
+    from portfolio_tracker import replay
+    _, realized, positions = replay(db.portfolios.find_one()["transactions"])
+    assert realized == Decimal("20") and positions[ISIN]["quantity"] == Decimal("1")
+    assert client.get(url).status_code == 409  # Ledger sells do not authorize an obsolete price vintage.
 
 
 def test_override_for_a_new_listing_does_not_confirm_the_pinned_listing(tracker, db):
@@ -543,13 +563,13 @@ def test_latest_two_distinct_raw_closes_not_adjusted_revisions_or_future_evidenc
     db.quotes.update_many({}, {"$set": {"collected_at": NOW - timedelta(hours=2), "data.adj_close": "999"}})
     quote(db, "2026-09-16", "111", collected_at=NOW - timedelta(hours=1), adj_close="888")
     quote(db, "2026-09-16", Decimal128("112.1234567890123456789"), adj_close="777")
-    quote(db, "2026-09-16", "900", collected_at=NOW + timedelta(seconds=1))
+    quote(db, "2026-09-16", "900", collected_at=NOW + timedelta(seconds=1), publish=False)
     quote(db, "2026-09-18", "901")
-    quote(db, "2026-09-17", "902", listing=SECOND_LISTING)
-    quote(db, "2026-09-17", "903", isin=SECOND_ISIN)
+    quote(db, "2026-09-17", "902", listing=SECOND_LISTING, publish=False)
+    quote(db, "2026-09-17", "903", isin=SECOND_ISIN, publish=False)
     before = list(db.quotes.find())
     provider = Mock(side_effect=AssertionError("Portfolio reads must not acquire market data"))
-    monkeypatch.setattr(md, "MarketstackClient", provider)
+    monkeypatch.setattr(md, "provider_client", provider)
     result = detail(client, url)
     position = result["positions"][0]
     assert position["market_price_eur"] == "112.1234567890123456789"
@@ -598,7 +618,7 @@ def test_missing_quote_or_prior_close_keeps_unavailable_values_explicit(tracker,
         quote(db, "2026-09-16", "110")  # Repeated observations are not two closing days.
     else:
         quote(db, "2026-09-14", "99")  # The explicit hole can now interpolate between real bounds.
-        db.quotes.update_one({"date": "2026-09-15"}, {"$set": {"data.close": None, "data.adj_close": "100"}})
+        quote(db, "2026-09-15", None, adj_close="100")
     result = detail(client, url)
     if mode == "invalid-previous":
         assert result["daily_unrealized_pnl_eur"] == "5.50"
@@ -645,7 +665,7 @@ def test_trade_newer_than_latest_quote_uses_last_saved_close(tracker, db, api, m
     record(client, url, trade(kind, price="120", commission_eur="2", day="2026-09-17"))
     before = list(db.quotes.find())
     provider = Mock(side_effect=AssertionError("Portfolio reads must not acquire market data"))
-    monkeypatch.setattr(md, "MarketstackClient", provider)
+    monkeypatch.setattr(md, "provider_client", provider)
     result = detail(client, url)
     position = result["positions"][0]
     assert result["positions_value_eur"] == ("330.00" if kind == "buy" else "110.00")

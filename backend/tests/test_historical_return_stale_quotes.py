@@ -105,7 +105,9 @@ def test_normal_policy_still_uses_sampled_endpoint_and_does_not_silently_carry(d
     db.app_settings.insert_one({"_id": "market_data", "method": "normal", "seed": 7})
     stats, _ = refresh_statistics(db, ISIN)
     if enough_returns:
-        expected = calculate_historical_year_return(fill_adjusted_rows(source, ISIN, read_policy(db)))
+        adjusted, _ = adjusted_rows([{**row, "price_basis": "provider_split_adjusted"} for row in source], None)
+        expected = calculate_historical_year_return(fill_adjusted_rows(adjusted, ISIN, read_policy(db),
+                                                                     cutoff=NOW.date().isoformat()))
         assert stats["historical_year_return"] == expected["historical_year_return"]
         assert stats["historical_year_return"] != pytest.approx(0.1)
     else:

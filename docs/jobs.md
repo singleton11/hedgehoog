@@ -26,6 +26,10 @@ Historical market-data downloads are read from existing durable acquisition
 records. Catalogue imports and refresh sweeps are tracked from deployment of
 this feature onward; old worker executions cannot be reconstructed from the
 broker. Counts describe retained records, not an independent lifetime counter.
+Market-data retention preserves acquisition/publication audit and pruning
+tombstones while removing eligible superseded payloads; a successful historical
+job does not imply its old quotes or raw evidence are replayable. See
+[retention and maintenance](on-demand-market-data.md#retention-and-maintenance).
 
 Jobs are shared operational data for authenticated workspace users. No broker
 credentials, task arguments, raw provider responses, or tracebacks are exposed.

@@ -1,6 +1,6 @@
 """Authenticated catalogue reads and explicit acquisition commands."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 from typing import Annotated, Any, Literal
 
@@ -70,7 +70,8 @@ class QuoteResponse(BaseModel):
 
 
 class QuotesResponse(BaseModel):
-    generation: str
+    generation: str | None
+    warning: str | None = None
     as_of: datetime
     items: list[QuoteResponse]
     total: int
@@ -79,9 +80,10 @@ class QuotesResponse(BaseModel):
 
 
 def knowledge_time(value):
-    if value is not None and value.tzinfo is None:
+    # Kept as a shared route helper; as_of now bounds the UTC quote date.
+    if value is not None and value.utcoffset() is None:
         raise HTTPException(422, "as_of must include a timezone, for example 2026-09-17T12:00:00Z")
-    return value
+    return value.astimezone(timezone.utc) if value is not None else None
 
 
 @router.get("/search")

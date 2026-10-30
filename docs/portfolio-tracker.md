@@ -210,8 +210,11 @@ trade's pinned listing and currently published history generation. Prior closes
 carry forward across weekends, holidays, missing observations and after the last
 saved close. Thus stale marks can defer a price movement, and newer transactions
 may be valued against an older close. No exchange calendar or live price is
-inferred. Historical provider revisions are reflected on refresh; this is not a
-point-in-time backtest of information available when the trade occurred.
+inferred. Only the latest complete Yahoo snapshot is used; historical provider
+revisions are reflected on refresh and can introduce look-ahead bias. This is not
+a knowledge-time backtest or vintage replay of information available when the
+trade occurred. Retention can prune superseded market-data payloads while keeping
+audit/tombstones; portfolios, transactions and saved plans remain untouched.
 
 No future close or execution price fills a missing initial mark, and an invalid
 latest observation is never replaced by an older valid or adjusted close. Currency is checked on each selected observation: a later currency metadata gap

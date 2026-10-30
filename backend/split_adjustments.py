@@ -8,7 +8,6 @@ from decimal import Decimal, DecimalException, localcontext
 import math
 
 from bson import Decimal128
-from pymongo import DESCENDING
 
 import market_data as md
 from market_provider import MarketDataError
@@ -51,60 +50,20 @@ def split_events(pages, listing, start, end):
 
 
 def load_provider_split_snapshot(db, isin, listing, cutoff, generation=None):
-    if not listing:
-        return None
-    generation = generation or md.history_generation(db, isin, listing, cutoff)
-    publication = md.published_history(db, isin, listing, cutoff, generation)
-    snapshot = db.split_snapshots.find_one({
-        **md.observation_filter(db, isin, listing, cutoff, generation), "collected_at": {"$lte": cutoff},
-    }, sort=[("requested_at", DESCENDING), ("_id", DESCENDING)])
-    if publication and publication["provider"] == "yfinance":
-        # Yahoo actions are audit evidence, already reflected in Yahoo Close.
-        # A failed later refresh cannot invalidate the published generation.
-        return snapshot
-    # New acquisitions must not silently fall back to uncorrected prices after
-    # a failed/unfinished split download. Legacy data remains readable with a
-    # warning until the first explicit refresh (no provider calls from reads).
-    attempt = db.acquisition_jobs.find_one({
-        "instrument_id": isin, "listing": listing, "splits_date_from": {"$exists": True},
-        "requested_at": {"$lte": cutoff},
-    }, sort=[("requested_at", DESCENDING), ("_id", DESCENDING)])
-    # A job requested before the cutoff may finish afterward. Its current
-    # inactive state must not retroactively invalidate an earlier snapshot.
-    if (attempt and attempt.get("calls", 0) > 0 and not attempt.get("active")
-            and attempt.get("finished_at") is not None and md.aware(attempt["finished_at"]) <= cutoff
-            and (snapshot is None or attempt["_id"] != snapshot["_id"])):
-        return {"_id": attempt["_id"], "error": "Split history download is incomplete. Request market data again before using derived statistics."}
-    return snapshot
+    from market_data_retention import reader
+
+    md.published_history(db, isin, listing, generation=generation)
+    with reader(db, isin, listing, generation) as generation:
+        if generation is None:
+            return None
+        # Actions belong to the current adjustment vintage, regardless of when
+        # they were collected. Close is already split-adjusted by Yahoo.
+        return db.split_snapshots.find_one(md.observation_filter(db, isin, listing, generation=generation))
 
 
 def load_split_snapshot(db, isin, listing, cutoff, generation=None):
-    """Overlay manual evidence without mutating or replacing provider snapshots."""
-    from manual_splits import manual_events
-
-    snapshot = load_provider_split_snapshot(db, isin, listing, cutoff, generation)
-    if snapshot and snapshot.get("provider") == "yfinance":
-        return snapshot  # Legacy manual adjustments must not affect Yahoo prices.
-    manual = manual_events(db, isin, listing, cutoff)
-    if not manual:
-        return snapshot
-    # Immutable manual IDs make add/remove/replacement invalidate cached estimates.
-    identity = {"provider": snapshot["_id"] if snapshot else None, "manual": [event["_id"] for event in manual]}
-    if snapshot and snapshot.get("error"):
-        return {**snapshot, "_id": identity}
-    merged = dict(snapshot) if snapshot else {
-        "date_from": "0001-01-01", "date_to": cutoff.date().isoformat(), "events": [],
-    }
-    events = {event["date"]: event["factor"] for event in merged["events"]}
-    for event in manual:
-        day, factor = event["date"], event["factor"]
-        if day in events and Decimal(events[day]) != Decimal(factor):
-            return {"_id": identity, "error": f"Manual and provider split factors conflict on {day}. Remove the manual entry or correct provider history before using derived statistics."}
-        events[day] = factor  # Matching provider/manual entries apply exactly once.
-    merged.update(_id=identity, events=[{"date": day, "factor": factor} for day, factor in sorted(events.items())], manual=True)
-    if snapshot is None:
-        merged["manual_only"] = True
-    return merged
+    """Read Yahoo evidence only; never overlay legacy/manual split factors."""
+    return load_provider_split_snapshot(db, isin, listing, cutoff, generation)
 
 
 def adjusted_rows(rows, snapshot):

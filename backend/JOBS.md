@@ -78,4 +78,7 @@ or tracebacks. Other statuses have null `error`. Database outages return a safe
   snapshot; concurrent task transitions can briefly make them disagree.
 - Existing removal workflows delete acquisition history for a removed instrument;
   the dashboard does not retain a separate audit copy. Background execution
-  history has no automatic retention policy.
+  history has no automatic retention policy. Market-data payload retention is
+  separate: it keeps acquisition/publication audit and pruning tombstones while
+  superseded payloads may be removed. A job row is not a promise of vintage replay;
+  see [market-data retention](../docs/on-demand-market-data.md#retention-and-maintenance).

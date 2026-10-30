@@ -78,15 +78,67 @@ it('shows an empty state and keeps downloads explicit', async () => {
   expect(s.fetch.mock.calls.some(([, options]) => options.method === 'POST')).toBe(false);
 });
 
-it('rejects mixed generations, then allows a chart retry', async () => {
+it('rejects mixed generations, then requires a latest-snapshot refresh', async () => {
   const s = server();
   s.chart = () => response(200, { items: s.quotes, total: 2, offset: 0, as_of: AS_OF, generation: NEXT_GENERATION });
   await open();
-  expect(screen.getByRole('alert')).toHaveTextContent('changed history generation');
+  expect(screen.getByRole('alert')).toHaveTextContent('snapshot has changed');
   expect(screen.queryByRole('img')).not.toBeInTheDocument();
   s.chart = null;
-  fireEvent.click(screen.getByRole('button', { name: 'Retry chart' })); await flush();
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh latest snapshot' })); await flush();
   expect(screen.getByRole('img', { name: /Index OHLC/ })).toBeInTheDocument();
+});
+
+it('requires an explicit latest-snapshot refresh after a generation 409 and reloads details before chart pages', async () => {
+  const s = server();
+  s.chart = () => response(409, { detail: 'This history generation is no longer current.' });
+  await open();
+  expect(screen.getByRole('alert')).toHaveTextContent('No provider download is started');
+  expect(screen.queryByRole('button', { name: 'Retry chart' })).not.toBeInTheDocument();
+  const count = s.quoteCalls().length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+  expect(s.quoteCalls()).toHaveLength(count);
+  s.detail = record({ generation: NEXT_GENERATION }); s.chart = null;
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh latest snapshot' })); await flush();
+  expect(s.quoteCalls()).toHaveLength(count + 1);
+  expect(s.quoteCalls().at(-1)[0]).toContain(`generation=${NEXT_GENERATION}`);
+  expect(s.fetch.mock.calls.filter(([url]) => url === `/api/indices/${ID}`)).toHaveLength(2);
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(s.fetch.mock.calls.every(([, options]) => !options.method || options.method === 'GET')).toBe(true);
+});
+
+it.each([
+  { instrument_id: OTHER },
+  { name: null },
+  { summary: { quote_count: -1 } },
+  { summary: { quote_count: 1.5 } },
+])('rejects malformed index details before loading chart pages: %j', async (invalid) => {
+  const s = server(); s.detail = record(invalid);
+  await open();
+  expect(screen.getByRole('alert')).toHaveTextContent('The backend returned unexpected index details. Please retry.');
+  expect(s.quoteCalls()).toHaveLength(0);
+  expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  s.detail = record();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry details' })); await flush();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.getByRole('img', { name: /Index OHLC/ })).toBeInTheDocument();
+});
+
+it('retries a transient chart failure with the same pinned snapshot and no detail refresh or download', async () => {
+  const s = server(); s.chart = () => response(503, { detail: 'Saved quotes unavailable' });
+  await open();
+  expect(screen.getByRole('alert')).toHaveTextContent('Saved quotes unavailable');
+  expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Refresh latest snapshot' })).not.toBeInTheDocument();
+  const failedURL = s.quoteCalls()[0][0];
+  s.chart = null;
+  fireEvent.click(screen.getByRole('button', { name: 'Retry chart' })); await flush();
+  expect(s.quoteCalls()).toHaveLength(2);
+  expect(s.quoteCalls()[1][0]).toBe(failedURL);
+  expect(s.fetch.mock.calls.filter(([url]) => url === `/api/indices/${ID}`)).toHaveLength(1);
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.getByRole('img', { name: /Index OHLC/ })).toBeInTheDocument();
+  expect(s.fetch.mock.calls.every(([, options]) => !options.method || options.method === 'GET')).toBe(true);
 });
 
 it('handles missing details with a retry and rejects malformed IDs without fetching them', async () => {

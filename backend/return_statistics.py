@@ -11,7 +11,7 @@ from split_adjustments import BASIS, adjusted_rows, load_split_snapshot
 
 from quote_fill import currency, fill_adjusted_rows, missing, read_policy
 
-MODEL_VERSION = 10
+MODEL_VERSION = 11
 TRADING_DAYS = 252
 MIN_RETURNS = 60
 YEAR_START_MAX_GAP_DAYS = 7
@@ -257,39 +257,46 @@ def _latest_rows(db, listing, query):
 
 
 def instrument_return_runs(db, isin, *, as_of, policy=None):
-    """Same published vintage, split basis and weekday/gap rules as model estimates."""
+    """Latest Yahoo vintage, bounded by quote date rather than collection time."""
+    from market_data_retention import reader
+
     state = db.instrument_state.find_one({"_id": isin}) or {}
     listing = state.get("listing")
-    if not listing:
-        return []
-    generation = md.history_generation(db, isin, listing, as_of)
-    query = md.observation_filter(db, isin, listing, as_of, generation)
-    query.update(collected_at={"$lte": as_of}, date={"$lte": as_of.date().isoformat()})
-    rows = _latest_rows(db, listing, query)
-    splits = load_split_snapshot(db, isin, listing, as_of, generation)
-    adjusted, _ = adjusted_rows(rows, splits)
-    adjusted = fill_adjusted_rows(adjusted, isin, policy or read_policy(db),
-                                  cutoff=as_of.date().isoformat(), currency_override=state.get("price_currency_override"))
-    return calculate_daily_statistics(adjusted, include_return_runs=True)["return_runs"]
+    with reader(db, isin, listing) as generation:
+        if generation is None:
+            return []
+        query = md.observation_filter(db, isin, listing, generation=generation)
+        query["date"] = {"$lte": md.aware(as_of).date().isoformat()}
+        rows = _latest_rows(db, listing, query)
+        splits = load_split_snapshot(db, isin, listing, as_of, generation)
+        adjusted, _ = adjusted_rows(rows, splits)
+        adjusted = fill_adjusted_rows(adjusted, isin, policy or read_policy(db),
+                                      cutoff=md.aware(as_of).date().isoformat(), currency_override=state.get("price_currency_override"))
+        return calculate_daily_statistics(adjusted, include_return_runs=True)["return_runs"]
 
 
 def refresh_statistics(db, isin, *, force=False, generation=None, as_of=None, point_in_time=False, policy=None):
-    """Persist estimates after acquisition; lazily cover pre-feature/partial data.
+    """Lease the current vintage across cache validation, quotes, actions and writes."""
+    from market_data_retention import reader
 
-    Observations are append-only. Their count, listing, split snapshot, model
-    version and UTC day invalidate the cache, including quote/action corrections.
-    Currency overrides and operational eligibility are evaluated on every read.
-    """
     state = db.instrument_state.find_one({"_id": isin}) or {}
     listing = state.get("listing")
-    cutoff = as_of or md.utcnow()
+    md.published_history(db, isin, listing, generation=generation)
+    with reader(db, isin, listing, generation) as generation:
+        return _refresh_statistics(db, isin, state, force=force, generation=generation, as_of=as_of,
+                                   point_in_time=point_in_time, policy=policy)
+
+
+def _refresh_statistics(db, isin, state, *, force=False, generation=None, as_of=None, point_in_time=False, policy=None):
+    """Generation, split evidence, policy and quote-date cutoff invalidate the cache."""
+    listing = state.get("listing")
+    cutoff = md.aware(as_of) if as_of is not None else md.utcnow()
     historical = point_in_time
-    generation = generation or md.history_generation(db, isin, listing, cutoff)
-    query = md.observation_filter(db, isin, listing, cutoff, generation) if listing else {"instrument_id": isin, "symbol": {"$exists": False}}
-    query.update(collected_at={"$lte": cutoff}, date={"$lte": cutoff.date().isoformat()})
-    count = db.quotes.count_documents(query) if listing else 0
-    splits = load_split_snapshot(db, isin, listing, cutoff, generation)
-    publication = md.published_history(db, isin, listing, cutoff, generation)
+    query = md.observation_filter(db, isin, listing, generation=generation)
+    query["date"] = {"$lte": cutoff.date().isoformat()}
+    count = db.quotes.count_documents(query) if generation is not None else 0
+    splits = load_split_snapshot(db, isin, listing, cutoff, generation) if generation is not None else None
+    publication = md.published_history(db, isin, listing, generation=generation)
     policy = policy or read_policy(db)
     signature = {"version": MODEL_VERSION, "listing": listing, "observations": count,
                  "quote_fill_policy": policy, "currency_override": state.get("price_currency_override"),
@@ -334,6 +341,15 @@ def refresh_statistics(db, isin, *, force=False, generation=None, as_of=None, po
 
 
 def instrument_statistics(db, isin, generation=None, *, as_of=None, point_in_time=False, policy=None):
+    from market_data_retention import reader
+
+    state = db.instrument_state.find_one({"_id": isin}) or {}
+    md.published_history(db, isin, state.get("listing"), generation=generation)
+    with reader(db, isin, state.get("listing"), generation) as generation:
+        return _instrument_statistics(db, isin, generation, as_of=as_of, point_in_time=point_in_time, policy=policy)
+
+
+def _instrument_statistics(db, isin, generation=None, *, as_of=None, point_in_time=False, policy=None):
     catalogue = md.require_catalogue(db, isin)
     if not point_in_time:
         md.expire_stalled_jobs(db, isin)
@@ -358,14 +374,14 @@ def instrument_statistics(db, isin, generation=None, *, as_of=None, point_in_tim
     if source == "manual":
         warnings.append("Price currency is manually specified, not verified by the provider; no FX conversion is performed.")
     last_date = estimates["last_date"]
-    reference_date = as_of.date() if as_of is not None else md.utcnow().date()
+    reference_date = md.aware(as_of).date() if as_of is not None else md.utcnow().date()
     if last_date and (reference_date - date.fromisoformat(last_date)).days > 14:
         warnings.append("The last usable price is more than 14 days old at the selected cutoff. Update EOD history before relying on these estimates.")
     if point_in_time:
-        warnings.append("Historical origin uses quote observations and a published history generation known by the selected timestamp. Present-day acquired-instrument membership and manual currency labels may still introduce selection or metadata bias.")
+        warnings.append("Historical origin uses the latest complete Yahoo published history, restricted to quote dates on or before as_of. This is not strict point-in-time data: later provider corrections and corporate-action adjustments may revise historical prices. Present-day membership and manual currency labels may introduce selection or metadata bias.")
     reason = None
     if not estimates["quote_count"]:
-        reason = "Download EOD history for this instrument first."
+        reason = "Request Yahoo acquisition for this instrument first; no readable published Yahoo history is available at these quote dates."
     elif currency != "EUR":
         reason = "Only EUR-priced history can be simulated. Confirm missing price currency on the instrument page; non-EUR or mixed prices require FX conversion."
     elif estimates["return_count"] < MIN_RETURNS:
@@ -375,7 +391,7 @@ def instrument_statistics(db, isin, generation=None, *, as_of=None, point_in_tim
     elif not point_in_time and db.acquisition_jobs.find_one({"instrument_id": isin, "active": True}):
         reason = "Wait for the current EOD acquisition to finish, then refresh these estimates."
     return md.public({
-        "instrument_id": isin, "name": catalogue.get("name"), "listing": state.get("listing"),
+        "instrument_id": isin, "name": catalogue.get("name"), "listing": state.get("listing"), "generation": generation,
         **estimates, "price_currency": currency, "currency_source": source,
         "eligible": reason is None, "ineligible_reason": reason, "warnings": warnings,
     })
