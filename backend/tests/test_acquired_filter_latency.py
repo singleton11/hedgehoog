@@ -42,7 +42,10 @@ def test_warm_summaries_skip_all_quote_reads_and_calculations(db, monkeypatch, y
     monkeypatch.setattr(db.instrument_statistics, "find", caches)
     warm = md.acquired_instruments(db, limit=2, offset=2, min_history_years=years, hide_negative_returns=returns)
     assert warm == cold
-    assert profiles.call_count == 2  # 50 + 3, not one command per ETF.
+    # mongomock implements server-side $lookup via internal find() calls;
+    # count only the application's batched payload hydration commands.
+    hydration = [call for call in profiles.call_args_list if "$or" in call.args[0]]
+    assert len(hydration) == (2 if years is not None or returns else 1)
     assert caches.call_count == (2 if returns else 1)
     refresh.assert_not_called()
     assert all(not job.get("reader_leases") for job in db.acquisition_jobs.find())

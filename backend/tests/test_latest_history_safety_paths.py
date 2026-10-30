@@ -30,7 +30,7 @@ def test_missing_profile_is_conflict_not_empty_acquired_universe(db):
     with pytest.raises(md.DataError, match="profile is unavailable") as error:
         md.acquired_universe(db)
     assert error.value.status == 409
-    assert db.acquisition_jobs.find_one({"_id": generation}).get("reader_leases") == {}
+    assert not db.acquisition_jobs.find_one({"_id": generation}).get("reader_leases")
 
 
 def test_history_bounds_reject_empty_or_non_yahoo_generations_and_ignore_unmapped_rows(db):
