@@ -80,9 +80,28 @@ are verified separately. This change does not repair that stale legacy fixture.
 
 ## Scope and remaining risk
 
-There is no production access, deployment, frontend change, index change, cache
-policy change or publication in this worktree. No claim is made about production
-HTTP latency or instant cold-history calculations. Exact filters still perform
-inventory-wide work and hold leases for all captured candidates; command batching
+The lease implementation commit does not change indexes, cache policy or the
+frontend. The integration branch also contains the separately validated raw-page
+retention indexes described in `retention-discovery-index-validation.md`.
+No claim is made here about production HTTP latency or instant cold-history
+calculations.
+
+## Independent and combined verification
+
+- Independent read-only review of lease commit `130b247` and index commit
+  `dbbe0ad`: no actionable findings. The reviewer executed 100 focused tests
+  against a disposable MongoDB, including both new suites, latest-history
+  contracts, safety paths and timezone behavior; all passed in 244.08 seconds.
+- After combining the commits, the parent independently executed 220 focused
+  offline tests; all passed in 20.56 seconds.
+- The parent independently executed both new real-Mongo suites, acquired-return
+  filtering and retention integration on combined head `bc7be41`: 42 passed in
+  154.83 seconds. MongoDB 7.0 used a loopback-only port, 768 MiB memory, one CPU
+  and a 256-MiB WiredTiger cache. `OPENBLAS_NUM_THREADS=1` and
+  `OMP_NUM_THREADS=1` bounded numerical-library parallelism. An earlier run
+  without those settings reached its 240-second command timeout and is not
+  counted as passing evidence. The disposable container was removed afterward.
+
+Exact filters still perform inventory-wide work and hold leases for all captured candidates; command batching
 reduces network amplification, not that server work or the five-minute deadline.
 Retention's independent unconditional statistics eviction remains outside scope.
