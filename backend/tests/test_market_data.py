@@ -893,11 +893,12 @@ def test_history_publications_are_batched_pinned_and_keep_request_cutoff(db, mon
             for day in days:
                 db.quotes.insert_one({"instrument_id": isin, "symbol": symbol, "exchange": exchange,
                                       "job_id": job, "provider": provider, "date": day})
-    find = Mock(wraps=db.acquisition_jobs.find)
-    monkeypatch.setattr(db.acquisition_jobs, "find", find)
+    aggregates = Mock(wraps=db.acquisition_jobs.aggregate)
+    monkeypatch.setattr(db.acquisition_jobs, "aggregate", aggregates)
     bounds = md.saved_history_bounds(db, observations, NOW)
-    assert find.call_count <= 5 * len(observations)  # Per-reader validation, not batched publication-time filtering.
-    assert all("published_at" not in call.args[0] for call in find.call_args_list)
+    # Inspect application commands, not mongomock's internal find() calls.
+    assert aggregates.call_count == 6  # Three bounded chunks, admission and completion.
+    assert all("published_at" not in call.args[0][0]["$match"] for call in aggregates.call_args_list)
     assert len(history_lookup_calls) == 3
     assert all((row["first_date"], row["last_date"]) == ("2020-01-01", "2025-01-01") for row in bounds.values())
     for pipeline in history_lookup_calls:

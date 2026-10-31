@@ -71,6 +71,81 @@ def reader(db, isin, listing, generation=None):
         db.acquisition_jobs.update_one({"_id": job_id}, {"$unset": {lease_field: ""}})
 
 
+@contextmanager
+def reader_many(db, observations):
+    """Lease explicit Yahoo identities in bounded commands, never reselect payloads.
+
+    Validate latest ordering after acquisition and again at completion. Register
+    each attempted chunk before writing so partial/ambiguous writes are released.
+    """
+    token = str(uuid4())
+    now = md.utcnow()
+    expires = now + timedelta(seconds=READER_SECONDS)
+    field = f"reader_leases.{token}"
+
+    def identity(row):
+        if row.get("provider") != "yfinance" or row.get("job_id") in (None, "legacy") or not row.get("listing"):
+            raise conflict()
+        return {"_id": row["job_id"], "instrument_id": row["_id"], "listing": row["listing"]}
+
+    def query(batch):
+        return {"$or": [identity(row) for row in batch], "provider": "yfinance", "published": True,
+                "retention_state": {"$nin": ["retiring", "pruned"]}}
+
+    def pipeline(batch):
+        return [
+            {"$match": {"instrument_id": {"$in": [row["_id"] for row in batch]},
+                        "provider": "yfinance", "published": True}},
+            {"$project": {"instrument_id": 1, "listing": 1, "retention_state": 1,
+                          "requested_at": 1, "published_at": 1, field: 1}},
+            {"$sort": {"requested_at": -1, "published_at": -1, "_id": -1}},
+            {"$group": {"_id": "$instrument_id", "job": {"$first": "$$ROOT"}}},
+        ]
+
+    # Remove only expired tokens, atomically preserving other admitted readers.
+    update = [{"$set": {"reader_leases": {"$arrayToObject": {"$concatArrays": [
+        {"$filter": {"input": {"$objectToArray": {"$ifNull": ["$reader_leases", {}]}},
+                     "as": "lease", "cond": {"$gt": ["$$lease.v", now]}}},
+        [{"k": token, "v": expires}],
+    ]}}}}]
+    command = lambda batch: {"update": "acquisition_jobs", "updates": [{"q": query(batch), "u": update, "multi": True}],
+                             "validation": pipeline(batch)}
+    batches = list(md._history_batches(observations, command))
+    attempted = []
+
+    def validate():
+        for batch in batches:
+            current = {row["_id"]: row["job"] for row in db.acquisition_jobs.aggregate(pipeline(batch))}
+            for row in batch:
+                job = current.get(row["_id"], {})
+                expiry = job.get("reader_leases", {}).get(token)
+                if (job.get("_id") != row["job_id"] or job.get("listing") != row["listing"]
+                        or job.get("retention_state") in ("retiring", "pruned")
+                        or expiry is None or md.aware(expiry) <= md.utcnow() or expires <= md.utcnow()):
+                    raise conflict()
+
+    try:
+        for batch in batches:
+            attempted.append(batch)
+            if db.acquisition_jobs.update_many(query(batch), update).matched_count != len(batch):
+                raise conflict()
+        validate()
+        yield
+        validate()
+    finally:
+        # Try every chunk even if releasing an earlier one fails. A failed DB
+        # release remains bounded by the same expiry used by the single reader.
+        release_error = None
+        for batch in attempted:
+            try:
+                db.acquisition_jobs.update_many({"_id": {"$in": [row["job_id"] for row in batch]}},
+                                                {"$unset": {field: ""}})
+            except Exception as exc:
+                release_error = exc
+        if release_error is not None:
+            raise release_error
+
+
 def inventory(db):
     """Report attributable data and ambiguity without deleting any records."""
     jobs = list(db.acquisition_jobs.find({"status": {"$nin": ["maintenance", "deleting"]}}))
@@ -251,6 +326,8 @@ def retain_instrument(db, settings, isin):
 def cleanup(db, settings, isin=None):
     if not settings.market_data_retention_enabled:
         return {"disabled": True, "items": []}
+    # Global provider discovery runs before retain_instrument's index setup.
+    md.ensure_indexes(db)
     identifiers = {isin} if isin else set(db.acquisition_jobs.distinct("instrument_id")) | set(db.market_data_retention.distinct("instrument_id"))
     if isin is None:
         for name in (*PAYLOADS, "market_data_publications"):
