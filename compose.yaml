@@ -1,102 +1,85 @@
+x-rust-environment: &rust-environment
+  DATABASE_URL: postgresql://${POSTGRES_USER:-hedgehoog}:${POSTGRES_PASSWORD:-hedgehoog-local}@postgres:5432/${POSTGRES_DB:-hedgehoog}
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  JWT_SECRET: ${JWT_SECRET:-hedgehoog-local-jwt-secret-change-me-1234567890}
+  JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-43200}
+  ADMIN_LOGIN: ${ADMIN_LOGIN:-admin}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+  COOKIE_SECURE: ${COOKIE_SECURE:-false}
+  ALLOW_INSECURE_HTTP: ${ALLOW_INSECURE_HTTP:-false}
+  ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173}
+  DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS:-20}
+  JOB_POLL_INTERVAL_MS: ${JOB_POLL_INTERVAL_MS:-500}
+  JOB_LEASE_SECONDS: ${JOB_LEASE_SECONDS:-120}
+  MARKET_DATA_RETENTION_ENABLED: ${MARKET_DATA_RETENTION_ENABLED:-true}
+  MARKET_DATA_RETENTION_BATCH_SIZE: ${MARKET_DATA_RETENTION_BATCH_SIZE:-1000}
+  MARKET_DATA_MAX_CALLS_PER_JOB: ${MARKET_DATA_MAX_CALLS_PER_JOB:-40}
+  MARKET_DATA_TIMEOUT_SECONDS: ${MARKET_DATA_TIMEOUT_SECONDS:-15}
+  YAHOO_REQUEST_INTERVAL_SECONDS: ${YAHOO_REQUEST_INTERVAL_SECONDS:-0.05}
+
+x-rust-service: &rust-service
+  build:
+    context: .
+    dockerfile: backend-rust/Dockerfile
+  restart: unless-stopped
+  environment: *rust-environment
+  depends_on:
+    postgres:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+  stop_grace_period: 2m
+
 services:
-  mongodb:
-    # MongoDB 8's allocator is incompatible with Docker kernels 6.19–7.0.13.
-    image: mongo:7.0
+  postgres:
+    image: postgres:16-bookworm
     restart: unless-stopped
     ports:
-      - "127.0.0.1:27017:27017"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-hedgehoog}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-hedgehoog-local}
+      POSTGRES_USER: ${POSTGRES_USER:-hedgehoog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hedgehoog-local}
+      POSTGRES_DB: ${POSTGRES_DB:-hedgehoog}
     volumes:
-      - mongodb_data:/data/db
+      - postgresql_data:/var/lib/postgresql/data
     healthcheck:
-      test:
-        - CMD-SHELL
-        - >-
-          mongosh --quiet --host 127.0.0.1
-          --username "$$MONGO_INITDB_ROOT_USERNAME"
-          --password "$$MONGO_INITDB_ROOT_PASSWORD"
-          --authenticationDatabase admin
-          --eval 'quit(db.adminCommand({ping: 1}).ok ? 0 : 1)'
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
-      retries: 12
+      retries: 24
       start_period: 10s
 
-  rabbitmq:
-    image: rabbitmq:4.2-management
-    hostname: rabbitmq
-    restart: unless-stopped
+  migrate:
+    <<: *rust-service
+    command: ["hedgehoog-migrate"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *rust-service
+    command: ["hedgehoog-api"]
     ports:
-      - "127.0.0.1:5672:5672"
-      - "127.0.0.1:15672:15672"
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-hedgehoog}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-hedgehoog-local}
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
-
-  celery-worker: &catalogue-worker
-    build: ./backend
-    restart: unless-stopped
-    environment:
-      MONGODB_DATABASE: ${MONGODB_DATABASE:-hedgehoog}
-      # Host processes use localhost; containers resolve Compose service names.
-      MONGODB_URI: ${WORKER_MONGODB_URI:-mongodb://${MONGO_ROOT_USERNAME:-hedgehoog}:${MONGO_ROOT_PASSWORD:-hedgehoog-local}@mongodb:27017/?authSource=admin}
-      CELERY_BROKER_URL: ${WORKER_CELERY_BROKER_URL:-amqp://${RABBITMQ_USER:-hedgehoog}:${RABBITMQ_PASSWORD:-hedgehoog-local}@rabbitmq:5672//}
-      MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-yfinance}
-      MARKET_DATA_RETENTION_ENABLED: ${MARKET_DATA_RETENTION_ENABLED:-true}
-      MARKET_DATA_RETENTION_BATCH_SIZE: ${MARKET_DATA_RETENTION_BATCH_SIZE:-1000}
-      MARKET_DATA_MAX_CALLS_PER_JOB: ${MARKET_DATA_MAX_CALLS_PER_JOB:-40}
-      MARKET_DATA_TIMEOUT_SECONDS: ${MARKET_DATA_TIMEOUT_SECONDS:-15}
-      YAHOO_REQUEST_INTERVAL_SECONDS: ${YAHOO_REQUEST_INTERVAL_SECONDS:-0.05}
-    # Catalogue imports remain serial, independent of parallel downloads.
-    # Module launch retains /app/backend on sys.path for task-time imports.
-    command: ["python", "-m", "celery", "-A", "celery_app:app", "worker", "--loglevel=info", "--queues=etfs", "--concurrency=1", "--hostname=etf-worker@%h"]
-    depends_on:
-      mongodb:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    stop_grace_period: 2m
-    healthcheck:
-      test: ["CMD-SHELL", "python -m celery -A celery_app:app inspect ping --destination etf-worker@$$HOSTNAME --timeout 5"]
-      interval: 30s
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health"]
+      interval: 15s
       timeout: 10s
-      retries: 3
-      start_period: 20s
+      retries: 6
+      start_period: 30s
 
-  celery-marketdata-worker:
-    <<: *catalogue-worker
-    # Prefork isolates yfinance sessions; Mongo paces every actual HTTP request.
-    command: ["python", "-m", "celery", "-A", "celery_app:app", "worker", "--loglevel=info", "--queues=marketdata", "--concurrency=${MARKET_DATA_WORKER_CONCURRENCY:-16}", "--hostname=marketdata-worker@%h"]
-    healthcheck:
-      test: ["CMD-SHELL", "python -m celery -A celery_app:app inspect ping --destination marketdata-worker@$$HOSTNAME --timeout 5"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
+  catalogue-worker:
+    <<: *rust-service
+    command: ["hedgehoog-worker", "--queue", "catalogue", "--concurrency", "1"]
 
-  celery-beat:
-    build: ./backend
-    restart: unless-stopped
-    environment:
-      MONGODB_DATABASE: ${MONGODB_DATABASE:-hedgehoog}
-      MONGODB_URI: ${WORKER_MONGODB_URI:-mongodb://${MONGO_ROOT_USERNAME:-hedgehoog}:${MONGO_ROOT_PASSWORD:-hedgehoog-local}@mongodb:27017/?authSource=admin}
-      CELERY_BROKER_URL: ${WORKER_CELERY_BROKER_URL:-amqp://${RABBITMQ_USER:-hedgehoog}:${RABBITMQ_PASSWORD:-hedgehoog-local}@rabbitmq:5672//}
-    # Run exactly one scheduler; the catalogue worker dispatches acquisitions.
-    command: ["python", "-m", "celery", "-A", "celery_app:app", "beat", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
+  marketdata-worker:
+    <<: *rust-service
+    command: ["hedgehoog-worker", "--queue", "marketdata", "--concurrency", "${MARKET_DATA_WORKER_CONCURRENCY:-16}"]
+
+  scheduler:
+    <<: *rust-service
+    command: ["hedgehoog-scheduler"]
 
 volumes:
-  mongodb_data:
-  rabbitmq_data:
+  postgresql_data:

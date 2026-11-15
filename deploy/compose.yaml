@@ -1,23 +1,33 @@
 name: hedgehoog-production
 
-x-task-environment: &task-environment
-  MONGODB_URI: ${MONGODB_URI:?Set MONGODB_URI}
-  MONGODB_DATABASE: hedgehoog
-  CELERY_BROKER_URL: ${CELERY_BROKER_URL:?Set CELERY_BROKER_URL}
-  MARKET_DATA_PROVIDER: yfinance
+x-runtime-environment: &runtime-environment
+  DATABASE_URL: postgresql://${POSTGRES_USER:-hedgehoog}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hedgehoog}
+  ENVIRONMENT: production
+  JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+  JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-43200}
+  ADMIN_LOGIN: ${ADMIN_LOGIN:-admin}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
+  COOKIE_SECURE: ${COOKIE_SECURE:-true}
+  ALLOW_INSECURE_HTTP: ${ALLOW_INSECURE_HTTP:-false}
+  ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?Set ALLOWED_ORIGINS}
+  DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS:-20}
+  JOB_POLL_INTERVAL_MS: ${JOB_POLL_INTERVAL_MS:-500}
+  JOB_LEASE_SECONDS: ${JOB_LEASE_SECONDS:-120}
   MARKET_DATA_RETENTION_ENABLED: ${MARKET_DATA_RETENTION_ENABLED:-true}
   MARKET_DATA_RETENTION_BATCH_SIZE: ${MARKET_DATA_RETENTION_BATCH_SIZE:-1000}
-  YAHOO_REQUEST_INTERVAL_SECONDS: "0.05"
+  MARKET_DATA_MAX_CALLS_PER_JOB: ${MARKET_DATA_MAX_CALLS_PER_JOB:-40}
+  MARKET_DATA_TIMEOUT_SECONDS: ${MARKET_DATA_TIMEOUT_SECONDS:-15}
+  YAHOO_REQUEST_INTERVAL_SECONDS: ${YAHOO_REQUEST_INTERVAL_SECONDS:-0.05}
 
 x-backend: &backend
   image: hedgehoog-backend:${RELEASE_SHA:?Set RELEASE_SHA}
   restart: unless-stopped
-  environment: *task-environment
+  environment: *runtime-environment
   depends_on:
-    mongodb:
+    postgres:
       condition: service_healthy
-    rabbitmq:
-      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
   stop_grace_period: 2m
   logging: &logging
     driver: json-file
@@ -26,70 +36,52 @@ x-backend: &backend
       max-file: "3"
 
 services:
-  mongodb:
-    image: mongo:7.0
+  postgres:
+    image: postgres:16-bookworm
     restart: unless-stopped
     environment:
-      MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Set MONGO_ROOT_PASSWORD}
-      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?Set MONGO_APP_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER:-hedgehoog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-hedgehoog}
     volumes:
-      - mongodb_data:/data/db
-      - ./mongo-init.js:/docker-entrypoint-initdb.d/app.js:ro
+      - postgresql_data:/var/lib/postgresql/data
     healthcheck:
-      test: [CMD-SHELL, 'mongosh --quiet --username "$$MONGO_INITDB_ROOT_USERNAME" --password "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "quit(db.adminCommand({ping: 1}).ok ? 0 : 1)"']
+      test: [CMD-SHELL, "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 24
+      start_period: 10s
     logging: *logging
 
-  rabbitmq:
-    image: rabbitmq:4.2-alpine
-    hostname: rabbitmq
-    restart: unless-stopped
-    environment:
-      RABBITMQ_DEFAULT_USER: hedgehoog
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD}
-      RABBITMQ_DEFAULT_VHOST: hedgehoog
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    healthcheck:
-      test: [CMD, rabbitmq-diagnostics, -q, check_running]
-      interval: 5s
-      timeout: 5s
-      retries: 24
-    logging: *logging
+  migrate:
+    <<: *backend
+    command: [hedgehoog-migrate]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   api:
     <<: *backend
-    environment:
-      <<: *task-environment
-      ENVIRONMENT: production
-      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
-      ADMIN_LOGIN: admin
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
-      COOKIE_SECURE: "false"
-      ALLOW_INSECURE_HTTP: "true"
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?Set ALLOWED_ORIGINS}
-    command: [python, -m, uvicorn, 'main:create_app', --factory, --host, 0.0.0.0, --port, '8000']
+    command: [hedgehoog-api]
     healthcheck:
-      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=5)']
+      test: [CMD, curl, --fail, --silent, 'http://127.0.0.1:8000/health']
       interval: 15s
       timeout: 10s
       retries: 6
       start_period: 60s
 
-  celery-worker:
+  catalogue-worker:
     <<: *backend
-    command: [python, -m, celery, -A, 'celery_app:app', worker, --loglevel=info, --queues=etfs, --concurrency=1, '--hostname=etf-worker@%h']
+    command: [hedgehoog-worker, --queue, catalogue, --concurrency, '1']
 
-  celery-marketdata-worker:
+  marketdata-worker:
     <<: *backend
-    command: [python, -m, celery, -A, 'celery_app:app', worker, --loglevel=info, --queues=marketdata, '--concurrency=${MARKET_DATA_WORKER_CONCURRENCY:-1}', '--hostname=marketdata-worker@%h']
+    command: [hedgehoog-worker, --queue, marketdata, --concurrency, '${MARKET_DATA_WORKER_CONCURRENCY:-1}']
 
-  celery-beat:
+  scheduler:
     <<: *backend
-    command: [python, -m, celery, -A, 'celery_app:app', beat, --loglevel=info, '--schedule=/tmp/celerybeat-schedule']
+    command: [hedgehoog-scheduler]
 
   web:
     image: hedgehoog-web:${RELEASE_SHA:?Set RELEASE_SHA}
@@ -107,5 +99,4 @@ services:
     logging: *logging
 
 volumes:
-  mongodb_data:
-  rabbitmq_data:
+  postgresql_data:

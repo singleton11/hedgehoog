@@ -37,7 +37,6 @@ install_release() {
     sha=$(cat release-sha)
     docker load -i images.tar
     install -m 644 compose.yaml /opt/hedgehoog/compose.yaml
-    install -m 644 mongo-init.js /opt/hedgehoog/mongo-init.js
     printf 'RELEASE_SHA=%s\n' "$sha" > /opt/hedgehoog/.release.env
     cd /opt/hedgehoog
     docker compose --env-file .env.production --env-file .release.env config --quiet

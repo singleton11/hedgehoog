@@ -8,186 +8,101 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
-concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  tests:
-    name: Tests and coverage (${{ matrix.suite }})
+  backend:
+    name: Rust backend
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: [backend, frontend]
+    services:
+      postgres:
+        image: postgres:16-bookworm
+        env:
+          POSTGRES_USER: hedgehoog
+          POSTGRES_PASSWORD: hedgehoog
+          POSTGRES_DB: hedgehoog
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hedgehoog -d hedgehoog"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
-      JWT_SECRET: ci-only-test-secret-not-used-outside-this-run
+      DATABASE_URL: postgresql://hedgehoog:hedgehoog@127.0.0.1:5432/hedgehoog
+      TEST_DATABASE_URL: postgresql://hedgehoog:hedgehoog@127.0.0.1:5432/hedgehoog
+      JWT_SECRET: ci-only-test-secret-with-at-least-32-characters
+      ADMIN_LOGIN: admin
+      ADMIN_PASSWORD: admin
     steps:
-      - name: Check out proposed changes
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          path: current
           persist-credentials: false
-
-      - name: Set up Python and uv
-        if: matrix.suite == 'backend'
-        uses: astral-sh/setup-uv@v6
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          version: '0.11.2'
-          python-version: '3.13'
-          enable-cache: true
-          cache-dependency-glob: '**/uv.lock'
+          toolchain: '1.91'
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend-rust
+      - name: Format
+        working-directory: backend-rust
+        run: cargo fmt --all --check
+      - name: Clippy
+        working-directory: backend-rust
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Test against PostgreSQL
+        working-directory: backend-rust
+        run: cargo test --locked --all-targets --all-features
+      - name: Build release image
+        run: docker build -f backend-rust/Dockerfile -t hedgehoog-backend:ci .
+      - name: Validate Compose
+        env:
+          RELEASE_SHA: ci
+          POSTGRES_PASSWORD: ci-postgres-password
+          JWT_SECRET: ci-only-production-secret-with-at-least-32-characters
+          ADMIN_PASSWORD: ci-admin-password
+          ALLOWED_ORIGINS: http://localhost
+        run: |
+          docker compose config >/dev/null
+          docker compose -f deploy/compose.yaml config >/dev/null
 
-      - name: Set up Node.js
-        if: matrix.suite == 'frontend'
-        uses: actions/setup-node@v4
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: current/frontend/package-lock.json
-
-      - name: Install backend test dependencies
-        if: matrix.suite == 'backend'
-        working-directory: current/backend
-        run: uv sync --locked
-
-      - name: Test the coverage gate and baseline reporters
-        if: matrix.suite == 'backend'
-        working-directory: current
-        run: python3 -m unittest discover -s scripts/tests -v
-
-      - name: Test durable Telegram attention helper (offline)
-        if: matrix.suite == 'backend'
-        working-directory: current
-        run: >-
-          python3 -W error::ResourceWarning -m unittest discover
-          -s .opencode/skills/paseo-telegram-attention/scripts -p 'test_*.py' -v
-
-      - name: Test native planning formatting (offline)
-        if: matrix.suite == 'backend'
-        working-directory: current
-        run: python3 -m unittest discover -s .opencode/skills/planning/tests -v
-
-      - name: Install frontend dependencies
-        if: matrix.suite == 'frontend'
-        working-directory: current/frontend
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
         run: npm ci
+      - name: Test
+        working-directory: frontend
+        run: npm test
+      - name: Build
+        working-directory: frontend
+        run: npm run build
 
-      - name: Test baseline artifact lookup
-        if: matrix.suite == 'frontend'
-        working-directory: current
-        run: node --test scripts/tests/test_coverage_baseline.cjs
-
-      - name: Test the frontend baseline reporter
-        if: matrix.suite == 'frontend'
-        working-directory: current
-        run: python3 -m unittest discover -s scripts/tests -p test_baseline_reporters.py -k vitest -v
-
-      # Main publishes validated, completed measurements even when test bodies fail.
-      # PR tests still run in strict mode and must pass.
-      - name: Run tests with coverage
-        env:
-          MEASUREMENT_MODE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'baseline' || 'current' }}
-        run: bash current/scripts/run_coverage.sh "${{ matrix.suite }}" "$GITHUB_WORKSPACE/current" "$RUNNER_TEMP/coverage/current" "$MEASUREMENT_MODE"
-
-      - name: Seal main branch baseline
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: >-
-          python3 current/scripts/coverage_artifact.py seal
-          --suite "${{ matrix.suite }}" --sha "$GITHUB_SHA"
-          --branch main --run-id "$GITHUB_RUN_ID"
-          --directory "$RUNNER_TEMP/coverage/current"
-
-      - name: Publish main branch baseline
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+  repository-tools:
+    name: Repository tooling
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
         with:
-          name: baseline-${{ matrix.suite }}
-          path: |
-            ${{ runner.temp }}/coverage/current/metadata.json
-            ${{ runner.temp }}/coverage/current/test-status.json
-            ${{ runner.temp }}/coverage/current/coverage.json
-            ${{ runner.temp }}/coverage/current/coverage-summary.json
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 90
-
-      - name: Find nearest target commit baseline
-        if: github.event_name == 'pull_request'
-        id: baseline
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const findBaseline = require('./current/scripts/find_coverage_baseline.cjs');
-            const { sha, ref: branch } = context.payload.pull_request.base;
-            const baseline = await findBaseline({
-              github, ...context.repo, sha, branch, suite: '${{ matrix.suite }}',
-            });
-            core.setOutput('run-id', baseline.runId);
-            core.setOutput('sha', baseline.sha);
-            await core.summary.addHeading('Coverage baseline (${{ matrix.suite }})')
-              .addRaw(`Target: ${sha}\n\nBaseline: ${baseline.sha}\n\nFirst-parent distance: ${baseline.distance} commit(s)\n`)
-              .write();
-            if (baseline.distance > 0) {
-              core.warning(`Using baseline ${baseline.sha}, ${baseline.distance} first-parent commit(s) behind ${sha}`);
-            }
-
-      - name: Download target commit baseline
-        if: github.event_name == 'pull_request'
-        uses: actions/download-artifact@v4
-        with:
-          name: baseline-${{ matrix.suite }}
-          path: ${{ runner.temp }}/coverage/baseline
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ steps.baseline.outputs.run-id }}
-
-      - name: Validate target commit baseline
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ steps.baseline.outputs.sha }}
-          BASE_RUN_ID: ${{ steps.baseline.outputs.run-id }}
-        run: >-
-          python3 current/scripts/coverage_artifact.py validate
-          --suite "${{ matrix.suite }}" --sha "$BASE_SHA"
-          --branch main --run-id "$BASE_RUN_ID"
-          --directory "$RUNNER_TEMP/coverage/baseline"
-
-      - name: Report coverage and reject regressions
-        env:
-          SUITE: ${{ matrix.suite }}
-          IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+          persist-credentials: false
+      - name: Offline regression tests
         run: |
-          report=coverage.json
-          if [ "$SUITE" = frontend ]; then report=coverage-summary.json; fi
-          args=(--suite "$SUITE" --current "$RUNNER_TEMP/coverage/current/$report")
-          if [ "$IS_PULL_REQUEST" = true ]; then
-            args+=(--baseline "$RUNNER_TEMP/coverage/baseline/$report")
-          fi
-          python3 current/scripts/check_coverage.py "${args[@]}"
-
-      - name: Preserve main branch test failures
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          STATUS_FILE: ${{ runner.temp }}/coverage/current/test-status.json
-        run: |
-          python3 - <<'PYTHON'
-          import json, os, sys
-          from pathlib import Path
-          failures = json.loads(Path(os.environ["STATUS_FILE"]).read_text())["failures"]
-          if failures:
-              print(f"::error::{failures} test(s) failed; validated baseline published for PR comparisons.")
-              sys.exit(1)
-          PYTHON
-
-      - name: Upload coverage reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-${{ matrix.suite }}
-          path: ${{ runner.temp }}/coverage
-          if-no-files-found: warn
-          retention-days: 14
+          python3 -m unittest discover -s scripts/tests -v
+          python3 -W error::ResourceWarning -m unittest discover -s .opencode/skills/paseo-telegram-attention/scripts -p 'test_*.py' -v
+          python3 -m unittest discover -s .opencode/skills/planning/tests -v
