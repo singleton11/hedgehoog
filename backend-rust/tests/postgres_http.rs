@@ -4,6 +4,7 @@ use axum::{
     body::Body,
     http::{header::COOKIE, Request, StatusCode},
 };
+use chrono::{Duration, Utc};
 use hedgehoog::{auth, db, http, AppState, Config};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
@@ -126,6 +127,66 @@ async fn authenticated_catalogue_settings_and_acquisition_routes_use_postgres() 
     .await
     .expect("count queued acquisition");
     assert_eq!(queued, 1);
+
+    let job_id = acquisition.1["job"]["id"].as_str().unwrap();
+    let listing = json!({"symbol": "EXAMPLE.DE", "exchange": "XETR"});
+    sqlx::query(
+        "UPDATE acquisition_jobs SET published = true, published_at = now(), listing = $2
+         WHERE id = $1",
+    )
+    .bind(job_id)
+    .bind(&listing)
+    .execute(&pool)
+    .await
+    .expect("publish acquisition");
+    sqlx::query("INSERT INTO instrument_state (instrument_id, listing) VALUES ($1, $2)")
+        .bind("IE00B4L5Y983")
+        .bind(&listing)
+        .execute(&pool)
+        .await
+        .expect("save listing");
+    let first_date = Utc::now().date_naive() - Duration::days(2);
+    for (date, flags) in [
+        (first_date, None),
+        (first_date + Duration::days(1), Some(json!(["estimated"]))),
+    ] {
+        sqlx::query(
+            "INSERT INTO quotes
+                (id, instrument_id, symbol, exchange, provider, job_id,
+                 collected_at, collection_date, quote_date, data, quality_flags, close)
+             VALUES ($1, 'IE00B4L5Y983', 'EXAMPLE.DE', 'XETR', 'yfinance', $2,
+                     now(), CURRENT_DATE, $3, $4, $5, 100)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(job_id)
+        .bind(date)
+        .bind(json!({"date": date.to_string(), "close": 100.0}))
+        .bind(flags)
+        .execute(&pool)
+        .await
+        .expect("save published quote");
+    }
+
+    let first_page = get_json(
+        &app,
+        &format!("/instruments/IE00B4L5Y983/quotes?limit=1&generation={job_id}"),
+        &cookie,
+    )
+    .await;
+    assert_eq!(first_page["total"], 2);
+    assert_eq!(first_page["generation"], job_id);
+    assert_eq!(first_page["items"][0]["quality_flags"], json!([]));
+    assert_eq!(first_page["items"][0]["close"], "100");
+    let second_page = get_json(
+        &app,
+        "/instruments/IE00B4L5Y983/quotes?limit=1&offset=1",
+        &cookie,
+    )
+    .await;
+    assert_eq!(
+        second_page["items"][0]["quality_flags"],
+        json!(["estimated"])
+    );
 }
 
 async fn get_json(app: &axum::Router, uri: &str, cookie: &str) -> Value {

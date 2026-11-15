@@ -1918,7 +1918,8 @@ async fn quotes_value(pool: &PgPool, instrument_id: &str, query: QuotesQuery) ->
         );
         item.insert(
             "quality_flags".into(),
-            json!(row.get::<Vec<String>, _>("quality_flags")),
+            row.get::<Option<Value>, _>("quality_flags")
+                .unwrap_or_else(|| json!([])),
         );
         for field in ["open", "high", "low", "close", "volume", "adj_close"] {
             if let Some(value) = row.get::<Option<Decimal>, _>(field) {
