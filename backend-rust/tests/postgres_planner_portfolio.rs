@@ -352,6 +352,13 @@ async fn planner_portfolio_import_performance_and_recommendations_use_postgres()
     )
     .await;
     assert_eq!(deposit.0, StatusCode::CREATED, "{}", deposit.1);
+    let customers = request_json(&app, "GET", "/customers?limit=20&offset=0", &cookie, None).await;
+    assert_eq!(customers.0, StatusCode::OK, "{}", customers.1);
+    assert_eq!(customers.1["items"][0]["id"], customer_id);
+    assert_eq!(customers.1["items"][0]["net_worth_eur"], "1000.00");
+    assert_eq!(customers.1["items"][0]["realized_pnl_eur"], "0.00");
+    assert_eq!(customers.1["items"][0]["today_pnl_eur"], "0.00");
+    assert!(customers.1["items"][0]["today_to_date"].is_null());
 
     let performance = request_json(
         &app,
@@ -417,6 +424,17 @@ async fn planner_portfolio_import_performance_and_recommendations_use_postgres()
     .await;
     assert_eq!(fulfill.0, StatusCode::OK, "{}", fulfill.1);
     assert!(!fulfill.1["event_ids"].as_array().unwrap().is_empty());
+    let customers = request_json(&app, "GET", "/customers?limit=20&offset=0", &cookie, None).await;
+    assert_eq!(customers.0, StatusCode::OK, "{}", customers.1);
+    let summary = &customers.1["items"][0];
+    assert!(summary["realized_pnl_eur"].is_string());
+    if summary["today_pnl_eur"]
+        .as_str()
+        .is_some_and(|pnl| pnl != "0.00")
+    {
+        assert!(summary["today_from_date"].is_string());
+        assert!(summary["today_to_date"].is_string());
+    }
     let tracking = request_json(
         &app,
         "GET",
