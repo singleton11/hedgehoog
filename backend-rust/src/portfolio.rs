@@ -1410,30 +1410,75 @@ async fn plan_tracking(
     Ok(Json(response))
 }
 
+fn add_money(total: &mut Option<Decimal>, value: Option<&Value>) {
+    *total = (*total)
+        .zip(parse_money(value))
+        .map(|(sum, amount)| sum + amount);
+}
+
+fn customer_summary(snapshots: &[Value]) -> Value {
+    let (mut equity, mut realized, mut unrealized, mut cost, mut previous, mut daily) = (
+        Some(Decimal::ZERO),
+        Some(Decimal::ZERO),
+        Some(Decimal::ZERO),
+        Some(Decimal::ZERO),
+        Some(Decimal::ZERO),
+        Some(Decimal::ZERO),
+    );
+    let mut period = None;
+    let mut dates_consistent = true;
+    for snapshot in snapshots {
+        add_money(&mut equity, snapshot.get("equity_eur"));
+        add_money(&mut realized, snapshot.get("realized_pnl_eur"));
+        add_money(&mut unrealized, snapshot.get("unrealized_pnl_eur"));
+        add_money(&mut cost, snapshot.get("cost_basis_eur"));
+        add_money(&mut previous, snapshot.get("previous_value_eur"));
+        let daily_value = parse_money(snapshot.get("daily_unrealized_pnl_eur"));
+        add_money(&mut daily, snapshot.get("daily_unrealized_pnl_eur"));
+        let dates = snapshot["daily_from_date"]
+            .as_str()
+            .zip(snapshot["daily_to_date"].as_str());
+        match dates {
+            Some((from, to)) if from < to => {
+                if period.is_some_and(|current| current != (from, to)) {
+                    dates_consistent = false;
+                }
+                period = Some((from, to));
+            }
+            None if daily_value == Some(Decimal::ZERO)
+                && snapshot["daily_from_date"].is_null()
+                && snapshot["daily_to_date"].is_null() => {}
+            _ => dates_consistent = false,
+        }
+    }
+    if !dates_consistent {
+        daily = None;
+        previous = None;
+        period = None;
+    }
+    let (from, to) = if daily.is_some() {
+        period.map_or((None, None), |(from, to)| (Some(from), Some(to)))
+    } else {
+        (None, None)
+    };
+    json!({
+        "net_worth_eur": equity.map(money),
+        "realized_pnl_eur": realized.map(money),
+        "unrealized_pnl_eur": unrealized.map(money),
+        "total_pnl_eur": realized.zip(unrealized).map(|(a, b)| money(a + b)),
+        "cost_basis_eur": cost.map(money),
+        "previous_value_eur": previous.map(money),
+        "today_pnl_eur": daily.map(money),
+        "today_from_date": from,
+        "today_to_date": to,
+    })
+}
+
 pub async fn customer_summaries(
     pool: &PgPool,
     user_id: &str,
     customer_ids: &[String],
 ) -> AppResult<HashMap<String, Value>> {
-    let mut result = customer_ids
-        .iter()
-        .map(|id| {
-            (
-                id.clone(),
-                json!({
-                    "net_worth_eur": "0.00",
-                    "realized_pnl_eur": "0.00",
-                    "unrealized_pnl_eur": "0.00",
-                    "total_pnl_eur": "0.00",
-                    "cost_basis_eur": "0.00",
-                    "previous_value_eur": "0.00",
-                    "today_pnl_eur": "0.00",
-                    "today_from_date": Value::Null,
-                    "today_to_date": Value::Null,
-                }),
-            )
-        })
-        .collect::<HashMap<_, _>>();
     let portfolios = sqlx::query_as::<_, Portfolio>(
         "SELECT id, user_id, customer_id, name, plan_id, currency, created_at, revision
          FROM portfolios
@@ -1444,72 +1489,95 @@ pub async fn customer_summaries(
     .bind(customer_ids)
     .fetch_all(pool)
     .await?;
-    let mut totals =
-        HashMap::<String, (Decimal, Decimal, Decimal, Decimal, Decimal, Decimal)>::new();
+    let mut snapshots = HashMap::<String, Vec<Value>>::new();
     for portfolio in portfolios {
-        let snapshot = valuation(pool, &portfolio).await?;
-        let values = [
-            parse_money(snapshot.get("equity_eur")),
-            parse_money(snapshot.get("realized_pnl_eur")),
-            parse_money(snapshot.get("unrealized_pnl_eur")),
-            parse_money(snapshot.get("cost_basis_eur")),
-            parse_money(snapshot.get("previous_value_eur")),
-            parse_money(snapshot.get("daily_unrealized_pnl_eur")),
-        ];
-        let customer_id = portfolio.customer_id.clone();
-        let entry = totals.entry(customer_id.clone()).or_insert((
-            Decimal::ZERO,
-            Decimal::ZERO,
-            Decimal::ZERO,
-            Decimal::ZERO,
-            Decimal::ZERO,
-            Decimal::ZERO,
-        ));
-        if let [Some(equity), Some(realized), Some(unrealized), Some(cost), Some(previous), Some(daily)] =
-            values
-        {
-            entry.0 += equity;
-            entry.1 += realized;
-            entry.2 += unrealized;
-            entry.3 += cost;
-            entry.4 += previous;
-            entry.5 += daily;
-        } else {
-            result.insert(
-                customer_id,
-                json!({
-                    "net_worth_eur": Value::Null,
-                    "realized_pnl_eur": Value::Null,
-                    "unrealized_pnl_eur": Value::Null,
-                    "total_pnl_eur": Value::Null,
-                    "cost_basis_eur": Value::Null,
-                    "previous_value_eur": Value::Null,
-                    "today_pnl_eur": Value::Null,
-                    "today_from_date": Value::Null,
-                    "today_to_date": Value::Null,
-                }),
-            );
-        }
+        snapshots
+            .entry(portfolio.customer_id.clone())
+            .or_default()
+            .push(valuation(pool, &portfolio).await?);
     }
-    for (customer_id, values) in totals {
-        result.insert(
-            customer_id,
-            json!({
-                "net_worth_eur": money(values.0),
-                "realized_pnl_eur": money(values.1),
-                "unrealized_pnl_eur": money(values.2),
-                "total_pnl_eur": money(values.1 + values.2),
-                "cost_basis_eur": money(values.3),
-                "previous_value_eur": money(values.4),
-                "today_pnl_eur": money(values.5),
-                "today_from_date": Value::Null,
-                "today_to_date": Value::Null,
-            }),
-        );
-    }
-    Ok(result)
+    Ok(customer_ids
+        .iter()
+        .map(|id| {
+            (
+                id.clone(),
+                customer_summary(snapshots.get(id).map_or(&[], Vec::as_slice)),
+            )
+        })
+        .collect())
 }
 
 fn opaque_id() -> String {
     Uuid::new_v4().simple().to_string()[..24].to_owned()
+}
+
+#[cfg(test)]
+mod customer_summary_tests {
+    use super::*;
+
+    fn snapshot(daily: Value, from: Value, to: Value) -> Value {
+        json!({
+            "equity_eur": "120.00", "realized_pnl_eur": "7.00",
+            "unrealized_pnl_eur": "-2.00", "cost_basis_eur": "100.00",
+            "previous_value_eur": if daily.is_null() { Value::Null } else { json!("121.00") },
+            "daily_unrealized_pnl_eur": daily,
+            "daily_from_date": from, "daily_to_date": to,
+        })
+    }
+
+    #[test]
+    fn keeps_dates_and_realized_gains_for_priced_positions() {
+        let priced = snapshot(json!("-1.00"), json!("2026-11-12"), json!("2026-11-13"));
+        let cash = json!({
+            "equity_eur": "20.00", "realized_pnl_eur": "0.00",
+            "unrealized_pnl_eur": "0.00", "cost_basis_eur": "0.00",
+            "previous_value_eur": "0.00", "daily_unrealized_pnl_eur": "0.00",
+            "daily_from_date": null, "daily_to_date": null,
+        });
+        let result = customer_summary(&[priced, cash]);
+        assert_eq!(result["net_worth_eur"], "140.00");
+        assert_eq!(result["realized_pnl_eur"], "7.00");
+        assert_eq!(result["today_pnl_eur"], "-1.00");
+        assert_eq!(result["today_from_date"], "2026-11-12");
+        assert_eq!(result["today_to_date"], "2026-11-13");
+    }
+
+    #[test]
+    fn preserves_known_totals_when_daily_prices_are_missing() {
+        let unpriced = snapshot(Value::Null, Value::Null, Value::Null);
+        let result = customer_summary(std::slice::from_ref(&unpriced));
+        assert_eq!(result["net_worth_eur"], "120.00");
+        assert_eq!(result["realized_pnl_eur"], "7.00");
+        assert_eq!(result["cost_basis_eur"], "100.00");
+        assert!(result["today_pnl_eur"].is_null());
+        assert!(result["today_from_date"].is_null());
+
+        let mut unpriced = unpriced;
+        unpriced["equity_eur"] = Value::Null;
+        unpriced["unrealized_pnl_eur"] = Value::Null;
+        let result = customer_summary(&[unpriced]);
+        assert!(result["net_worth_eur"].is_null());
+        assert_eq!(result["realized_pnl_eur"], "7.00");
+        assert!(result["total_pnl_eur"].is_null());
+    }
+
+    #[test]
+    fn empty_customer_has_zero_totals_without_dates() {
+        let result = customer_summary(&[]);
+        assert_eq!(result["net_worth_eur"], "0.00");
+        assert_eq!(result["realized_pnl_eur"], "0.00");
+        assert_eq!(result["today_pnl_eur"], "0.00");
+        assert!(result["today_from_date"].is_null());
+    }
+
+    #[test]
+    fn does_not_combine_daily_returns_from_different_dates() {
+        let first = snapshot(json!("-1.00"), json!("2026-11-12"), json!("2026-11-13"));
+        let second = snapshot(json!("2.00"), json!("2026-11-11"), json!("2026-11-12"));
+        let result = customer_summary(&[first, second]);
+        assert_eq!(result["net_worth_eur"], "240.00");
+        assert_eq!(result["realized_pnl_eur"], "14.00");
+        assert!(result["today_pnl_eur"].is_null());
+        assert!(result["today_to_date"].is_null());
+    }
 }
