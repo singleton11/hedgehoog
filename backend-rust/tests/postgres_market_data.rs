@@ -30,7 +30,7 @@ async fn acquisition_enqueue_refresh_and_retention_are_postgres_native() {
              market_data_retention, market_data_reader_leases,
              raw_eod_pages, raw_split_pages, split_snapshots, quotes, instruments,
              market_data_publications, job_queue, acquisition_jobs,
-             instrument_state, instrument_statistics, etfs, imports
+             instrument_state, instrument_statistics, etfs, imports, app_settings
          CASCADE",
     )
     .execute(&pool)
@@ -143,6 +143,56 @@ async fn acquisition_enqueue_refresh_and_retention_are_postgres_native() {
     .await
     .expect("read completed acquisition");
     assert_eq!(acquisition_status, ("succeeded".into(), false, true));
+    let snapshot = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT snapshot FROM instrument_statistics WHERE instrument_id = 'IE00B4L5Y983'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("published statistics snapshot");
+    assert_eq!(snapshot["generation"], first.id);
+    assert_eq!(snapshot["quote_count"], 1);
+    assert_eq!(snapshot["quote_fill_policy"]["method"], "smooth");
+    hedgehoog::jobs::scheduler::enqueue_due(&pool, Utc::now())
+        .await
+        .expect("check current statistics without a currency override");
+    let statistics_jobs = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM job_queue WHERE kind = 'market_data_statistics'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(statistics_jobs, 0);
+    acquisition::run(&pool, &config, &first.id)
+        .await
+        .expect("completed acquisition is idempotent");
+    let unchanged = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT snapshot FROM instrument_statistics WHERE instrument_id = 'IE00B4L5Y983'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(unchanged, snapshot);
+    assert_eq!(
+        hedgehoog::market_data::statistics::reconcile(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    sqlx::query("UPDATE instrument_statistics SET snapshot = jsonb_set(snapshot, '{generation}', '\"outdated\"') WHERE instrument_id = 'IE00B4L5Y983'")
+        .execute(&pool).await.unwrap();
+    assert_eq!(
+        hedgehoog::market_data::statistics::reconcile(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    let repaired = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT snapshot FROM instrument_statistics WHERE instrument_id = 'IE00B4L5Y983'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(repaired["generation"], first.id);
 
     let counts = refresh_stale(&pool, true, Utc::now())
         .await

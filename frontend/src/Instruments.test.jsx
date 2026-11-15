@@ -121,6 +121,22 @@ const acquiredItem = (isin = A, extra = {}) => ({ ...item(isin), listing: { symb
   historical_year_volatility_return_count: 250, ...extra });
 
 describe('saved instrument classification', () => {
+  it('refreshes pending statistics after background calculation without downloading quotes', async () => {
+    const server = mockServer();
+    let pending = true;
+    server.acquired = async () => ({
+      items: [acquiredItem(A, { annualized_mean_log_return: pending ? null : 0.1 })],
+      total: 1, offset: 0, limit: ACQUIRED_PAGE_SIZE, statistics_pending: pending ? 1 : 0,
+    });
+    await open();
+    expect(screen.getByText(/Calculating saved returns for 1 ETF/)).toBeInTheDocument();
+    pending = false;
+    await advance(10000);
+    expect(screen.queryByText(/Calculating saved returns/)).not.toBeInTheDocument();
+    expect(server.fetch.mock.calls.filter(([url]) => url.startsWith('/api/instruments/acquired?'))).toHaveLength(2);
+    expect(server.pages()).toHaveLength(0);
+  });
+
   it('shows saved asset class and index in the inventory', async () => {
     const server = mockServer();
     server.acquiredItems = [acquiredItem(A, { asset_class: 'equity', index: 'MSCI World' })];

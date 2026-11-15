@@ -2,6 +2,7 @@ pub mod acquisition;
 pub mod http;
 pub mod refresh;
 pub mod retention;
+pub mod statistics;
 pub mod yahoo;
 
 use std::sync::LazyLock;

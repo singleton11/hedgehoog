@@ -31,4 +31,6 @@ Workers claim jobs with `FOR UPDATE SKIP LOCKED`. Claims have renewable leases; 
 Queue isolation:
 
 - `catalogue`: ETF imports, refresh sweeps, and retention.
-- `marketdata`: Yahoo acquisition jobs.
+- `marketdata`: Yahoo acquisition jobs and bounded statistics backfills.
+
+The acquired ETF list reads `instrument_statistics` snapshots rather than loading quote histories. Publishing a new ETF generation and changing its price-currency override update its snapshot with the underlying change. The scheduler detects missing or outdated snapshots (including existing publications and global quote-fill policy changes) and queues backfills of at most 100 ETFs per job. Until a snapshot is ready, the list shows pending statistics and refreshes automatically; it never serves statistics for the wrong generation, currency override, or policy.

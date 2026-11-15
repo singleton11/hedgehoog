@@ -553,6 +553,26 @@ async fn publish(
         None
     };
 
+    let statistics = if job.instrument_kind.as_deref() == Some("index") {
+        None
+    } else {
+        let override_currency = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT price_currency_override FROM instrument_state WHERE instrument_id = $1",
+        )
+        .bind(&job.instrument_id)
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+        Some(
+            super::statistics::calculate(
+                pool,
+                &job.instrument_id,
+                &job.id,
+                override_currency.as_deref(),
+            )
+            .await?,
+        )
+    };
     let mut transaction = pool.begin().await?;
     sqlx::query(
         "INSERT INTO market_data_publications
@@ -621,6 +641,9 @@ async fn publish(
     .await?;
     if updated.rows_affected() != 1 {
         return Err(ExecutionError::Busy);
+    }
+    if let Some(statistics) = statistics {
+        super::statistics::save(&mut transaction, &job.instrument_id, &statistics).await?;
     }
     transaction.commit().await?;
     Ok(())

@@ -46,6 +46,7 @@ pub enum JobKind {
     MarketDataRefresh,
     MarketDataRetention,
     MarketDataAcquisition,
+    MarketDataStatistics,
 }
 
 impl JobKind {
@@ -55,6 +56,7 @@ impl JobKind {
             Self::MarketDataRefresh => "market_data_refresh",
             Self::MarketDataRetention => "market_data_retention",
             Self::MarketDataAcquisition => "market_data_acquisition",
+            Self::MarketDataStatistics => "market_data_statistics",
         }
     }
 }
@@ -74,6 +76,7 @@ impl FromStr for JobKind {
             "market_data_refresh" => Ok(Self::MarketDataRefresh),
             "market_data_retention" => Ok(Self::MarketDataRetention),
             "market_data_acquisition" => Ok(Self::MarketDataAcquisition),
+            "market_data_statistics" => Ok(Self::MarketDataStatistics),
             value => Err(AppError::Internal(format!("unknown job kind {value:?}"))),
         }
     }

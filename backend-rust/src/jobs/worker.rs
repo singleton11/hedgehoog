@@ -166,6 +166,10 @@ async fn execute(pool: &PgPool, config: &Config, job: &JobRecord) -> Result<(), 
                 .map(|_| ())
                 .map_err(|error| HandlerError::Retryable(error.to_string()))
         }
+        JobKind::MarketDataStatistics => crate::market_data::statistics::reconcile(pool)
+            .await
+            .map(|count| tracing::info!(count, "market-data statistics refreshed"))
+            .map_err(|error| HandlerError::Retryable(error.to_string())),
         JobKind::MarketDataAcquisition => {
             let job_id = job
                 .payload
