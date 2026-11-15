@@ -25,6 +25,8 @@ node_modules/
 # Build output
 build/
 dist/
+/bundle/
+/hedgehoog-release-*.tar
 /backend-rust/target/
 
 # Test, coverage, and analysis caches

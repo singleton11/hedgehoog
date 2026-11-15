@@ -106,8 +106,9 @@ PostgreSQL integration tests run when `TEST_DATABASE_URL` is set. The repository
 - `hedgehoog-api`;
 - serial catalogue worker;
 - concurrent market-data worker;
-- singleton scheduler; and
-- the static frontend web image.
+- singleton scheduler.
+
+The Vite build is not a container. Release bundles carry `frontend.tar.gz`; the installer publishes it through an atomic `static/current` symlink, and the host's shared Caddy serves those files while proxying `/api/*` to the loopback-only Rust API on `127.0.0.1:8180`. See `deploy/Caddyfile.hedgehoog` and `deploy/README.md`.
 
 Build the backend image from `backend-rust/Dockerfile`, set the required production variables (`RELEASE_SHA`, `POSTGRES_PASSWORD`, `JWT_SECRET`, `ADMIN_PASSWORD`, and `ALLOWED_ORIGINS`), then validate the rendered Compose file before deployment. Production defaults to secure cookies and rejects an insecure-HTTP configuration; only set `COOKIE_SECURE=false` together with `ALLOW_INSECURE_HTTP=true` for an explicitly accepted private HTTP-only deployment:
 

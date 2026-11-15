@@ -64,6 +64,8 @@ services:
   api:
     <<: *backend
     command: [hedgehoog-api]
+    ports:
+      - 127.0.0.1:8180:8000
     healthcheck:
       test: [CMD, curl, --fail, --silent, 'http://127.0.0.1:8000/health']
       interval: 15s
@@ -82,21 +84,6 @@ services:
   scheduler:
     <<: *backend
     command: [hedgehoog-scheduler]
-
-  web:
-    image: hedgehoog-web:${RELEASE_SHA:?Set RELEASE_SHA}
-    restart: unless-stopped
-    ports:
-      - 80:80
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      test: [CMD, wget, --quiet, --spider, 'http://127.0.0.1/api/health']
-      interval: 15s
-      timeout: 5s
-      retries: 6
-    logging: *logging
 
 volumes:
   postgresql_data:

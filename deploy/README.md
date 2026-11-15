@@ -1,70 +1,114 @@
-# EC2 release deployment
+# Production deployment on the shared Caddy host
 
-The `Release to EC2` workflow runs on every published GitHub release (including
-prereleases). It builds x86 Docker images in Actions, transfers them using a
-forced-command deployment SSH key, waits for Compose healthchecks, and tests
-HTTP from the runner. Deployments are serialized. Images are identified by the
-release commit SHA; no mutable registry credentials are required.
+Hedgehoog runs as the Docker Compose project `hedgehoog-production`. Docker runs
+PostgreSQL and the four Rust processes; the frontend is a Vite static build served
+directly by the host's shared Caddy. There is no frontend nginx container.
 
-## Current infrastructure
+## Runtime layout
 
-- Region: eu-central-1; instance: i-092fd2cde12b17931 (t3a.medium, 4 GiB).
-- URL: http://ec2-52-29-101-224.eu-central-1.compute.amazonaws.com
-- Disk: encrypted 24 GiB gp3; database and queue use persistent Docker volumes.
-- MongoDB, RabbitMQ and the API have no published host ports.
-- SSH allows the administrator source IPv4 only. Actions uses temporary OIDC
-  credentials scoped to changing this instance's security group, opens its own
-  runner IPv4 /32, and revokes it even on deployment failure.
-- `EC2_DEPLOY_KEY` and `EC2_KNOWN_HOSTS` are GitHub Actions secrets;
-  `EC2_HOST` is a repository variable. No AWS access keys are stored in GitHub.
-- Host-key pinning was verified against the AWS instance console fingerprint.
+- `/opt/hedgehoog/compose.yaml`: installed production Compose file.
+- `/opt/hedgehoog/.env.production`: root-owned secrets, mode `0600`.
+- `/opt/hedgehoog/.release.env`: currently selected immutable release SHA.
+- `/opt/hedgehoog/static/releases/<sha>/`: immutable frontend builds.
+- `/opt/hedgehoog/static/current`: atomic symlink used by Caddy.
+- `/opt/hedgehoog/deployed-sha`: current successful release.
+- `/opt/hedgehoog/rollback-sha`: previous successful distinct release.
 
-## HTTP warning
+The API is published only on `127.0.0.1:8180`. PostgreSQL has no published
+production port. Existing MongoDB data and volumes are not referenced, migrated,
+or deleted.
 
-This AWS-owned hostname has **no trusted TLS**. Login credentials, session
-cookies and financial data are unencrypted in transit. Production HTTP is an
-explicit `ALLOW_INSECURE_HTTP=true` exception, not the default. For real sensitive
-use, configure a custom domain and TLS, then set `COOKIE_SECURE=true`, remove
-the exception, and update allowed origins. Avoid sending sensitive data before
-this change. The public IPv4/DNS can change on stop/start; update configuration,
-repository variable and host-key entry if replacing the instance.
+## One-time Caddy setup
 
-## Host operations
+Mount the static release root into the shared Caddy container:
 
-Runtime configuration is `/opt/hedgehoog/.env.production` (root-only, mode 0600).
-The initial admin password is there; account seeding runs only once, so editing
-this variable does not rotate an existing account. Never print secrets to logs.
-The deployment SSH key is restricted to `/usr/local/sbin/hedgehoog-deploy` with
-no port forwarding or interactive shell. This is privileged code deployment;
-protect release publishing and repository secrets accordingly.
+```yaml
+services:
+  caddy:
+    volumes:
+      - /opt/hedgehoog/static:/srv/hedgehoog:ro
+```
 
-Use root on the instance:
+Use the site block in `deploy/Caddyfile.hedgehoog`. It serves the SPA from
+`/srv/hedgehoog/current`, gives hashed assets immutable caching, and strips the
+`/api` prefix before proxying requests to `127.0.0.1:8180`.
+
+Validate the Caddy configuration before recreating the container. A new bind mount
+requires container recreation rather than only a reload:
+
+```sh
+cd /home/singleton/services/caddy
+docker compose config --quiet
+docker compose run --rm caddy caddy validate --config /etc/caddy/Caddyfile
+docker compose up -d --force-recreate caddy
+```
+
+## Production environment
+
+Create `/opt/hedgehoog/.env.production` with mode `0600`. Required values are:
+
+- `POSTGRES_PASSWORD`
+- `JWT_SECRET`
+- `ADMIN_PASSWORD`
+- `ALLOWED_ORIGINS=https://hedgehoog.antonprokhorov.synology.me`
+
+Keep `COOKIE_SECURE=true` and `ALLOW_INSECURE_HTTP=false` for the HTTPS site. The
+admin account is seeded only when absent; changing `ADMIN_PASSWORD` later does not
+rotate an existing password.
+
+## Build a release bundle
+
+From a clean checkout of the desired commit:
+
+```sh
+set -euo pipefail
+sha=$(git rev-parse HEAD)
+npm --prefix frontend ci
+npm --prefix frontend run build
+docker build -f backend-rust/Dockerfile -t "hedgehoog-backend:$sha" .
+rm -rf bundle
+mkdir bundle
+docker save "hedgehoog-backend:$sha" -o bundle/images.tar
+tar -C frontend/dist -czf bundle/frontend.tar.gz .
+cp deploy/compose.yaml bundle/
+printf '%s\n' "$sha" > bundle/release-sha
+tar -C bundle -cf "hedgehoog-release-$sha.tar" \
+  images.tar frontend.tar.gz compose.yaml release-sha
+```
+
+The GitHub `Build release bundle` workflow produces the same archive as a workflow
+artifact; it does not connect to the host.
+
+## Install
+
+Install `deploy/install-release.sh` as a privileged local command, then stream the
+bundle to it:
+
+```sh
+sudo install -d -m 0755 /opt/hedgehoog
+sudo install -m 0755 deploy/install-release.sh /usr/local/sbin/hedgehoog-deploy
+sudo /usr/local/sbin/hedgehoog-deploy < "hedgehoog-release-$sha.tar"
+```
+
+The installer serializes rollouts, prepares the static release before changing
+traffic, loads the backend image, waits for migrations and all Compose health
+checks, verifies the loopback API, atomically switches the static symlink, and only
+then records success. It keeps the current and previous backend/static releases and
+removes unreferenced legacy `hedgehoog-web:<sha>` images.
+
+## Verification
 
 ```sh
 cd /opt/hedgehoog
 docker compose --env-file .env.production --env-file .release.env ps
 docker compose --env-file .env.production --env-file .release.env logs --tail 100
+curl --fail http://127.0.0.1:8180/health
+curl --fail https://hedgehoog.antonprokhorov.synology.me/api/health
+curl --fail https://hedgehoog.antonprokhorov.synology.me/
 cat deployed-sha
 ```
 
-Do not use `down -v`. Release deployments preserve MongoDB and RabbitMQ volumes.
-Back up MongoDB and the secrets file securely before upgrades. This small
-single-instance deployment has no high availability or automated off-host backup.
-A failed rollout can leave a partially upgraded stack; investigate health and
-redeploy a release containing the last known-good commit. After a healthy rollout,
-`deployed-sha` selects the current release and `rollback-sha` selects the previous
-successful distinct release (redeploying the same SHA does not rotate rollback).
-Only those two releases and images referenced by existing containers are retained;
-other SHA-tagged `hedgehoog-backend` and `hedgehoog-web` images expire immediately
-on that successful rollout, regardless of age. Cleanup never forces image removal,
-touches other repositories/tags, or prunes volumes. Container-referenced exceptions
-remain until the containers are removed and a later rollout runs cleanup. This is
-a release-count bound, not a seven-day grace period; monitor disk use and remove
-obsolete containers separately. The updated host installer must be installed at
-`/usr/local/sbin/hedgehoog-deploy` to enable this policy; release bundles do not
-update that privileged script. EC2 stop does not stop EBS charges; terminating deletes
-the root disk and all current application data. There is no ALB, NAT or RDS.
-
-Changes are proposed in a PR; debug prereleases can deploy the branch without
-merging or bypassing main-branch review/check protections. After approval and
-merge, publish subsequent releases from main.
+Do not use `docker compose down -v`; that deletes the PostgreSQL volume. Roll back
+by redeploying the previous release bundle identified by `rollback-sha`. Static
+files are switched only after the old API has been replaced successfully, so keep
+both bundles available until post-deployment verification is complete.

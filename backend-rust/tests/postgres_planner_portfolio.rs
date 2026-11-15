@@ -41,10 +41,7 @@ async fn planner_portfolio_import_performance_and_recommendations_use_postgres()
     .execute(&pool)
     .await
     .expect("clear application tables");
-    let state = AppState {
-        pool: pool.clone(),
-        config: config.clone(),
-    };
+    let state = AppState::new(pool.clone(), config.clone());
     auth::seed_admin(&state).await.expect("seed admin");
     seed_history(&pool).await;
     let app = http::router(state);

@@ -38,10 +38,7 @@ async fn authenticated_catalogue_settings_and_acquisition_routes_use_postgres() 
     .execute(&pool)
     .await
     .expect("clear application tables");
-    let state = AppState {
-        pool: pool.clone(),
-        config: config.clone(),
-    };
+    let state = AppState::new(pool.clone(), config.clone());
     auth::seed_admin(&state).await.expect("seed admin");
     let app = http::router(state);
 
