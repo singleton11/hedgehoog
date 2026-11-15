@@ -25,6 +25,7 @@ node_modules/
 # Build output
 build/
 dist/
+/backend-rust/target/
 
 # Test, coverage, and analysis caches
 .pytest_cache/

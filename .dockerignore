@@ -1,0 +1,11 @@
+.git
+.gitignore
+backend-rust/target
+backend/.venv
+backend/**/__pycache__
+frontend/node_modules
+frontend/dist
+coverage
+.coverage
+.pytest_cache
+.env

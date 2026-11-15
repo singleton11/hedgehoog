@@ -1,38 +1,34 @@
 .PHONY: setup db-up db-down services-up services-down import-etfs run run-backend run-frontend test test-coverage
 
 setup:
-	cd backend && uv run python ../scripts/init_env.py
+	python3 scripts/init_env.py
 
 db-up: setup
-	docker compose up -d --wait mongodb
+	docker compose up -d --wait postgres
 
 db-down:
-	docker compose stop mongodb
+	docker compose stop postgres
 
 services-up: setup
-	docker compose up -d --build --wait mongodb rabbitmq celery-worker celery-marketdata-worker celery-beat
+	docker compose up -d --build --wait postgres api catalogue-worker marketdata-worker scheduler
 
 services-down:
-	docker compose stop celery-beat celery-marketdata-worker celery-worker rabbitmq mongodb
+	docker compose stop scheduler marketdata-worker catalogue-worker api postgres
 
 import-etfs: services-up
-	docker compose exec celery-worker python -m celery -A celery_app:app call etfs.import_daily
+	docker compose exec -T postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "INSERT INTO job_queue (id, kind, queue, payload, status, run_at, requested_at, max_attempts, deduplication_key) VALUES (md5(random()::text || clock_timestamp()::text), '\''etf_import'\'', '\''catalogue'\'', '\''{}'\''::jsonb, '\''queued'\'', now(), now(), 3, '\''manual-etf-import:'\'' || clock_timestamp()::text);"'
 
 run: services-up
-	cd frontend && npm ci && npm exec -- concurrently --kill-others --names backend,frontend \
-		"cd ../backend && uv run uvicorn main:app --reload" \
-		"npm run dev"
+	cd frontend && npm ci && npm run dev
 
 run-backend: services-up
-	cd backend && uv run uvicorn main:app --reload
+	docker compose logs -f api catalogue-worker marketdata-worker scheduler
 
 run-frontend:
 	cd frontend && npm ci && npm run dev
 
 test:
-	cd backend && uv run pytest
+	docker build -f backend-rust/Dockerfile --target test -t hedgehoog-rust-test .
 	cd frontend && npm ci && npm test && npm run build
 
-test-coverage:
-	bash scripts/run_coverage.sh backend
-	cd frontend && npm ci && npm run test:coverage
+test-coverage: test
