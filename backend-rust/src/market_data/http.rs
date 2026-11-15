@@ -824,10 +824,12 @@ async fn acquired_rows(pool: &PgPool) -> AppResult<Vec<Value>> {
          )
          SELECT p.id AS generation, p.instrument_id, p.listing, p.history_summary,
                 profile.collected_at, profile.asset_class, profile.index_name,
-                c.name, c.ticker
+                c.name, c.ticker, stats.snapshot, state.price_currency_override
          FROM publications p
          LEFT JOIN instruments profile ON profile.job_id = p.id
          LEFT JOIN catalogues c ON c.isin = p.instrument_id
+         LEFT JOIN instrument_statistics stats ON stats.instrument_id = p.instrument_id
+         LEFT JOIN instrument_state state ON state.instrument_id = p.instrument_id
          ORDER BY profile.collected_at DESC NULLS LAST, p.instrument_id",
     )
     .fetch_all(pool)
@@ -846,27 +848,18 @@ async fn acquired_rows(pool: &PgPool) -> AppResult<Vec<Value>> {
         let summary = row
             .get::<Option<Value>, _>("history_summary")
             .unwrap_or_else(|| json!({}));
-        let statistic_rows =
-            sqlx::query_as::<_, (NaiveDate, Option<Decimal>, Option<Decimal>, Option<String>)>(
-                "SELECT quote_date, adj_close, close, price_currency
-             FROM quotes WHERE job_id = $1 ORDER BY quote_date",
-            )
-            .bind(&generation)
-            .fetch_all(pool)
-            .await?;
-        let override_currency = sqlx::query_scalar::<_, Option<String>>(
-            "SELECT price_currency_override FROM instrument_state WHERE instrument_id = $1",
-        )
-        .bind(&instrument_id)
-        .fetch_optional(pool)
-        .await?
-        .flatten();
-        let statistics = calculate_statistics(
-            &statistic_rows,
+        let override_currency = row.get::<Option<String>, _>("price_currency_override");
+        let cached = row.get::<Option<Value>, _>("snapshot");
+        let statistics = if super::statistics::current(
+            cached.as_ref(),
+            &generation,
             override_currency.as_deref(),
-            &instrument_id,
             &policy,
-        );
+        ) {
+            cached.unwrap_or(Value::Null)
+        } else {
+            json!({})
+        };
         let mut item = Map::new();
         item.insert("instrument_id".into(), json!(instrument_id));
         item.insert("isin".into(), json!(instrument_id));
@@ -881,6 +874,10 @@ async fn acquired_rows(pool: &PgPool) -> AppResult<Vec<Value>> {
                 .unwrap_or(Value::Null),
         );
         item.insert("generation".into(), json!(generation));
+        item.insert(
+            "statistics_pending".into(),
+            json!(statistics.get("generation").is_none()),
+        );
         item.insert("collected_at".into(), json!(collected_at));
         item.insert(
             "asset_class".into(),
@@ -957,6 +954,10 @@ async fn acquired_instruments(
             anniversary(start, years).is_some_and(|boundary| end >= boundary)
         });
     }
+    let statistics_pending = items
+        .iter()
+        .filter(|item| item["statistics_pending"] == true)
+        .count();
     if query.hide_negative_returns {
         items.retain(|item| {
             ["historical_year_return", "annualized_mean_log_return"]
@@ -975,7 +976,7 @@ async fn acquired_instruments(
         .take(limit as usize)
         .collect::<Vec<_>>();
     Ok(Json(
-        json!({"items": items, "total": total, "limit": limit, "offset": offset}),
+        json!({"items": items, "total": total, "statistics_pending": statistics_pending, "limit": limit, "offset": offset}),
     ))
 }
 
@@ -1422,7 +1423,7 @@ fn historical_window(
     (currencies.len() <= 1).then_some(&rows[start..])
 }
 
-fn calculate_statistics(
+pub(super) fn calculate_statistics(
     rows: &[StatisticsRow],
     override_currency: Option<&str>,
     instrument_id: &str,
@@ -1590,6 +1591,21 @@ async fn set_price_currency(
     if !PRICE_CURRENCIES.contains(&body.price_currency.as_str()) {
         return Err(AppError::unprocessable("Unsupported price currency"));
     }
+    let publication = latest_publication(&state.pool, &instrument_id).await?;
+    let statistics = if let Some(publication) = publication {
+        Some(
+            super::statistics::calculate(
+                &state.pool,
+                &instrument_id,
+                &publication.id,
+                Some(&body.price_currency),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let mut transaction = state.pool.begin().await?;
     sqlx::query(
         "INSERT INTO instrument_state (instrument_id, price_currency_override)
          VALUES ($1, $2)
@@ -1598,8 +1614,12 @@ async fn set_price_currency(
     )
     .bind(&instrument_id)
     .bind(&body.price_currency)
-    .execute(&state.pool)
+    .execute(&mut *transaction)
     .await?;
+    if let Some(statistics) = statistics {
+        super::statistics::save(&mut transaction, &instrument_id, &statistics).await?;
+    }
+    transaction.commit().await?;
     Ok(Json(
         json!({"price_currency_override": body.price_currency}),
     ))

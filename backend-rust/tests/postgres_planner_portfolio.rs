@@ -88,7 +88,129 @@ async fn planner_portfolio_import_performance_and_recommendations_use_postgres()
     )
     .await;
     assert_eq!(acquired.0, StatusCode::OK, "{}", acquired.1);
+    assert_eq!(acquired.1["statistics_pending"], 1);
+    assert!(acquired.1["items"][0]["annualized_mean_log_return"].is_null());
+    hedgehoog::jobs::scheduler::enqueue_due(&pool, Utc::now())
+        .await
+        .unwrap();
+    let queued = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM job_queue WHERE kind = 'market_data_statistics' AND status = 'queued'",
+    )
+    .fetch_one(&pool).await.unwrap();
+    assert_eq!(queued, 1);
+    assert_eq!(
+        hedgehoog::market_data::statistics::reconcile(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    let acquired = request_json(
+        &app,
+        "GET",
+        "/instruments/acquired?limit=20&offset=0",
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(acquired.1["statistics_pending"], 0);
     assert!(acquired.1["items"][0]["annualized_mean_log_return"].is_number());
+    sqlx::query("UPDATE job_queue SET status = 'succeeded' WHERE kind = 'market_data_statistics'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    hedgehoog::jobs::scheduler::enqueue_due(&pool, Utc::now())
+        .await
+        .unwrap();
+    let jobs = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM job_queue WHERE kind = 'market_data_statistics'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(jobs, 1);
+    let changed = request_json(
+        &app,
+        "PUT",
+        "/settings/market-data",
+        &cookie,
+        Some(json!({"method": "smooth", "seed": 0})),
+    )
+    .await;
+    assert_eq!(changed.0, StatusCode::OK);
+    let stale = request_json(
+        &app,
+        "GET",
+        "/instruments/acquired?limit=20&offset=0",
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(stale.1["statistics_pending"], 1);
+    hedgehoog::jobs::scheduler::enqueue_due(&pool, Utc::now())
+        .await
+        .unwrap();
+    let jobs = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM job_queue WHERE kind = 'market_data_statistics'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(jobs, 2);
+    assert_eq!(
+        hedgehoog::market_data::statistics::reconcile(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    let currency = request_json(
+        &app,
+        "PATCH",
+        "/instruments/IE00B4L5Y983/price-currency",
+        &cookie,
+        Some(json!({"price_currency": "USD"})),
+    )
+    .await;
+    assert_eq!(currency.0, StatusCode::OK);
+    let cached = sqlx::query_scalar::<_, Value>(
+        "SELECT snapshot FROM instrument_statistics WHERE instrument_id = 'IE00B4L5Y983'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(cached["override_currency"], "USD");
+    let acquired = request_json(
+        &app,
+        "GET",
+        "/instruments/acquired?limit=20&offset=0",
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(acquired.1["statistics_pending"], 0);
+    let restored = request_json(
+        &app,
+        "PATCH",
+        "/instruments/IE00B4L5Y983/price-currency",
+        &cookie,
+        Some(json!({"price_currency": "EUR"})),
+    )
+    .await;
+    assert_eq!(restored.0, StatusCode::OK);
+    let restored_policy = request_json(
+        &app,
+        "PUT",
+        "/settings/market-data",
+        &cookie,
+        Some(json!({"method": "normal", "seed": 11})),
+    )
+    .await;
+    assert_eq!(restored_policy.0, StatusCode::OK);
+    assert_eq!(
+        hedgehoog::market_data::statistics::reconcile(&pool)
+            .await
+            .unwrap(),
+        1
+    );
 
     let customer = request_json(
         &app,

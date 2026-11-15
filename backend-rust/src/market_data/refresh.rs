@@ -125,10 +125,7 @@ pub async fn refresh_stale(
         .await
         {
             Ok(_) => counts.requested += 1,
-            Err(error) if error.status() == 503 => {
-                counts.errors += 1;
-                return Err(error);
-            }
+            Err(error) if error.status() == 503 => return Err(error),
             Err(error) => {
                 counts.skipped += 1;
                 tracing::warn!(%instrument_id, error = %error, "automatic refresh skipped");

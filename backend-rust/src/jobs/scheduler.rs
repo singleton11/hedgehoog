@@ -47,6 +47,7 @@ async fn acquire_lock(pool: &PgPool) -> AppResult<PoolConnection<Postgres>> {
 }
 
 pub async fn enqueue_due(pool: &PgPool, now: DateTime<Utc>) -> AppResult<()> {
+    enqueue_statistics_if_stale(pool, now).await?;
     let date = now.date_naive();
     let schedules = [
         (
@@ -84,6 +85,54 @@ pub async fn enqueue_due(pool: &PgPool, now: DateTime<Utc>) -> AppResult<()> {
                 max_attempts,
                 run_at: now,
                 dedupe_key: Some(dedupe_key),
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn enqueue_statistics_if_stale(pool: &PgPool, now: DateTime<Utc>) -> AppResult<()> {
+    let policy = crate::market_data::quote_fill_policy(pool).await?;
+    let stale = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (
+             SELECT 1 FROM (
+                 SELECT DISTINCT ON (instrument_id) instrument_id, id
+                 FROM acquisition_jobs
+                 WHERE provider = 'yfinance' AND published = true
+                   AND instrument_id NOT LIKE 'idx-%'
+                 ORDER BY instrument_id, requested_at DESC, published_at DESC NULLS LAST, id DESC
+             ) publications
+             LEFT JOIN instrument_state state ON state.instrument_id = publications.instrument_id
+             LEFT JOIN instrument_statistics stats ON stats.instrument_id = publications.instrument_id
+             WHERE stats.snapshot IS NULL OR stats.snapshot ->> 'generation' IS DISTINCT FROM publications.id
+                OR stats.snapshot -> 'override_currency' IS DISTINCT FROM COALESCE(to_jsonb(state.price_currency_override), 'null'::jsonb)
+                OR stats.snapshot -> 'quote_fill_policy' IS DISTINCT FROM $1::jsonb
+         )",
+    )
+    .bind(policy)
+    .fetch_one(pool)
+    .await?;
+    if !stale {
+        return Ok(());
+    }
+    let active = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM job_queue
+         WHERE kind = 'market_data_statistics' AND status IN ('queued', 'running', 'retrying'))",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !active {
+        enqueue(
+            pool,
+            NewJob {
+                id: None,
+                kind: JobKind::MarketDataStatistics,
+                queue: Queue::MarketData,
+                payload: json!({}),
+                max_attempts: 6,
+                run_at: now,
+                dedupe_key: None,
             },
         )
         .await?;

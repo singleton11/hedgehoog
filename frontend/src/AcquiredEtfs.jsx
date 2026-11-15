@@ -171,6 +171,12 @@ export default function AcquiredEtfs() {
     return () => controller.abort();
   }, [request, offset, attempt, minHistoryYears, hideNegativeReturns]);
 
+  useEffect(() => {
+    if (!page?.statistics_pending || loading) return undefined;
+    const timer = setTimeout(refresh, 10000);
+    return () => clearTimeout(timer);
+  }, [page, loading, refresh]);
+
   return <section aria-labelledby="acquired-etfs-heading" className="acquired-page">
     <div className="section-heading page-heading">
       <div><p className="eyebrow">Your collection</p>
@@ -221,6 +227,7 @@ export default function AcquiredEtfs() {
     {skippedCount > 0 && <p role="status">Skipped {skippedCount} {skippedCount === 1 ? 'ETF' : 'ETFs'} collected 0 days ago.</p>}
     {updateError && <p role="alert">{updateError}</p>}
     {loading && <p role="status">Loading acquired ETFs…</p>}
+    {!loading && page?.statistics_pending > 0 && <p role="status">Calculating saved returns for {page.statistics_pending} {page.statistics_pending === 1 ? 'ETF' : 'ETFs'}; the list will update after calculation finishes.</p>}
     {error && <><p role="alert">{error}</p><button className="secondary" onClick={() => setAttempt((value) => value + 1)}>Retry list</button></>}
     {page && (page.total === 0
       ? <div className="empty-state collection-empty"><span className="empty-icon"><Icon name="layers" /></span><h3>{filtersActive ? 'No ETFs match these filters' : 'No acquired ETFs yet'}</h3><p>{filtersActive ? 'Try relaxing the filters or select All.' : 'Choose Add ETF to find a fund and request its data.'}</p></div>
