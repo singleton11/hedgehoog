@@ -1,7 +1,7 @@
 use std::{
-    collections::HashSet,
-    sync::LazyLock,
-    time::{SystemTime, UNIX_EPOCH},
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{Arc, LazyLock, Mutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use argon2::{
@@ -18,7 +18,6 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::Utc;
 use cookie::{time::Duration as CookieDuration, Cookie, SameSite};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use rand_core::OsRng;
@@ -69,6 +68,36 @@ struct Claims {
 pub struct CurrentUser(pub User);
 
 pub struct AdminUser(pub User);
+
+#[derive(Clone, Default)]
+pub struct LoginRateLimiter {
+    attempts: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
+}
+
+impl LoginRateLimiter {
+    const LIMIT: usize = 5;
+    const WINDOW: Duration = Duration::from_secs(60);
+
+    pub fn allow(&self, client: &str) -> bool {
+        let now = Instant::now();
+        let mut attempts = self
+            .attempts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let client_attempts = attempts.entry(client.to_owned()).or_default();
+        while client_attempts
+            .front()
+            .is_some_and(|attempt| now.duration_since(*attempt) >= Self::WINDOW)
+        {
+            client_attempts.pop_front();
+        }
+        if client_attempts.len() >= Self::LIMIT {
+            return false;
+        }
+        client_attempts.push_back(now);
+        true
+    }
+}
 
 impl FromRequestParts<AppState> for CurrentUser {
     type Rejection = AppError;
@@ -148,8 +177,22 @@ pub async fn seed_admin(state: &AppState) -> AppResult<()> {
 
 pub async fn login(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(credentials): Json<LoginRequest>,
 ) -> AppResult<Response> {
+    let client = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("direct");
+    if !state.login_rate_limiter.allow(client) {
+        return Err(AppError::too_many_requests(
+            "Too many login attempts. Try again later.",
+        ));
+    }
+
     if credentials.login.is_empty() || credentials.login.len() > 128 {
         return Err(AppError::bad_request("Invalid login or password"));
     }
@@ -295,7 +338,17 @@ fn verify_password(password: &str, encoded: &str) -> bool {
     })
 }
 
-#[allow(dead_code)]
-fn _utc_now() -> chrono::DateTime<Utc> {
-    Utc::now()
+#[cfg(test)]
+mod tests {
+    use super::LoginRateLimiter;
+
+    #[test]
+    fn login_rate_limit_is_per_client() {
+        let limiter = LoginRateLimiter::default();
+        for _ in 0..5 {
+            assert!(limiter.allow("198.51.100.1"));
+        }
+        assert!(!limiter.allow("198.51.100.1"));
+        assert!(limiter.allow("198.51.100.2"));
+    }
 }

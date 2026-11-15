@@ -42,8 +42,8 @@ The frontend contract is the existing HTTP API: routes, status codes, cookies, J
 2. Queue tests prove exclusive claims, lease recovery, retry bounds, scheduling deduplication, and graceful shutdown.
 3. HTTP contract tests cover all existing routes and security middleware.
 4. PostgreSQL HTTP integration tests cover market data plus planner, calibration, portfolio ledger, DEGIRO import, performance, recommendations, fulfillment, and plan tracking.
-5. Compose starts PostgreSQL, API, workers, scheduler, and frontend without MongoDB or RabbitMQ.
-6. CI and release deployment build the Rust image and run PostgreSQL integration tests. Historical Python source may be removed separately after the compatibility audit; it is not packaged or executed.
+5. Compose starts PostgreSQL, API, workers, and scheduler without MongoDB or RabbitMQ; the shared host Caddy serves the static Vite build directly.
+6. CI and release bundling build the Rust image and static frontend artifact and run PostgreSQL integration tests. Historical Python source may be removed separately after the compatibility audit; it is not packaged or executed.
 
 ## Implemented surface
 

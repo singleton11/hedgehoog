@@ -70,6 +70,13 @@ impl AppError {
         }
     }
 
+    pub fn too_many_requests(detail: impl Into<String>) -> Self {
+        Self::Http {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            detail: detail.into(),
+        }
+    }
+
     pub fn service_unavailable(detail: impl Into<String>) -> Self {
         Self::Http {
             status: StatusCode::SERVICE_UNAVAILABLE,

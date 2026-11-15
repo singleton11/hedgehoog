@@ -8,10 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = db::connect(&config).await?;
     db::migrate(&pool).await?;
 
-    let state = AppState {
-        pool,
-        config: config.clone(),
-    };
+    let state = AppState::new(pool, config.clone());
     auth::seed_admin(&state).await?;
 
     let listener = TcpListener::bind(config.bind_addr).await?;
